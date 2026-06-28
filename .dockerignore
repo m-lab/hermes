@@ -1,0 +1,26 @@
+# Version control & IDE
+.git
+.gitignore
+.venv
+venv
+__pycache__
+*.pyc
+*.bak
+
+# Data files (large, not needed in image)
+data/
+notebooks/
+
+# Cache files (will use mounted volume at runtime)
+src/hermes/enrichment/cache/
+src/hermes/enrichment/ripe_ipmap/cache/
+!src/hermes/enrichment/ripe_ipmap/cache/iso_code_2
+
+# Secrets & credentials
+.env
+
+# Docs & specs
+docs/
+
+# Logs
+logs/

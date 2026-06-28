@@ -1,0 +1,29 @@
+{
+  "_comment": "Frozen golden for the persistent BigQuery stat UDFs in mlab-collaboration.hermes. Captured from the live UDFs with the fixed input below. wasserstein.p_value is omitted because it is permutation-randomized (non-deterministic); only its deterministic `distance` is asserted.",
+  "input": {
+    "baseline": [10.0, 11.0, 12.0, 10.5, 11.5, 10.0, 12.0],
+    "current": [20.0, 21.0, 19.5, 22.0, 20.5, 21.5, 20.0],
+    "num_permutations": 100
+  },
+  "expected": {
+    "welch": {
+      "t_stat": -20.42954752836539,
+      "degrees_of_freedom": 11.982543931106713,
+      "p_value": 1.1139644762181433e-10,
+      "mean1": 11.0,
+      "mean2": 20.642857142857142,
+      "se1": 0.32732683535398854,
+      "se2": 0.34006802040680234
+    },
+    "mann_whitney": {
+      "U": 0.0,
+      "Z": -3.2049661212218012,
+      "p_value": 0.001350911636945007,
+      "meanU": 24.5,
+      "stdU": 7.800394467342908
+    },
+    "wasserstein": {
+      "distance": 9.642857142857139
+    }
+  }
+}

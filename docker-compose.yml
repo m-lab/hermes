@@ -1,0 +1,10 @@
+services:
+  hermes-pipeline:
+    build: .
+    image: hermes-pipeline:latest
+    env_file: ${HERMES_ENV_FILE:-/etc/hermes/hermes.env}
+    environment:
+      - GOOGLE_APPLICATION_CREDENTIALS=/app/credentials.json
+    volumes:
+      - ${HERMES_CACHE_DIR:-/data/hermes-cache}:/app/cache
+      - ${HERMES_SA_KEY:-/etc/hermes/service-account-key.json}:/app/credentials.json:ro
