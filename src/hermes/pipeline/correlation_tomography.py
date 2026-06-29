@@ -194,7 +194,7 @@ def download_edges(client: bigquery.Client, day_str: str) -> pd.DataFrame:
         BigQuery client.
     day_str
         Date string in ``YYYY-MM-DD`` format; substituted as ``${DAY}``
-        in ``correlation_tomography_prepare.sql``.
+        in ``06_correlation_tomography_prepare_union.sql``.
 
     Returns
     -------
@@ -607,7 +607,7 @@ def compute_hyperedges(
     Phase 3 of the correlation tomography pipeline:
 
     1. Downloads the ``all_edges_per_node`` view via
-       ``correlation_tomography_all_edges.sql``.
+       ``06_correlation_tomography_all_edges_union.sql``.
     2. Computes per-node culprit fractions at ASN-metro, ASN, and metro
        granularities.
     3. Uploads the final hyperedge rows to :data:`OUTPUT_TABLE`.
@@ -1218,7 +1218,7 @@ def run_correlation_tomography(
 
     Orchestrates the three-phase process:
 
-    1. **Phase 1 (SQL)** — Extract edges via ``correlation_tomography_prepare.sql``
+    1. **Phase 1 (SQL)** — Extract edges via ``06_correlation_tomography_prepare_union.sql``
        and download to a pandas DataFrame (:func:`download_edges`).
     2. **Phase 2 (Python)** — Greedy set-cover in memory
        (:func:`run_greedy_set_cover`).

@@ -158,17 +158,17 @@ Runs in Phase C alongside Step 04. Single-pass before/during comparison: for eac
 
 ### Step 06: Correlation tomography
 
-**SQL (default — Python hybrid backend):** `06_correlation_tomography_prepare_union.sql` + `06_correlation_tomography_all_edges_union.sql`
-**SQL (alternate — BigQuery-only backend):** `06_correlation_tomography_bigquery_union.sql`
+**SQL (Python hybrid backend):** `06_correlation_tomography_prepare_union.sql` + `06_correlation_tomography_all_edges_union.sql`
+**SQL (path-local attribution):** `06_correlation_tomography_unexplained_hops_union.sql`
 **Reads:** `hermes_union.events_with_as_and_geoloc`
-**Writes:** `hermes_union.correlation_hyperedges_tomography`
+**Writes:** `hermes_union.correlation_hyperedges_tomography_v2`
 
-Runs in Phase D. Iterative greedy set-cover that identifies culprit network edges. Two interchangeable backends (selected via `--tomography-backend`) write the same output table:
+Runs in Phase D. Iterative greedy set-cover that identifies culprit network edges via the Python hybrid backend:
 
-- **Python hybrid (default):** `..._prepare_union.sql` scans the source once and returns precomputed edges; Python runs the set-cover loop; `..._all_edges_union.sql` returns all per-node edges for the final hyperedge fractions.
-- **BigQuery-only:** `..._bigquery_union.sql` runs the entire iterative set-cover in SQL.
+- `..._prepare_union.sql` scans the source once and returns precomputed edges; Python runs the set-cover loop; `..._all_edges_union.sql` returns all per-node edges for the final hyperedge fractions.
+- `..._unexplained_hops_union.sql` performs path-local attribution for measurements not covered by the set-cover result.
 
-Both backends: (1) pre-compute (measurement, edge) pairs from forward/reverse AS paths; (2) iteratively select the edge explaining the most unexplained anomalous (ASN, city, site) groups by anomalous-vs-non-anomalous frequency ratio; (3) stop at 95% explained, no candidate edges, or 200 iterations; (4) build a hyperedge summary with per-node culprit fractions at ASN-metro, ASN, and metro granularities.
+Pipeline: (1) pre-compute (measurement, edge) pairs from forward/reverse AS paths; (2) iteratively select the edge explaining the most unexplained anomalous (ASN, city, site) groups by anomalous-vs-non-anomalous frequency ratio; (3) stop at 95% explained, no candidate edges, or 200 iterations; (4) build a hyperedge summary with per-node culprit fractions at ASN-metro, ASN, and metro granularities.
 
 ## Output tables
 
@@ -179,7 +179,7 @@ Both backends: (1) pre-compute (measurement, edge) pairs from forward/reverse AS
 | `hermes_union.transient_events_union` | No | Measurements with traceroute paths attached |
 | `hermes_union.events_with_as_and_geoloc` | `partition_date` | Final enriched events with geolocated hops |
 | `hermes_union.giga_meter_measurements` | No | Subset of events from GIGA school measurements |
-| `hermes_union.correlation_hyperedges_tomography` | `partition_date` | Culprit edges from iterative tomography |
+| `hermes_union.correlation_hyperedges_tomography_v2` | `partition_date` | Culprit edges from iterative tomography |
 | `hermes_union.temporal_correlations` | `partition_date` | Before/during edge frequency ratios |
 | `hermes_union.giga_school_ips` | No | School IPs for GIGA identification (loaded separately) |
 
@@ -209,9 +209,9 @@ src/hermes/sql/queries/
   03_build_transient_events_union.sql             Step 03  (Phase A)
   04_mapping_union.sql                            Step 04  (Phase C; includes giga-meter output)
   05_temporal_tomography_union.sql                Step 05  (Phase C)
-  06_correlation_tomography_prepare_union.sql     Step 06  (Phase D; Python backend, phase 1)
-  06_correlation_tomography_all_edges_union.sql   Step 06  (Phase D; Python backend, phase 2)
-  06_correlation_tomography_bigquery_union.sql    Step 06  (Phase D; alternate BigQuery-only backend)
+  06_correlation_tomography_prepare_union.sql     Step 06  (Phase D; Python hybrid, phase 1: edge extraction)
+  06_correlation_tomography_all_edges_union.sql   Step 06  (Phase D; Python hybrid, phase 2: all-edges for fractions)
+  06_correlation_tomography_unexplained_hops_union.sql  Step 06  (Phase D; path-local attribution for unexplained measurements)
 
   # Enrichment helpers (Phase B; run by enrichment/main.py, not numbered steps)
   enrich_geolocation_add_metro.sql                rebuilds hermes.geolocation with metro
