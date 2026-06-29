@@ -25,7 +25,7 @@ SQL_FILES_PRE_ENRICHMENT = [
 
 SQL_FILES_POST_ENRICHMENT = [
     "04_mapping_union.sql",
-    # correlation tomography now runs as a hybrid Python+SQL step (Phase D)
+    # correlation tomography now runs as a Python v2 step (Phase D)
     "05_temporal_tomography_union.sql",
 ]
 
@@ -45,7 +45,7 @@ OUTPUT_TABLES = [
 # Used for per-step resume: if the table already has data for a date, skip that step.
 SQL_FILE_TO_OUTPUT_TABLE = dict(zip(SQL_FILES, OUTPUT_TABLES, strict=True))
 
-FINAL_OUTPUT_TABLE = "mlab-collaboration.hermes_union.correlation_hyperedges_tomography"
+FINAL_OUTPUT_TABLE = "mlab-collaboration.hermes_union.correlation_hyperedges_tomography_v2"
 
 
 def print_active_credentials() -> None:
@@ -501,7 +501,7 @@ def run_dates(
     - **Phase B** — Enrichment once (geolocation + rDNS for topology IPs,
       covering all dates via the 30-day lookback window).
     - **Phase C** — SQL steps 04 + temporal tomography for all dates in parallel.
-    - **Phase D** — Hybrid Python+SQL correlation tomography for all dates.
+    - **Phase D** — Python v2 correlation tomography for all dates.
 
     Parameters
     ----------
@@ -517,7 +517,7 @@ def run_dates(
     dry_run
         When ``True``, log what would run without executing any queries.
     tomography_backend
-        Backend for Phase D: ``"python"`` (default) or ``"bigquery"``.
+        Correlation tomography backend (python v2 hybrid).
     """
     if not dates:
         logger.info("No dates to process.")
@@ -530,7 +530,7 @@ def run_dates(
                 logger.info(f"[DRY RUN] Would execute: {sql_file} with DAY={day_str}")
             logger.info(f"[DRY RUN] Would run enrichment for DAY={day_str}")
             logger.info(
-                f"[DRY RUN] Would run correlation tomography ({tomography_backend}) for DAY={day_str}"
+                f"[DRY RUN] Would run correlation tomography (python v2) for DAY={day_str}"
             )
         return
 
@@ -578,7 +578,7 @@ def run_dates(
         skip_data_check=True,  # no data check needed for step 04
     )
 
-    # ── Phase D: hybrid correlation tomography (parallel across dates) ──
+    # ── Phase D: Python v2 correlation tomography (parallel across dates) ──
     logger.info(
         f"═══ Phase D: Running correlation tomography for {len(successful_dates)} date(s) ═══"
     )
@@ -639,9 +639,9 @@ def main() -> None:
     )
     parser.add_argument(
         "--tomography-backend",
-        choices=["python", "bigquery"],
+        choices=["python"],
         default="python",
-        help="Correlation tomography implementation (default: python hybrid)",
+        help="Correlation tomography backend (python v2 hybrid)",
     )
     parser.add_argument(
         "--no-auto-baseline",
