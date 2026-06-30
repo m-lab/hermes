@@ -529,9 +529,7 @@ def run_dates(
             for sql_file in SQL_FILES:
                 logger.info(f"[DRY RUN] Would execute: {sql_file} with DAY={day_str}")
             logger.info(f"[DRY RUN] Would run enrichment for DAY={day_str}")
-            logger.info(
-                f"[DRY RUN] Would run correlation tomography (python v2) for DAY={day_str}"
-            )
+            logger.info(f"[DRY RUN] Would run correlation tomography (python v2) for DAY={day_str}")
         return
 
     # Pre-flight: ensure every date's anomaly-detection baseline window exists.
