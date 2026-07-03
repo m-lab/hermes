@@ -13,6 +13,7 @@ DDL_FILES = [
     "create_correlation_hyperedges_tomography_v2.sql",
     "create_temporal_path_verdicts.sql",
     "create_events_explained_daily.sql",
+    "create_place_canonical_metro.sql",
 ]
 
 

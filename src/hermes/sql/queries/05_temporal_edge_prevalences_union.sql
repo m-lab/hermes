@@ -1,4 +1,4 @@
--- temporal_edge_prevalences.sql
+-- 05_temporal_edge_prevalences_union.sql
 -- Per (group, direction, edge): prevalence in the usual (healthy) route U vs the
 -- day-of anomalous route D, with per-hop RTT for congestion localization.
 -- Parameters: ${DAY}

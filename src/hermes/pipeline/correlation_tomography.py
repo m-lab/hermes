@@ -6,7 +6,7 @@ Phase 2 (Python): Greedy set-cover loop
 Phase 3 (SQL): Download all_edges_per_node → compute hyperedges in Python → upload
 
 No intermediate BigQuery tables — only reads from events_with_as_and_geoloc
-and writes to correlation_hyperedges_tomography.
+and writes to correlation_hyperedges_tomography_v2.
 
 Usage:
     python correlation_tomography.py --date 2026-05-15
@@ -1213,6 +1213,7 @@ def run_correlation_tomography(
     project_id: str = PROJECT_ID,
     max_iterations: int = 200,
     no_progress_limit: int = 5,
+    write_multigranularity: bool = False,
 ) -> None:
     """Run the full hybrid correlation tomography pipeline for one date.
 
@@ -1239,6 +1240,9 @@ def run_correlation_tomography(
     no_progress_limit
         Stop early after this many consecutive iterations with zero new
         anomalies explained.
+    write_multigranularity
+        also compute/write the out-of-scope multigranularity tables (default
+        False; requires their DDLs to exist).
     """
     day_str = date.strftime("%Y-%m-%d")
     client = bigquery.Client(project=project_id)
@@ -1285,46 +1289,47 @@ def run_correlation_tomography(
     compute_hyperedges(client, culprits, day_str, all_edges=all_edges)
 
     # Phase 4: multi-granularity cover (edge→node→AS→metro→IXP) + path-local tail.
-    logger.info(f"[{day_str}] Phase 4: multi-granularity cover...")
-    multigran, entity_stats = run_mixed_granularity_cover(edges_df, all_edges, day_str)
-    upload_entity_stats(client, entity_stats, day_str)
-    # Fold in path-local attribution for anomalies the correlation cover left
-    # unexplained (singletons), so the table is the complete attribution.
-    explained_mg = {p for c in multigran for p in c.get("anomalous_src_dst_pairs_impacted", [])}
-    pl_mg = attribute_unexplained(client, day_str, explained_mg, anomalous_pairs)
-    for r in pl_mg:
-        impacted = r.get("anomalous_src_dst_pairs_impacted", [])
-        multigran.append(
-            {
-                "day": day_str,
-                "partition_date": day_str,
-                "information_source": r.get("information_source"),
-                "granularity": "edge",
-                "entity": r.get("canonical_edge"),
-                "attribution_method": "path_local",
-                "demoted_from": None,
-                "iteration_number": None,
-                "anomalies_explained": len(impacted),
-                "ratio_anomaly": None,
-                "p_value": None,
-                "odds_ratio": None,
-                "support_anomalous": None,
-                "support_healthy": None,
-                "anomalous_src_dst_pairs_impacted": impacted,
-            }
+    if write_multigranularity:
+        logger.info(f"[{day_str}] Phase 4: multi-granularity cover...")
+        multigran, entity_stats = run_mixed_granularity_cover(edges_df, all_edges, day_str)
+        upload_entity_stats(client, entity_stats, day_str)
+        # Fold in path-local attribution for anomalies the correlation cover left
+        # unexplained (singletons), so the table is the complete attribution.
+        explained_mg = {p for c in multigran for p in c.get("anomalous_src_dst_pairs_impacted", [])}
+        pl_mg = attribute_unexplained(client, day_str, explained_mg, anomalous_pairs)
+        for r in pl_mg:
+            impacted = r.get("anomalous_src_dst_pairs_impacted", [])
+            multigran.append(
+                {
+                    "day": day_str,
+                    "partition_date": day_str,
+                    "information_source": r.get("information_source"),
+                    "granularity": "edge",
+                    "entity": r.get("canonical_edge"),
+                    "attribution_method": "path_local",
+                    "demoted_from": None,
+                    "iteration_number": None,
+                    "anomalies_explained": len(impacted),
+                    "ratio_anomaly": None,
+                    "p_value": None,
+                    "odds_ratio": None,
+                    "support_anomalous": None,
+                    "support_healthy": None,
+                    "anomalous_src_dst_pairs_impacted": impacted,
+                }
+            )
+        # recompute cumulative over the combined list
+        cum = 0
+        total = len(anomalous_pairs) or 1
+        for c in multigran:
+            cum += c.get("anomalies_explained", 0)
+            c["cumulative_anomalies_explained"] = cum
+            c["cumulative_fraction_explained"] = cum / total
+        logger.info(
+            f"[{day_str}] Phase 4: {len(multigran)} culprits "
+            f"({len(pl_mg)} path-local), {cum}/{total} explained"
         )
-    # recompute cumulative over the combined list
-    cum = 0
-    total = len(anomalous_pairs) or 1
-    for c in multigran:
-        cum += c.get("anomalies_explained", 0)
-        c["cumulative_anomalies_explained"] = cum
-        c["cumulative_fraction_explained"] = cum / total
-    logger.info(
-        f"[{day_str}] Phase 4: {len(multigran)} culprits "
-        f"({len(pl_mg)} path-local), {cum}/{total} explained"
-    )
-    upload_multigranularity(client, multigran, day_str)
+        upload_multigranularity(client, multigran, day_str)
 
     logger.info(f"[{day_str}] Done")
 

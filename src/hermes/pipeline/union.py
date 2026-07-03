@@ -30,7 +30,7 @@ SQL_FILES_POST_ENRICHMENT = [
 ]
 
 # Phase E: aggregate + root-cause join into the public-events table. Runs AFTER
-# Phase D because it reads correlation_hyperedges_tomography (a Phase-D output).
+# Phase D because it reads correlation_hyperedges_tomography_v2 (a Phase-D output).
 SQL_FILES_PUBLIC = [
     "07_translating_to_public_format_union.sql",
 ]
@@ -611,7 +611,7 @@ def run_dates(
             results_d = pool.map(_run_tomography_worker, worker_args)
 
     # ── Phase E: public-format aggregation (parallel across dates) ──────
-    # Runs after Phase D: reads correlation_hyperedges_tomography to attach
+    # Runs after Phase D: reads correlation_hyperedges_tomography_v2 to attach
     # root-cause entities, writing the public events_explained_daily table.
     logger.info(
         f"═══ Phase E: Building public events table for {len(successful_dates)} date(s) ═══"

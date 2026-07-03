@@ -20,7 +20,7 @@ def test_step_templates_and_targets_union_table():
     assert "mlab-collaboration.hermes_union.events_explained_daily" in sql
     # Reads union inputs
     assert "mlab-collaboration.hermes_union.events_with_as_and_geoloc" in sql
-    assert "mlab-collaboration.hermes_union.correlation_hyperedges_tomography" in sql
+    assert "mlab-collaboration.hermes_union.correlation_hyperedges_tomography_v2" in sql
 
 
 def test_step_has_no_legacy_references():

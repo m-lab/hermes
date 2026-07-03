@@ -241,6 +241,9 @@ src/hermes/sql/queries/
   create_correlation_hyperedges_tomography_v2.sql  creates hermes_union.correlation_hyperedges_tomography_v2
   create_temporal_path_verdicts.sql                creates hermes_union.temporal_path_verdicts
   create_events_explained_daily.sql                creates hermes_union.events_explained_daily
+  create_place_canonical_metro.sql                 creates hermes_union.place_canonical_metro (optional lookup;
+                                                   created empty — LEFT JOINs in 05/06 degrade safely when empty;
+                                                   populate later if canonical metro overrides are desired)
 
   # Enrichment helpers (Phase B; run by enrichment/main.py, not numbered steps)
   enrich_geolocation_add_metro.sql                rebuilds hermes.geolocation with metro
