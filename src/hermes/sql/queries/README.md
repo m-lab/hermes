@@ -77,14 +77,20 @@ The enrichment step (Phase B) updates `unified_ip_to_geoloc`, `unified_ip_to_rdn
 
 ## Pipeline architecture
 
-The orchestrator (`hermes_pipeline_union.py`) runs three phases per batch of dates:
+The orchestrator (`hermes_pipeline_union.py`) runs five phases per batch of dates:
 
 ```
 Phase A ── SQL steps 01-03 (parallel across dates)
   │
 Phase B ── Enrichment: geolocate + rDNS new topology IPs (once per batch)
   │
-Phase C ── SQL steps 04 + tomography (parallel across dates)
+Phase C ── SQL steps 04 + temporal tomography (parallel across dates)
+  │
+Phase D ── Python v2 correlation tomography + temporal verdict (parallel across dates)
+  │         writes: correlation_hyperedges_tomography_v2, temporal_path_verdicts
+  │
+Phase E ── SQL step 07: public-format aggregation (parallel across dates)
+            writes: events_explained_daily
 ```
 
 Multiple dates in a batch run in parallel (one worker per date). Within each date, steps run sequentially.
@@ -156,6 +162,12 @@ Also writes the GIGA-meter subset: rows where `client_name = 'giga-meter'` OR th
 
 Runs in Phase C alongside Step 04. Single-pass before/during comparison: for each edge in the forward AS path, computes the fraction of paths traversing it during anomalies vs. during the 7-day baseline. A high ratio indicates the edge appeared disproportionately during the anomaly.
 
+**Temporal v2 (Phase D):** `05_temporal_edge_prevalences_union.sql` + `temporal_verdict.py`
+**Reads:** `hermes_union.events_with_as_and_geoloc`
+**Writes:** `hermes_union.temporal_path_verdicts`
+
+Runs in Phase D alongside Step 06 (correlation v2). Computes per-path temporal verdict scores that indicate whether a given path's edge prevalence during anomalies is statistically elevated vs. baseline. `temporal_verdict.py` orchestrates the SQL query and writes structured verdict rows to `temporal_path_verdicts`. The dashboard reads `temporal_path_verdicts` alongside `events_explained_daily`.
+
 ### Step 06: Correlation tomography
 
 **SQL (Python hybrid backend):** `06_correlation_tomography_prepare_union.sql` + `06_correlation_tomography_all_edges_union.sql`
@@ -170,6 +182,14 @@ Runs in Phase D. Iterative greedy set-cover that identifies culprit network edge
 
 Pipeline: (1) pre-compute (measurement, edge) pairs from forward/reverse AS paths; (2) iteratively select the edge explaining the most unexplained anomalous (ASN, city, site) groups by anomalous-vs-non-anomalous frequency ratio; (3) stop at 95% explained, no candidate edges, or 200 iterations; (4) build a hyperedge summary with per-node culprit fractions at ASN-metro, ASN, and metro granularities.
 
+### Step 07: Public-format (events_explained_daily)
+
+**SQL:** `07_translating_to_public_format_union.sql`
+**Reads:** `hermes_union.events_with_as_and_geoloc`, `hermes_union.correlation_hyperedges_tomography_v2`, `hermes.as_metadata`
+**Writes:** `hermes_union.events_explained_daily`
+
+Runs in Phase E (after Phase D). DELETE+INSERT per day: first deletes existing rows for the partition date, then inserts the rebuilt set. Joins the anomalous (ASN, city, site) groups from `events_with_as_and_geoloc` with the culprit-edge results from `correlation_hyperedges_tomography_v2` (resolved groups) and marks remaining groups as unresolved. Attaches AS names from `as_metadata`, computes distance extents and anomaly-site summaries, and produces the final public event rows. The dashboard reads `events_explained_daily` alongside `temporal_path_verdicts`.
+
 ## Output tables
 
 | Table | Partitioned | Description |
@@ -179,15 +199,17 @@ Pipeline: (1) pre-compute (measurement, edge) pairs from forward/reverse AS path
 | `hermes_union.transient_events_union` | No | Measurements with traceroute paths attached |
 | `hermes_union.events_with_as_and_geoloc` | `partition_date` | Final enriched events with geolocated hops |
 | `hermes_union.giga_meter_measurements` | No | Subset of events from GIGA school measurements |
-| `hermes_union.correlation_hyperedges_tomography_v2` | `partition_date` | Culprit edges from iterative tomography |
-| `hermes_union.temporal_correlations` | `partition_date` | Before/during edge frequency ratios |
+| `hermes_union.temporal_correlations` | `partition_date` | Before/during edge frequency ratios (Step 05, Phase C) |
+| `hermes_union.correlation_hyperedges_tomography_v2` | `partition_date` | Culprit edges from iterative tomography v2 (Phase D) |
+| `hermes_union.temporal_path_verdicts` | `partition_date` | Temporal verdict scores per path edge (Phase D; read by dashboard) |
+| `hermes_union.events_explained_daily` | `partition_date` | Public event table with resolved/unresolved attribution (Phase E; read by dashboard) |
 | `hermes_union.giga_school_ips` | No | School IPs for GIGA identification (loaded separately) |
 
 ## Resume and idempotency
 
 - The pipeline checks each output table for existing data before running each step. If a date already has rows, that step is skipped.
 - To force a re-run: use `--rerun-dates` with `--delete-first` to clear existing rows first.
-- The `FINAL_OUTPUT_TABLE` (`temporal_correlations`) is checked at startup to skip fully-processed dates entirely.
+- The `FINAL_OUTPUT_TABLE` (`events_explained_daily`) is checked at startup to skip fully-processed dates entirely.
 
 ## Monitoring cost
 
@@ -208,10 +230,17 @@ src/hermes/sql/queries/
   02_detect_anomalies_union.sql                   Step 02  (Phase A)
   03_build_transient_events_union.sql             Step 03  (Phase A)
   04_mapping_union.sql                            Step 04  (Phase C; includes giga-meter output)
-  05_temporal_tomography_union.sql                Step 05  (Phase C)
+  05_temporal_tomography_union.sql                Step 05  (Phase C; temporal_correlations)
+  05_temporal_edge_prevalences_union.sql          Step 05v2 (Phase D; temporal_path_verdicts, via temporal_verdict.py)
   06_correlation_tomography_prepare_union.sql     Step 06  (Phase D; Python hybrid, phase 1: edge extraction)
   06_correlation_tomography_all_edges_union.sql   Step 06  (Phase D; Python hybrid, phase 2: all-edges for fractions)
   06_correlation_tomography_unexplained_hops_union.sql  Step 06  (Phase D; path-local attribution for unexplained measurements)
+  07_translating_to_public_format_union.sql       Step 07  (Phase E; events_explained_daily; DELETE+INSERT per day)
+
+  # One-time bootstrap DDLs (CREATE TABLE IF NOT EXISTS; run via python -m hermes.pipeline.bootstrap_tables)
+  create_correlation_hyperedges_tomography_v2.sql  creates hermes_union.correlation_hyperedges_tomography_v2
+  create_temporal_path_verdicts.sql                creates hermes_union.temporal_path_verdicts
+  create_events_explained_daily.sql                creates hermes_union.events_explained_daily
 
   # Enrichment helpers (Phase B; run by enrichment/main.py, not numbered steps)
   enrich_geolocation_add_metro.sql                rebuilds hermes.geolocation with metro

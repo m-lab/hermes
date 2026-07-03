@@ -198,32 +198,6 @@ WITH
       WHERE partition_date = '${DAY}'
     )
   ),
-anomalies AS (
-      SELECT DISTINCT CONCAT(fr.src_asn, ' - ', fr.src_city, ' - ', fr.dst_site) AS src_dst_pair
-      FROM `mlab-collaboration.hermes_union.events_with_as_and_geoloc` AS fr
-        WHERE
-      -- revtr_stop_reason = 'REACHES'
-      DATE(window_start) >= partition_date AND partition_date = '${DAY}'
-      AND (
-          (fr.anomaly_ratio_rtt >= 0.8
-            AND fr.ndt_rtt > fr.baseline_median_rtt + 5
-            AND fr.anomaly_rtt_count >= 0.5)
-          OR
-          (fr.anomaly_ratio_throughput >= 0.8
-            AND fr.ndt_throughput < fr.baseline_median_throughput
-            AND fr.anomaly_throughput_count >= 0.5)
-        )
-      AND NOT EXISTS (
-        SELECT 1
-        FROM UNNEST(reverse_updated_node_details) AS node
-        WHERE node.is_interdomain_symmetry = TRUE OR node.is_fishy_type_4 = TRUE
-      )
-      AND NOT EXISTS (
-        SELECT 1
-        FROM UNNEST(forward_updated_node_details) AS node
-        WHERE node.distance_rtt_check = 'Above threshold'
-      )
-),
 combined AS (
   -- Step 4: Combine resolved and unresolved anomalies
   SELECT

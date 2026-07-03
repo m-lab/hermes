@@ -631,7 +631,7 @@ def run_dates(
     failed = [r for r in all_results if r.startswith("Error:")]
 
     logger.info("Pipeline completed:")
-    logger.info(f"  Phase A+C successful: {len(successful)}")
+    logger.info(f"  Pipeline steps successful: {len(successful)}")
     logger.info(f"  Skipped: {len(skipped)}")
     logger.info(f"  Failed: {len(failed)}")
     if failed:
