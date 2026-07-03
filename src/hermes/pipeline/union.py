@@ -29,7 +29,13 @@ SQL_FILES_POST_ENRICHMENT = [
     "05_temporal_tomography_union.sql",
 ]
 
-SQL_FILES = SQL_FILES_PRE_ENRICHMENT + SQL_FILES_POST_ENRICHMENT
+# Phase E: aggregate + root-cause join into the public-events table. Runs AFTER
+# Phase D because it reads correlation_hyperedges_tomography (a Phase-D output).
+SQL_FILES_PUBLIC = [
+    "07_translating_to_public_format_union.sql",
+]
+
+SQL_FILES = SQL_FILES_PRE_ENRICHMENT + SQL_FILES_POST_ENRICHMENT + SQL_FILES_PUBLIC
 
 OUTPUT_TABLES = [
     "mlab-collaboration.hermes_union.merged_download_upload",
@@ -39,13 +45,17 @@ OUTPUT_TABLES = [
     # AND giga_meter_measurements from a single computation (no separate step 05).
     "mlab-collaboration.hermes_union.events_with_as_and_geoloc",
     "mlab-collaboration.hermes_union.temporal_correlations",
+    # Phase E public-events table.
+    "mlab-collaboration.hermes_union.events_explained_daily",
 ]
 
 # Maps each SQL file to the output table it writes to.
 # Used for per-step resume: if the table already has data for a date, skip that step.
 SQL_FILE_TO_OUTPUT_TABLE = dict(zip(SQL_FILES, OUTPUT_TABLES, strict=True))
 
-FINAL_OUTPUT_TABLE = "mlab-collaboration.hermes_union.correlation_hyperedges_tomography_v2"
+# The pipeline's true final output. main() uses this for the "already processed"
+# resume check, so it must be the Phase-E table — not the tomography table.
+FINAL_OUTPUT_TABLE = "mlab-collaboration.hermes_union.events_explained_daily"
 
 
 def print_active_credentials() -> None:
@@ -540,6 +550,7 @@ def run_dates(
             logger.info(
                 f"[DRY RUN] Would run correlation + temporal tomography (python v2) for DAY={day_str}"
             )
+            logger.info(f"[DRY RUN] Would run public-format step (Phase E) for DAY={day_str}")
         return
 
     # Pre-flight: ensure every date's anomaly-detection baseline window exists.
@@ -599,8 +610,22 @@ def run_dates(
         with mp.Pool(processes=effective_workers) as pool:
             results_d = pool.map(_run_tomography_worker, worker_args)
 
+    # ── Phase E: public-format aggregation (parallel across dates) ──────
+    # Runs after Phase D: reads correlation_hyperedges_tomography to attach
+    # root-cause entities, writing the public events_explained_daily table.
+    logger.info(
+        f"═══ Phase E: Building public events table for {len(successful_dates)} date(s) ═══"
+    )
+    results_e = _run_parallel_sql(
+        successful_dates,
+        project_id,
+        SQL_FILES_PUBLIC,
+        max_workers,
+        skip_data_check=True,
+    )
+
     # ── Summary ───────────────────────────────────────────────────────────
-    all_results = results_a + results_c + results_d
+    all_results = results_a + results_c + results_d + results_e
     successful = [r for r in all_results if r.startswith("Success:")]
     skipped = [r for r in all_results if r.startswith("Skipped:")]
     failed = [r for r in all_results if r.startswith("Error:")]
