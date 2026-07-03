@@ -432,14 +432,22 @@ def _run_sql_steps_worker(args):
 
 
 def _run_tomography_worker(args):
-    """Worker function for parallel correlation tomography."""
+    """Worker: correlation v2 then temporal v2 for one date (parallel-safe)."""
     date, project_id, backend = args
     day_str = date.strftime("%Y-%m-%d")
     try:
-        run_tomography(date, backend=backend, project_id=project_id)
+        run_tomography(
+            date, backend=backend, project_id=project_id
+        )  # → correlation_hyperedges_tomography_v2
+        from hermes.pipeline import temporal_verdict
+
+        client = bigquery.Client(project=project_id)
+        if not temporal_verdict.verdicts_exist(client, day_str):
+            rows = temporal_verdict.compute_temporal_verdicts(client, day_str)
+            temporal_verdict.write_verdicts(client, rows)
         return f"Success: {day_str}"
     except Exception as e:
-        logger.error(f"Error in correlation tomography for {day_str}: {e}")
+        logger.error(f"Error in Phase D (correlation+temporal) for {day_str}: {e}")
         return f"Error: {day_str} - {e}"
 
 
@@ -529,7 +537,9 @@ def run_dates(
             for sql_file in SQL_FILES:
                 logger.info(f"[DRY RUN] Would execute: {sql_file} with DAY={day_str}")
             logger.info(f"[DRY RUN] Would run enrichment for DAY={day_str}")
-            logger.info(f"[DRY RUN] Would run correlation tomography (python v2) for DAY={day_str}")
+            logger.info(
+                f"[DRY RUN] Would run correlation + temporal tomography (python v2) for DAY={day_str}"
+            )
         return
 
     # Pre-flight: ensure every date's anomaly-detection baseline window exists.
@@ -576,9 +586,9 @@ def run_dates(
         skip_data_check=True,  # no data check needed for step 04
     )
 
-    # ── Phase D: Python v2 correlation tomography (parallel across dates) ──
+    # ── Phase D: Python v2 correlation + temporal tomography (parallel across dates) ──
     logger.info(
-        f"═══ Phase D: Running correlation tomography for {len(successful_dates)} date(s) ═══"
+        f"═══ Phase D: Running correlation + temporal tomography for {len(successful_dates)} date(s) ═══"
     )
     effective_workers = max_workers or min(mp.cpu_count(), len(successful_dates))
     worker_args = [(date, project_id, tomography_backend) for date in successful_dates]

@@ -155,3 +155,10 @@ def write_verdicts(client, rows: list[dict]) -> None:
     errors = client.insert_rows_json(_VERDICTS, rows)
     if errors:
         raise RuntimeError(f"temporal_path_verdicts insert failed: {errors[:3]}")
+
+
+def verdicts_exist(client, day_str: str) -> bool:
+    """True if temporal_path_verdicts already has rows for day_str."""
+    from hermes.pipeline.correlation_tomography import step_already_done
+
+    return step_already_done(client, _VERDICTS, day_str)
