@@ -227,3 +227,6 @@ wrapper_automation/cache/
 
 # macOS zdns binary (Docker builds its own Linux binary)
 wrapper_automation/rDNS_processing/zdns
+
+# SDD scratch (subagent-driven-development workspace)
+.superpowers/
