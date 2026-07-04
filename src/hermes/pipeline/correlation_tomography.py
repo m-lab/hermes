@@ -6,7 +6,7 @@ Phase 2 (Python): Greedy set-cover loop
 Phase 3 (SQL): Download all_edges_per_node → compute hyperedges in Python → upload
 
 No intermediate BigQuery tables — only reads from events_with_as_and_geoloc
-and writes to correlation_hyperedges_tomography.
+and writes to correlation_hyperedges_tomography_v2.
 
 Usage:
     python correlation_tomography.py --date 2026-05-15
@@ -23,6 +23,7 @@ from datetime import datetime, timedelta
 import numpy as np
 import pandas as pd
 from google.cloud import bigquery
+from scipy.stats import fisher_exact
 
 from hermes.sql import loader
 
@@ -30,6 +31,67 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 PROJECT_ID = "mlab-collaboration"
+
+
+def _read_df(query_job) -> pd.DataFrame:
+    """Materialize a query job to a DataFrame via the Arrow-based BigQuery Storage
+    Read API, which is far faster than the REST/paginated path for the multi-million
+    row edge/hop downloads. Falls back to REST if the storage client is unavailable.
+    """
+    try:
+        from google.cloud import bigquery_storage  # type: ignore[attr-defined]
+
+        return query_job.to_dataframe(bqstorage_client=bigquery_storage.BigQueryReadClient())
+    except Exception as exc:  # pragma: no cover - REST fallback path
+        logger.warning("  Storage Read API unavailable (%s); using REST download", exc)
+        return query_job.to_dataframe()
+
+
+# Confidence-tier cutoffs (Phase 1 defaults; tune in Phase 4 validation).
+# A culprit is only "strong" when it is statistically significant AND the effect
+# size is meaningful (odds_ratio): with large N, tiny over-representations (odds~1.2)
+# are highly significant but are not real bottlenecks, so p-value alone is not enough.
+_STRONG_P = 0.01
+_STRONG_MIN_SUPPORT = 3
+_STRONG_MIN_ODDS = 2.0
+
+
+def edge_significance(
+    anom_through: int, anom_total: int, healthy_through: int, healthy_total: int
+) -> tuple[float, float]:
+    """One-sided Fisher's exact that an edge is over-represented on anomalous paths.
+
+    Returns (p_value, odds_ratio). odds_ratio may be math.inf when healthy_through == 0.
+    """
+    a = anom_through
+    b = max(anom_total - anom_through, 0)
+    c = healthy_through
+    d = max(healthy_total - healthy_through, 0)
+    odds, p = fisher_exact([[a, b], [c, d]], alternative="greater")
+    return float(p), float(odds)
+
+
+def confidence_tier(
+    p_value: float | None, support_anom: int, method: str, odds_ratio: float | None = None
+) -> str:
+    """Map significance + support + effect size + method to a display tier.
+
+    "strong" requires statistical significance (p), adequate support, AND a
+    meaningful effect size (odds_ratio >= _STRONG_MIN_ODDS) so that large-N but
+    barely-over-represented edges are not over-trusted. odds_ratio may be inf
+    (perfectly discriminative: zero healthy paths), which counts as strong.
+    """
+    if method == "path_local":
+        return "path_local"
+    if (
+        p_value is not None
+        and p_value <= _STRONG_P
+        and support_anom >= _STRONG_MIN_SUPPORT
+        and odds_ratio is not None
+        and odds_ratio >= _STRONG_MIN_ODDS
+    ):
+        return "strong"
+    return "weak"
 
 
 def _sanitize_for_json(obj):
@@ -43,7 +105,58 @@ def _sanitize_for_json(obj):
     return obj
 
 
-OUTPUT_TABLE = f"{PROJECT_ID}.hermes_union.correlation_hyperedges_tomography"
+OUTPUT_TABLE = f"{PROJECT_ID}.hermes_union.correlation_hyperedges_tomography_v2"
+
+
+def attribute_unexplained(
+    client, day_str: str, explained_pairs: set[str], anomalous_pairs: set[str]
+) -> list[dict]:
+    """Path-local culprits for ANOMALOUS src_dst_pairs not covered by set-cover.
+
+    `anomalous_pairs` bounds attribution to the day's anomalous groups only — without
+    it, the hops query (which carries every measurement's path) would emit a culprit
+    for tens of thousands of non-anomalous pairs.
+    """
+    from hermes.pipeline.path_local_attribution import localize_on_path
+
+    targets = anomalous_pairs - explained_pairs
+    if not targets:
+        return []
+    sql = loader.load_query(
+        "06_correlation_tomography_unexplained_hops_union.sql", {"DAY": day_str}
+    )
+    hops_df = _read_df(client.query(sql))
+    if hops_df.empty:
+        return []
+    rows: list[dict] = []
+    for sdp, g in hops_df.groupby("src_dst_pair"):
+        if sdp not in targets:
+            continue
+        # prefer forward; fall back to reverse
+        for src in ("forward", "reverse"):
+            hops = g[g["information_source"] == src].to_dict("records")
+            seg = localize_on_path(hops)
+            if seg:
+                rows.append(
+                    _sanitize_for_json(
+                        {
+                            "canonical_edge": f"{seg['from_node']} - {seg['to_node']}",
+                            "day": day_str,
+                            "partition_date": day_str,
+                            "information_source": src,
+                            "is_interdomain": "undetermined",
+                            "attribution_method": "path_local",
+                            "confidence_tier": "path_local",
+                            "reason": seg["reason"],
+                            "anomalous_src_dst_pairs_impacted": [sdp],
+                            "src_dst_pairs_impacted": [sdp],
+                            "anomalies_explained_by_edge": 1,
+                            "paths": [],
+                        }
+                    )
+                )
+                break
+    return rows
 
 
 def step_already_done(client: bigquery.Client, table_name: str, day_str: str) -> bool:
@@ -93,7 +206,7 @@ def download_edges(client: bigquery.Client, day_str: str) -> pd.DataFrame:
     logger.info("  Phase 1: extracting edges from BigQuery...")
     params: dict[str, object] = {"DAY": day_str}
     sql = loader.load_query("06_correlation_tomography_prepare_union.sql", params)
-    df = client.query(sql).to_dataframe()
+    df = _read_df(client.query(sql))
     logger.info(f"  Downloaded {len(df):,} edge rows")
     return df
 
@@ -110,6 +223,10 @@ def run_greedy_set_cover(
     no_progress_limit: int = 5,
     min_marginal_gain: float = 0.01,
     marginal_window: int = 10,
+    alpha: float = 0.01,
+    purity_threshold: float = 0.0,
+    min_support: int = 2,
+    min_odds: float = 1.5,
 ) -> tuple[list[dict], int]:
     """Run the iterative greedy set-cover loop entirely in memory.
 
@@ -133,6 +250,15 @@ def run_greedy_set_cover(
         less than this fraction of total anomalies.
     marginal_window
         Number of recent iterations used for the marginal-gain check.
+    alpha
+        Fisher's-exact p-value threshold; candidate edges with ``p > alpha``
+        are excluded from selection.
+    purity_threshold
+        Minimum ``fraction_anomalous_paths`` required to pass the HAVING gate
+        (0.0 means no purity floor).
+    min_support
+        Minimum number of anomalous-path observations required for a candidate
+        edge (replaces the hard-coded ``anom_edge_count >= 2`` filter).
 
     Returns
     -------
@@ -312,18 +438,40 @@ def run_greedy_set_cover(
             lambda r: edge_meta_dict.get((r["edge"], r["information_source"]), ("", ""))[1], axis=1
         )
 
-        # HAVING filters
+        # --- significance per candidate (Fisher's exact on the 2x2) ---
+        candidates["support_anomalous"] = candidates["anom_edge_count"]
+        candidates["support_healthy"] = candidates["non_edge_count"]
+        # Path-level 2x2: (paths through edge) vs (all paths), anomalous vs healthy.
+        # active_ids_anom / active_ids_non are already computed above this block.
+        _anom = int(active_ids_anom)
+        _non = int(active_ids_non)
+        sig = candidates.apply(
+            lambda r, _a=_anom, _n=_non: edge_significance(
+                int(r["anom_edge_count"]), _a, int(r["non_edge_count"]), _n
+            ),
+            axis=1,
+            result_type="expand",
+        )
+        candidates["p_value"] = sig[0]
+        candidates["odds_ratio"] = sig[1]
+
+        # HAVING (parameterized): minimum support, optional purity floor,
+        # significance gate, a discriminative effect-size floor (odds_ratio) so
+        # near-1.0 edges that merely happen to be common are not attributed, and
+        # exclude unresolved (*) hops.
         candidates = candidates[
-            (candidates["anom_edge_count"] >= 2)
-            & (candidates["fraction_anomalous_paths"] >= 0.7)
+            (candidates["anom_edge_count"] >= min_support)
+            & (candidates["fraction_anomalous_paths"] >= purity_threshold)
+            & (candidates["p_value"] <= alpha)
+            & (candidates["odds_ratio"] >= min_odds)
             & (~candidates["edge"].str.contains(r"\*", na=False))
         ]
         if len(candidates) == 0:
             break
 
-        # Rank and pick top
+        # Rank coverage-first, significance as tie-break
         candidates = candidates.sort_values(
-            ["ratio_anomaly", "is_interdomain"], ascending=[False, False]
+            ["anomalies_explained_by_edge", "p_value", "edge"], ascending=[False, True, True]
         )
         top_n = max(1, int(100 / iteration) + 1)
         top = candidates.head(top_n)
@@ -364,6 +512,7 @@ def run_greedy_set_cover(
             culprit_rows.append(
                 _sanitize_for_json(
                     {
+                        "edge": row["edge"],
                         "canonical_edge": row["canonical_edge"],
                         "day": day_str,
                         "information_source": row["information_source"],
@@ -387,6 +536,19 @@ def run_greedy_set_cover(
                         ),
                         "cumulative_anomalies_explained": cumulative_explained,
                         "cumulative_fraction_anomalies_explained_so_far": cumul_fraction,
+                        "attribution_method": "correlation",
+                        "p_value": float(row["p_value"]),
+                        "odds_ratio": (
+                            None if row["odds_ratio"] == float("inf") else float(row["odds_ratio"])
+                        ),
+                        "support_anomalous": int(row["support_anomalous"]),
+                        "support_healthy": int(row["support_healthy"]),
+                        "confidence_tier": confidence_tier(
+                            float(row["p_value"]),
+                            int(row["support_anomalous"]),
+                            "correlation",
+                            float(row["odds_ratio"]),
+                        ),
                     }
                 )
             )
@@ -434,7 +596,12 @@ def run_greedy_set_cover(
 # =========================================================================
 
 
-def compute_hyperedges(client: bigquery.Client, culprit_rows: list[dict], day_str: str) -> None:
+def compute_hyperedges(
+    client: bigquery.Client,
+    culprit_rows: list[dict],
+    day_str: str,
+    all_edges: pd.DataFrame | None = None,
+) -> None:
     """Download all edges, compute node-level culprit fractions, and upload.
 
     Phase 3 of the correlation tomography pipeline:
@@ -459,12 +626,12 @@ def compute_hyperedges(client: bigquery.Client, culprit_rows: list[dict], day_st
         logger.info("  No culprits — skipping hyperedge computation")
         return
 
-    # Download all_edges_per_node
-    logger.info("  Phase 3: downloading all_edges_per_node...")
-    params: dict[str, object] = {"DAY": day_str}
-    sql = loader.load_query("06_correlation_tomography_all_edges_union.sql", params)
-    all_edges = client.query(sql).to_dataframe()
-    logger.info(f"  Downloaded {len(all_edges):,} node-edge rows")
+    # Download all_edges_per_node (unless a preloaded frame was passed in)
+    if all_edges is None:
+        logger.info("  Phase 3: downloading all_edges_per_node...")
+        sql = loader.load_query("06_correlation_tomography_all_edges_union.sql", {"DAY": day_str})
+        all_edges = _read_df(client.query(sql))
+        logger.info(f"  Downloaded {len(all_edges):,} node-edge rows")
 
     # --- Node counts at 3 granularities ---
     def node_counts(df, from_col, to_col, name):
@@ -477,6 +644,29 @@ def compute_hyperedges(client: bigquery.Client, culprit_rows: list[dict], day_st
     all_nc_am = node_counts(all_edges, "from_asn_metro", "to_asn_metro", "node_asn_metro")
     all_nc_asn = node_counts(all_edges, "from_asn", "to_asn", "node_asn")
     all_nc_metro = node_counts(all_edges, "from_metro", "to_metro", "node_metro")
+    # IXP granularity: associated_ixp per endpoint ('None' when the hop is not at an
+    # IXP). Drop 'None' so the placeholder isn't treated as a node.
+    all_nc_ixp = node_counts(all_edges, "from_ixp", "to_ixp", "node_ixp")
+    all_nc_ixp = all_nc_ixp[all_nc_ixp["node_ixp"] != "None"]
+
+    # Map each ⟨AS,metro⟩ node to its IXP (most common non-'None' association) so the
+    # set-cover culprits — which are keyed on ⟨AS,metro⟩ — can be attributed to an IXP.
+    _ixp_pairs = pd.concat(
+        [
+            all_edges[["from_asn_metro", "from_ixp"]].rename(
+                columns={"from_asn_metro": "asn_metro", "from_ixp": "ixp"}
+            ),
+            all_edges[["to_asn_metro", "to_ixp"]].rename(
+                columns={"to_asn_metro": "asn_metro", "to_ixp": "ixp"}
+            ),
+        ]
+    )
+    _ixp_pairs = _ixp_pairs[_ixp_pairs["ixp"] != "None"]
+    asn_metro_to_ixp = (
+        _ixp_pairs.groupby("asn_metro")["ixp"].agg(lambda s: s.value_counts().idxmax()).to_dict()
+        if len(_ixp_pairs)
+        else {}
+    )
 
     # --- Parse culprit edges into from/to ---
     culprits_df = pd.DataFrame(culprit_rows)
@@ -489,11 +679,15 @@ def compute_hyperedges(client: bigquery.Client, culprit_rows: list[dict], day_st
     culprits_df["to_asn"] = culprits_df["right_part"].str.split("-").str[0].str.strip()
     culprits_df["to_metro"] = culprits_df["right_part"].str.split("-").str[1].str.strip()
     culprits_df["to_asn_metro"] = culprits_df["to_asn"] + "-" + culprits_df["to_metro"]
+    culprits_df["from_ixp"] = culprits_df["from_asn_metro"].map(asn_metro_to_ixp).fillna("None")
+    culprits_df["to_ixp"] = culprits_df["to_asn_metro"].map(asn_metro_to_ixp).fillna("None")
 
     # --- Culprit node counts ---
     culp_nc_am = node_counts(culprits_df, "from_asn_metro", "to_asn_metro", "node_asn_metro")
     culp_nc_asn = node_counts(culprits_df, "from_asn", "to_asn", "node_asn")
     culp_nc_metro = node_counts(culprits_df, "from_metro", "to_metro", "node_metro")
+    culp_nc_ixp = node_counts(culprits_df, "from_ixp", "to_ixp", "node_ixp")
+    culp_nc_ixp = culp_nc_ixp[culp_nc_ixp["node_ixp"] != "None"]
 
     # --- Joined fractions ---
     def join_fractions(all_nc, culp_nc, key, prefix):
@@ -519,6 +713,7 @@ def compute_hyperedges(client: bigquery.Client, culprit_rows: list[dict], day_st
 
     j_asn = join_fractions(all_nc_asn, culp_nc_asn, "node_asn", "asn")
     j_metro = join_fractions(all_nc_metro, culp_nc_metro, "node_metro", "metro")
+    j_ixp = join_fractions(all_nc_ixp, culp_nc_ixp, "node_ixp", "ixp")
 
     # --- Build final rows (one per culprit edge) ---
     output_rows = []
@@ -551,9 +746,23 @@ def compute_hyperedges(client: bigquery.Client, culprit_rows: list[dict], day_st
                     "from_asn",
                     "from_metro",
                     "from_asn_metro",
+                    "from_ixp",
                     "to_asn",
                     "to_metro",
                     "to_asn_metro",
+                    "to_ixp",
+                ]
+            },
+            **{
+                k: c.get(k)
+                for k in [
+                    "attribution_method",
+                    "confidence_tier",
+                    "p_value",
+                    "odds_ratio",
+                    "support_anomalous",
+                    "support_healthy",
+                    "reason",
                 ]
             },
         }
@@ -583,6 +792,14 @@ def compute_hyperedges(client: bigquery.Client, culprit_rows: list[dict], day_st
             row["from_culprit_edges_metro"] = int(m["culprit_edges_for_node_metro"])
             row["from_fraction_culprit_metro"] = m["fraction_culprit_metro"]
 
+        if c["from_ixp"] != "None":
+            match_ixp = j_ixp[j_ixp["node_ixp"] == c["from_ixp"]]
+            if len(match_ixp):
+                m = match_ixp.iloc[0]
+                row["from_total_edges_ixp"] = int(m["total_edges_for_node_ixp"])
+                row["from_culprit_edges_ixp"] = int(m["culprit_edges_for_node_ixp"])
+                row["from_fraction_culprit_ixp"] = m["fraction_culprit_ixp"]
+
         # To-node stats
         match_am = j_am[j_am["node_asn_metro"] == c["to_asn_metro"]]
         if len(match_am):
@@ -605,6 +822,14 @@ def compute_hyperedges(client: bigquery.Client, culprit_rows: list[dict], day_st
             row["to_culprit_edges_metro"] = int(m["culprit_edges_for_node_metro"])
             row["to_fraction_culprit_metro"] = m["fraction_culprit_metro"]
 
+        if c["to_ixp"] != "None":
+            match_ixp = j_ixp[j_ixp["node_ixp"] == c["to_ixp"]]
+            if len(match_ixp):
+                m = match_ixp.iloc[0]
+                row["to_total_edges_ixp"] = int(m["total_edges_for_node_ixp"])
+                row["to_culprit_edges_ixp"] = int(m["culprit_edges_for_node_ixp"])
+                row["to_fraction_culprit_ixp"] = m["fraction_culprit_ixp"]
+
         output_rows.append(_sanitize_for_json(row))
 
     # Upload to BigQuery
@@ -618,6 +843,367 @@ def compute_hyperedges(client: bigquery.Client, culprit_rows: list[dict], day_st
 
 
 # =========================================================================
+# Multi-granularity cover (§4.3.2 aggregation: edge → node → AS → metro → IXP)
+# =========================================================================
+
+MULTIGRAN_TABLE = f"{PROJECT_ID}.hermes_union.correlation_culprits_multigranularity"
+ENTITY_STATS_TABLE = f"{PROJECT_ID}.hermes_union.correlation_entity_stats_multigranularity"
+_GRAN_RANK = {"edge": 0, "node": 1, "AS": 2, "metro": 2, "IXP": 2}  # 0/1 = fine, 2 = coarse
+
+
+def _node_ixp_map(all_edges: pd.DataFrame) -> dict:
+    """Map each ⟨AS,metro⟩ node to its most common non-'None' IXP."""
+    m: dict = {}
+    for cn, ci in [("from_asn_metro", "from_ixp"), ("to_asn_metro", "to_ixp")]:
+        s = (
+            all_edges[all_edges[ci] != "None"]
+            .groupby(cn)[ci]
+            .agg(lambda x: x.value_counts().idxmax())
+        )
+        m.update(s.to_dict())
+    return m
+
+
+def run_mixed_granularity_cover(
+    edges_df: pd.DataFrame,
+    all_edges: pd.DataFrame,
+    day_str: str,
+    *,
+    alpha: float = 0.01,
+    min_support: int = 2,
+    min_odds: float = 1.5,
+    purity_floor: float = 0.1,
+    distinct_min: int = 2,
+    accuracy_keep: float = 0.5,
+    coverage_stop: float = 0.98,
+    max_iterations: int = 500,
+) -> tuple[list[dict], list[dict]]:
+    """Single greedy set-cover over a mixed pool of entities at five granularities.
+
+    Each anomalous src–dst path "votes" for every entity it traverses at the
+    edge / node(⟨AS,metro⟩) / AS / metro / IXP level. Precision (Fisher's-exact
+    ``p`` + odds ratio over all paths) is computed once per entity and used as an
+    eligibility gate; the greedy then repeatedly picks the eligible entity that
+    explains the most still-unexplained anomalies (coverage-first). Because a
+    coarse entity covers a superset of its finer parts, coverage-first naturally
+    prefers it *when it is precise* — and the precision gate keeps diluted transit
+    ASes out. Each anomalous pair is attributed to exactly one culprit.
+
+    Distinctness guard: a coarse pick (AS/metro/IXP) that, among the pairs it would
+    explain, subsumes fewer than ``distinct_min`` distinct finer ⟨AS,metro⟩ nodes is
+    demoted to its single dominant node — so "AS seen as one ⟨AS,metro⟩" reports the
+    node, not the whole AS.
+    """
+    node_to_ixp = _node_ixp_map(all_edges)
+
+    # --- explode edges into per-(id,sdp,info,path_type) node rows ---
+    parts = edges_df["canonical_edge"].str.split(" - ", n=1, expand=True)
+    e = edges_df.assign(_a=parts[0], _b=parts[1])
+    base = ["id", "src_dst_pair", "information_source", "path_type"]
+    nodes = pd.concat(
+        [
+            e[base + ["_a"]].rename(columns={"_a": "node"}),
+            e[base + ["_b"]].rename(columns={"_b": "node"}),
+        ]
+    ).dropna(subset=["node"])
+    nodes = nodes[~nodes["node"].str.contains(r"\*", na=False)]
+    nodes["asn"] = nodes["node"].str.split("-").str[0]
+    nodes["metro"] = nodes["node"].str.split("-", n=1).str[1]
+    nodes["ixp"] = nodes["node"].map(node_to_ixp)
+
+    # --- build the candidate rows at all granularities (long form) ---
+    def lvl(df, col, gran):
+        out = df[base].copy()
+        out["gran"] = gran
+        out["entity"] = df[col].astype(str)
+        return out[df[col].notna() & ~out["entity"].isin(["", "None", "nan"])]
+
+    edge_rows = e[base].copy()
+    edge_rows["gran"] = "edge"
+    edge_rows["entity"] = e["canonical_edge"]
+    edge_rows = edge_rows[~edge_rows["entity"].str.contains(r"\*", na=False)]
+    units = pd.concat(
+        [
+            edge_rows,
+            lvl(nodes, "node", "node"),
+            lvl(nodes, "asn", "AS"),
+            lvl(nodes, "metro", "metro"),
+            lvl(nodes[nodes["ixp"].notna()], "ixp", "IXP"),
+        ],
+        ignore_index=True,
+    ).drop_duplicates(["id", "src_dst_pair", "information_source", "gran", "entity"])
+
+    # int-encode src_dst_pair to keep the per-candidate membership sets lean
+    sdp_cat = edges_df["src_dst_pair"].astype("category")
+    sdp_to_code = {v: i for i, v in enumerate(sdp_cat.cat.categories)}
+    units["sdp_code"] = units["src_dst_pair"].map(sdp_to_code)
+
+    total_anom_ids = int(edges_df.loc[edges_df["path_type"] == "anomalous", "id"].nunique())
+    total_non_ids = int(edges_df.loc[edges_df["path_type"] == "non_anomalous", "id"].nunique())
+    all_anom_codes = set(units.loc[units["path_type"] == "anomalous", "sdp_code"].unique().tolist())
+    total_anomalies = len(all_anom_codes)
+    logger.info(
+        f"  [multigran] {total_anomalies} anomalous pairs, "
+        f"{units[['gran', 'entity', 'information_source']].drop_duplicates().shape[0]:,} candidates"
+    )
+    if total_anomalies == 0:
+        return [], []
+
+    # --- per-candidate static stats ---
+    g = units.groupby(["gran", "entity", "information_source", "path_type"])
+    idc = g["id"].nunique().unstack("path_type").fillna(0)
+    a_ids = idc.get("anomalous", pd.Series(0, index=idc.index)).astype(int)
+    n_ids = idc.get("non_anomalous", pd.Series(0, index=idc.index)).astype(int)
+    anom_sets = (
+        units[units["path_type"] == "anomalous"]
+        .groupby(["gran", "entity", "information_source"])["sdp_code"]
+        .apply(set)
+    )
+
+    # coarse entity -> its finer ⟨AS,metro⟩ node children (for distinctness + purity)
+    coarse_children: dict = {}
+    nn = nodes.dropna(subset=["node"])
+    for _, r in (
+        nn[["node", "asn", "metro", "ixp", "information_source"]].drop_duplicates().iterrows()
+    ):
+        for gr, ent in (("AS", r["asn"]), ("metro", r["metro"]), ("IXP", r["ixp"])):
+            if pd.isna(ent) or ent in ("", "None", "nan"):
+                continue
+            coarse_children.setdefault((gr, ent, r["information_source"]), set()).add(
+                (str(r["node"]), r["information_source"])
+            )
+
+    # Candidate pool: static precision pre-filter (purity floor, Fisher, odds) bounds the
+    # set; purity is then re-evaluated DYNAMICALLY on the unexplained pairs each iteration.
+    pool = {}
+    for key in anom_sets.index:
+        ai, ni = int(a_ids.get(key, 0)), int(n_ids.get(key, 0))
+        if ai < min_support or (ai + ni) == 0 or ai / (ai + ni) < purity_floor:
+            continue
+        p, odds = edge_significance(ai, total_anom_ids, ni, total_non_ids)
+        if p > alpha or odds < min_odds:
+            continue
+        pool[key] = {"anom": anom_sets[key], "p": p, "odds": odds}
+    logger.info(f"  [multigran] {len(pool)} candidates after static precision pre-filter")
+
+    # Running (dynamic-on-remaining) path counts per pooled candidate + an inverse index
+    # sdp -> [(candidate, d_anom, d_non)] used to decrement counts when a group is explained.
+    pool_df = pd.DataFrame(list(pool.keys()), columns=["gran", "entity", "information_source"])
+    psub = units.merge(pool_df, on=["gran", "entity", "information_source"], how="inner")
+    csc = (
+        psub.groupby(["gran", "entity", "information_source", "sdp_code", "path_type"])["id"]
+        .nunique()
+        .reset_index(name="cnt")
+    )
+    a_run = {k: 0 for k in pool}
+    n_run = {k: 0 for k in pool}
+    inverse: dict = {}
+    for gr, ent, inf, sdp_c, pt, cnt in csc.itertuples(index=False):
+        k = (gr, ent, inf)
+        if pt == "anomalous":
+            a_run[k] += cnt
+            da, dn = cnt, 0
+        else:
+            n_run[k] += cnt
+            da, dn = 0, cnt
+        inverse.setdefault(sdp_c, []).append((k, da, dn))
+    gt = (
+        edges_df.groupby(["src_dst_pair", "path_type"])["id"]
+        .nunique()
+        .unstack("path_type")
+        .fillna(0)
+    )
+    ganom = {
+        sdp_to_code[s]: int(gt.loc[s].get("anomalous", 0)) for s in gt.index if s in sdp_to_code
+    }
+    gnon = {
+        sdp_to_code[s]: int(gt.loc[s].get("non_anomalous", 0)) for s in gt.index if s in sdp_to_code
+    }
+    tot_a, tot_n = total_anom_ids, total_non_ids
+
+    def purity_of(k):
+        a, n = a_run[k], n_run[k]
+        return a / (a + n) if (a + n) else 0.0
+
+    # --- greedy: coverage-first, DYNAMIC purity gate, distinctness + accuracy demotion ---
+    remaining = set(all_anom_codes)
+    culprits: list[dict] = []
+    code_to_sdp = {i: v for v, i in sdp_to_code.items()}
+    for it in range(1, max_iterations + 1):
+        if not remaining or len(remaining) <= (1 - coverage_stop) * total_anomalies:
+            break
+        best, best_cov, best_pur = None, 0, 0.0
+        for k, d in pool.items():
+            if a_run[k] < min_support or purity_of(k) < purity_floor:
+                continue
+            cov = len(d["anom"] & remaining)
+            if cov == 0:
+                continue
+            pur = purity_of(k)
+            if cov > best_cov or (cov == best_cov and pur > best_pur):
+                best, best_cov, best_pur = k, cov, pur
+        if best is None or best_cov < min_support:
+            break
+        gran, entity, info = best
+        covered = pool[best]["anom"] & remaining
+        # Coarsening control on the CURRENT (unexplained) view: keep a coarse pick only if
+        # it subsumes >= distinct_min eligible finer nodes AND its dynamic purity is within
+        # accuracy_keep of its purest such child. Otherwise demote to the most explanatory
+        # child; if no finer node is individually plausible on the residual, drop the coarse
+        # pick (it is no longer an accurate explanation) rather than over-attributing.
+        demoted_from = None
+        if _GRAN_RANK[gran] == 2:
+            child_info = []
+            for cent, cinf in coarse_children.get(best, set()):
+                ck = ("node", cent, cinf)
+                if ck in pool and a_run[ck] >= min_support and purity_of(ck) >= purity_floor:
+                    ccov = len(pool[ck]["anom"] & covered)
+                    if ccov > 0:
+                        child_info.append((ccov, purity_of(ck), ck))
+            keep_coarse = len(child_info) >= distinct_min and purity_of(
+                best
+            ) >= accuracy_keep * max(cp for _, cp, _ in child_info)
+            if not keep_coarse:
+                if child_info:
+                    _, _, domk = max(child_info, key=lambda t: (t[0], t[1]))
+                    demoted_from = f"{gran}:{entity}"
+                    gran, entity, info = domk
+                    covered = pool[domk]["anom"] & remaining
+                else:
+                    del pool[best]
+                    continue
+        sk = (gran, entity, info)
+        a_sel, n_sel = a_run[sk], n_run[sk]
+        psel, osel = edge_significance(a_sel, tot_a, n_sel, tot_n)
+        rsel = ((a_sel / tot_a) / (n_sel / tot_n)) if (n_sel and tot_a and tot_n) else float("inf")
+        culprits.append(
+            {
+                "day": day_str,
+                "partition_date": day_str,
+                "information_source": info,
+                "granularity": gran,
+                "entity": entity,
+                "attribution_method": "correlation",
+                "demoted_from": demoted_from,
+                "iteration_number": it,
+                "anomalies_explained": len(covered),
+                "ratio_anomaly": rsel,
+                "p_value": psel,
+                "odds_ratio": osel,
+                "support_anomalous": a_sel,
+                "support_healthy": n_sel,
+                "anomalous_src_dst_pairs_impacted": [code_to_sdp[c] for c in covered],
+            }
+        )
+        # explain the covered groups: drop them from the universe and decrement running counts
+        for s in covered:
+            for ck, da, dn in inverse.get(s, ()):
+                a_run[ck] -= da
+                n_run[ck] -= dn
+            tot_a -= ganom.get(s, 0)
+            tot_n -= gnon.get(s, 0)
+        remaining -= covered
+
+    explained = total_anomalies - len(remaining)
+    logger.info(
+        f"  [multigran] {len(culprits)} culprits, "
+        f"{explained}/{total_anomalies} ({explained / total_anomalies:.3f}) explained"
+    )
+    # cumulative bookkeeping
+    cum = 0
+    for c in culprits:
+        cum += c["anomalies_explained"]
+        c["cumulative_anomalies_explained"] = cum
+        c["cumulative_fraction_explained"] = cum / total_anomalies
+
+    # Per-entity stats for EVERY candidate the cover evaluated (winners + non-winners),
+    # so the dashboard can zoom to any granularity, not just the chosen culprits. Stats
+    # are over all event-day paths (the entity's overall daily footprint). is_culprit
+    # marks the entities the cover selected (a demoted node is the culprit; the coarse
+    # entity it was demoted from is present here too, with is_culprit=False).
+    winners = {(c["granularity"], c["entity"], c["information_source"]) for c in culprits}
+    entity_stats = []
+    for key in a_ids.index:
+        ai, ni = int(a_ids.get(key, 0)), int(n_ids.get(key, 0))
+        if ai < min_support:
+            continue
+        gr, ent, inf = key
+        p, odds = edge_significance(ai, total_anom_ids, ni, total_non_ids)
+        ratio = ((ai / total_anom_ids) / (ni / total_non_ids)) if ni else float("inf")
+        entity_stats.append(
+            {
+                "partition_date": day_str,
+                "information_source": inf,
+                "granularity": gr,
+                "entity": ent,
+                "support_anomalous": ai,
+                "support_healthy": ni,
+                "ratio_anomaly": ratio,
+                "p_value": p,
+                "odds_ratio": odds,
+                "is_culprit": key in winners,
+            }
+        )
+    logger.info(f"  [multigran] {len(entity_stats)} entity-stat rows (winners + non-winners)")
+    return culprits, entity_stats
+
+
+def upload_multigranularity(client: bigquery.Client, culprits: list[dict], day_str: str) -> None:
+    """Replace the day's rows in MULTIGRAN_TABLE with the mixed-granularity culprits."""
+    client.query(
+        f"DELETE FROM `{MULTIGRAN_TABLE}` WHERE DATE(partition_date) = '{day_str}'"
+    ).result()
+    if not culprits:
+        logger.info("  [multigran] no culprits to upload")
+        return
+    rows = [_sanitize_for_json(c) for c in culprits]
+    errors = client.insert_rows_json(MULTIGRAN_TABLE, rows)
+    if errors:
+        logger.error(f"  [multigran] upload errors: {errors[:3]}")
+        raise RuntimeError(f"multigran upload failed: {errors[:3]}")
+    logger.info(f"  [multigran] uploaded {len(rows)} culprits")
+
+
+def upload_entity_stats(client: bigquery.Client, entity_stats: list[dict], day_str: str) -> None:
+    """Replace the day's partition in ENTITY_STATS_TABLE via a load job.
+
+    Holds one row per (date, information_source, granularity, entity) for every
+    candidate the cover evaluated (winners + non-winners), enabling the dashboard to
+    look up any entity's anomaly stats at any granularity. A load job to the partition
+    decorator (table$YYYYMMDD, WRITE_TRUNCATE) is idempotent and avoids the streaming
+    buffer (the row count is too large for insert_rows_json + DELETE).
+    """
+    schema = [
+        bigquery.SchemaField("partition_date", "DATE"),
+        bigquery.SchemaField("information_source", "STRING"),
+        bigquery.SchemaField("granularity", "STRING"),
+        bigquery.SchemaField("entity", "STRING"),
+        bigquery.SchemaField("support_anomalous", "INT64"),
+        bigquery.SchemaField("support_healthy", "INT64"),
+        bigquery.SchemaField("ratio_anomaly", "FLOAT64"),
+        bigquery.SchemaField("p_value", "FLOAT64"),
+        bigquery.SchemaField("odds_ratio", "FLOAT64"),
+        bigquery.SchemaField("is_culprit", "BOOL"),
+    ]
+    rows = [_sanitize_for_json(r) for r in entity_stats]
+    if not rows:
+        client.query(
+            f"DELETE FROM `{ENTITY_STATS_TABLE}` WHERE DATE(partition_date) = '{day_str}'"
+        ).result()
+        return
+    dest = f"{ENTITY_STATS_TABLE}${day_str.replace('-', '')}"
+    job = client.load_table_from_json(
+        rows,
+        dest,
+        job_config=bigquery.LoadJobConfig(
+            schema=schema, write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE
+        ),
+    )
+    job.result()
+    logger.info(f"  [multigran] uploaded {len(rows)} entity-stat rows")
+
+
+# =========================================================================
 # Orchestrator
 # =========================================================================
 
@@ -627,6 +1213,7 @@ def run_correlation_tomography(
     project_id: str = PROJECT_ID,
     max_iterations: int = 200,
     no_progress_limit: int = 5,
+    write_multigranularity: bool = False,
 ) -> None:
     """Run the full hybrid correlation tomography pipeline for one date.
 
@@ -653,6 +1240,9 @@ def run_correlation_tomography(
     no_progress_limit
         Stop early after this many consecutive iterations with zero new
         anomalies explained.
+    write_multigranularity
+        also compute/write the out-of-scope multigranularity tables (default
+        False; requires their DDLs to exist).
     """
     day_str = date.strftime("%Y-%m-%d")
     client = bigquery.Client(project=project_id)
@@ -675,9 +1265,71 @@ def run_correlation_tomography(
         no_progress_limit=no_progress_limit,
     )
 
-    # Phase 3: hyperedges computation + upload
+    # Path-local pass: attribute the anomalous groups the set-cover couldn't explain.
+    anomalous_pairs = set(
+        edges_df.loc[edges_df["path_type"] == "anomalous", "src_dst_pair"].unique()
+    )
+    explained = {p for c in culprits for p in c.get("anomalous_src_dst_pairs_impacted", [])}
+    path_local = attribute_unexplained(client, day_str, explained, anomalous_pairs)
+    logger.info(f"[{day_str}] Path-local attributions: {len(path_local)}")
+    culprits = culprits + path_local
+
+    # Phase 3: hyperedges computation + upload. Download all_edges_per_node ONCE
+    # and reuse it for both the edge-level hyperedge stats and the
+    # multi-granularity cover (avoids a second multi-GB scan/download).
+    logger.info(f"[{day_str}] Phase 3: downloading all_edges_per_node...")
+    all_edges = _read_df(
+        client.query(
+            loader.load_query("06_correlation_tomography_all_edges_union.sql", {"DAY": day_str})
+        )
+    )
+    logger.info(f"  Downloaded {len(all_edges):,} node-edge rows")
+
     logger.info(f"[{day_str}] Phase 3: hyperedge summary...")
-    compute_hyperedges(client, culprits, day_str)
+    compute_hyperedges(client, culprits, day_str, all_edges=all_edges)
+
+    # Phase 4: multi-granularity cover (edge→node→AS→metro→IXP) + path-local tail.
+    if write_multigranularity:
+        logger.info(f"[{day_str}] Phase 4: multi-granularity cover...")
+        multigran, entity_stats = run_mixed_granularity_cover(edges_df, all_edges, day_str)
+        upload_entity_stats(client, entity_stats, day_str)
+        # Fold in path-local attribution for anomalies the correlation cover left
+        # unexplained (singletons), so the table is the complete attribution.
+        explained_mg = {p for c in multigran for p in c.get("anomalous_src_dst_pairs_impacted", [])}
+        pl_mg = attribute_unexplained(client, day_str, explained_mg, anomalous_pairs)
+        for r in pl_mg:
+            impacted = r.get("anomalous_src_dst_pairs_impacted", [])
+            multigran.append(
+                {
+                    "day": day_str,
+                    "partition_date": day_str,
+                    "information_source": r.get("information_source"),
+                    "granularity": "edge",
+                    "entity": r.get("canonical_edge"),
+                    "attribution_method": "path_local",
+                    "demoted_from": None,
+                    "iteration_number": None,
+                    "anomalies_explained": len(impacted),
+                    "ratio_anomaly": None,
+                    "p_value": None,
+                    "odds_ratio": None,
+                    "support_anomalous": None,
+                    "support_healthy": None,
+                    "anomalous_src_dst_pairs_impacted": impacted,
+                }
+            )
+        # recompute cumulative over the combined list
+        cum = 0
+        total = len(anomalous_pairs) or 1
+        for c in multigran:
+            cum += c.get("anomalies_explained", 0)
+            c["cumulative_anomalies_explained"] = cum
+            c["cumulative_fraction_explained"] = cum / total
+        logger.info(
+            f"[{day_str}] Phase 4: {len(multigran)} culprits "
+            f"({len(pl_mg)} path-local), {cum}/{total} explained"
+        )
+        upload_multigranularity(client, multigran, day_str)
 
     logger.info(f"[{day_str}] Done")
 

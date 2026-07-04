@@ -1,0 +1,42 @@
+-- One-time bootstrap for the public-format step's target table.
+-- Idempotent: safe to run repeatedly. Run once before the first backfill,
+-- e.g. via hermes.sql.loader.load_query + a BigQuery client (the DDL bills 0 bytes).
+CREATE TABLE IF NOT EXISTS `mlab-collaboration.hermes_union.events_explained_daily`
+(
+  src_asn INT64,
+  src_city STRING,
+  src_state STRING,
+  src_country STRING,
+  src_as_name STRING,
+  src_organization STRING,
+  dst_site STRING,
+  dst_asn INT64,
+  dst_city STRING,
+  dst_country STRING,
+  dst_as_name STRING,
+  dst_organization STRING,
+  ip_version STRING,
+  partition_date DATE,
+  baseline_median_rtt FLOAT64,
+  baseline_median_throughput FLOAT64,
+  median_daily_rtt FLOAT64,
+  median_daily_throughput FLOAT64,
+  mean_daily_rtt FLOAT64,
+  mean_daily_throughput FLOAT64,
+  anomaly_ratio_rtt FLOAT64,
+  anomaly_ratio_throughput FLOAT64,
+  observed_ips ARRAY<STRING>,
+  source_events_org STRING,
+  information_source STRING,
+  is_interdomain STRING,
+  fraction_anomalies_explained_by_edge FLOAT64,
+  total_anomalous_sites INT64,
+  source_events STRING,
+  max_daily_forward_distance FLOAT64,
+  max_baseline_forward_distance FLOAT64,
+  max_daily_reverse_distance FLOAT64,
+  max_baseline_reverse_distance FLOAT64,
+  attribution_method STRING,
+  confidence_tier STRING
+)
+PARTITION BY partition_date;

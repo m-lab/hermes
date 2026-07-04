@@ -25,11 +25,17 @@ SQL_FILES_PRE_ENRICHMENT = [
 
 SQL_FILES_POST_ENRICHMENT = [
     "04_mapping_union.sql",
-    # correlation tomography now runs as a hybrid Python+SQL step (Phase D)
+    # correlation tomography now runs as a Python v2 step (Phase D)
     "05_temporal_tomography_union.sql",
 ]
 
-SQL_FILES = SQL_FILES_PRE_ENRICHMENT + SQL_FILES_POST_ENRICHMENT
+# Phase E: aggregate + root-cause join into the public-events table. Runs AFTER
+# Phase D because it reads correlation_hyperedges_tomography_v2 (a Phase-D output).
+SQL_FILES_PUBLIC = [
+    "07_translating_to_public_format_union.sql",
+]
+
+SQL_FILES = SQL_FILES_PRE_ENRICHMENT + SQL_FILES_POST_ENRICHMENT + SQL_FILES_PUBLIC
 
 OUTPUT_TABLES = [
     "mlab-collaboration.hermes_union.merged_download_upload",
@@ -39,13 +45,17 @@ OUTPUT_TABLES = [
     # AND giga_meter_measurements from a single computation (no separate step 05).
     "mlab-collaboration.hermes_union.events_with_as_and_geoloc",
     "mlab-collaboration.hermes_union.temporal_correlations",
+    # Phase E public-events table.
+    "mlab-collaboration.hermes_union.events_explained_daily",
 ]
 
 # Maps each SQL file to the output table it writes to.
 # Used for per-step resume: if the table already has data for a date, skip that step.
 SQL_FILE_TO_OUTPUT_TABLE = dict(zip(SQL_FILES, OUTPUT_TABLES, strict=True))
 
-FINAL_OUTPUT_TABLE = "mlab-collaboration.hermes_union.correlation_hyperedges_tomography"
+# The pipeline's true final output. main() uses this for the "already processed"
+# resume check, so it must be the Phase-E table — not the tomography table.
+FINAL_OUTPUT_TABLE = "mlab-collaboration.hermes_union.events_explained_daily"
 
 
 def print_active_credentials() -> None:
@@ -432,14 +442,22 @@ def _run_sql_steps_worker(args):
 
 
 def _run_tomography_worker(args):
-    """Worker function for parallel correlation tomography."""
+    """Worker: correlation v2 then temporal v2 for one date (parallel-safe)."""
     date, project_id, backend = args
     day_str = date.strftime("%Y-%m-%d")
     try:
-        run_tomography(date, backend=backend, project_id=project_id)
+        run_tomography(
+            date, backend=backend, project_id=project_id
+        )  # → correlation_hyperedges_tomography_v2
+        from hermes.pipeline import temporal_verdict
+
+        client = bigquery.Client(project=project_id)
+        if not temporal_verdict.verdicts_exist(client, day_str):
+            rows = temporal_verdict.compute_temporal_verdicts(client, day_str)
+            temporal_verdict.write_verdicts(client, rows)
         return f"Success: {day_str}"
     except Exception as e:
-        logger.error(f"Error in correlation tomography for {day_str}: {e}")
+        logger.error(f"Error in Phase D (correlation+temporal) for {day_str}: {e}")
         return f"Error: {day_str} - {e}"
 
 
@@ -501,7 +519,7 @@ def run_dates(
     - **Phase B** — Enrichment once (geolocation + rDNS for topology IPs,
       covering all dates via the 30-day lookback window).
     - **Phase C** — SQL steps 04 + temporal tomography for all dates in parallel.
-    - **Phase D** — Hybrid Python+SQL correlation tomography for all dates.
+    - **Phase D** — Python v2 correlation tomography for all dates.
 
     Parameters
     ----------
@@ -517,7 +535,7 @@ def run_dates(
     dry_run
         When ``True``, log what would run without executing any queries.
     tomography_backend
-        Backend for Phase D: ``"python"`` (default) or ``"bigquery"``.
+        Correlation tomography backend (python v2 hybrid).
     """
     if not dates:
         logger.info("No dates to process.")
@@ -530,8 +548,9 @@ def run_dates(
                 logger.info(f"[DRY RUN] Would execute: {sql_file} with DAY={day_str}")
             logger.info(f"[DRY RUN] Would run enrichment for DAY={day_str}")
             logger.info(
-                f"[DRY RUN] Would run correlation tomography ({tomography_backend}) for DAY={day_str}"
+                f"[DRY RUN] Would run correlation + temporal tomography (python v2) for DAY={day_str}"
             )
+            logger.info(f"[DRY RUN] Would run public-format step (Phase E) for DAY={day_str}")
         return
 
     # Pre-flight: ensure every date's anomaly-detection baseline window exists.
@@ -578,9 +597,9 @@ def run_dates(
         skip_data_check=True,  # no data check needed for step 04
     )
 
-    # ── Phase D: hybrid correlation tomography (parallel across dates) ──
+    # ── Phase D: Python v2 correlation + temporal tomography (parallel across dates) ──
     logger.info(
-        f"═══ Phase D: Running correlation tomography for {len(successful_dates)} date(s) ═══"
+        f"═══ Phase D: Running correlation + temporal tomography for {len(successful_dates)} date(s) ═══"
     )
     effective_workers = max_workers or min(mp.cpu_count(), len(successful_dates))
     worker_args = [(date, project_id, tomography_backend) for date in successful_dates]
@@ -591,14 +610,28 @@ def run_dates(
         with mp.Pool(processes=effective_workers) as pool:
             results_d = pool.map(_run_tomography_worker, worker_args)
 
+    # ── Phase E: public-format aggregation (parallel across dates) ──────
+    # Runs after Phase D: reads correlation_hyperedges_tomography_v2 to attach
+    # root-cause entities, writing the public events_explained_daily table.
+    logger.info(
+        f"═══ Phase E: Building public events table for {len(successful_dates)} date(s) ═══"
+    )
+    results_e = _run_parallel_sql(
+        successful_dates,
+        project_id,
+        SQL_FILES_PUBLIC,
+        max_workers,
+        skip_data_check=True,
+    )
+
     # ── Summary ───────────────────────────────────────────────────────────
-    all_results = results_a + results_c + results_d
+    all_results = results_a + results_c + results_d + results_e
     successful = [r for r in all_results if r.startswith("Success:")]
     skipped = [r for r in all_results if r.startswith("Skipped:")]
     failed = [r for r in all_results if r.startswith("Error:")]
 
     logger.info("Pipeline completed:")
-    logger.info(f"  Phase A+C successful: {len(successful)}")
+    logger.info(f"  Pipeline steps successful: {len(successful)}")
     logger.info(f"  Skipped: {len(skipped)}")
     logger.info(f"  Failed: {len(failed)}")
     if failed:
@@ -639,9 +672,9 @@ def main() -> None:
     )
     parser.add_argument(
         "--tomography-backend",
-        choices=["python", "bigquery"],
+        choices=["python"],
         default="python",
-        help="Correlation tomography implementation (default: python hybrid)",
+        help="Correlation tomography backend (python v2 hybrid)",
     )
     parser.add_argument(
         "--no-auto-baseline",

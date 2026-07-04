@@ -32,13 +32,17 @@ FROM (
 WHERE rn = 1;
 
 -- 2) Closest rDNS entry w.r.t. ${DAY} — UNION of IPv4 and IPv6 sources
+-- Resilience: prefer the closest partition that actually HAS a hostname, so a recent
+-- empty rDNS row never shadows an earlier known hostname for the same IP.
 CREATE TEMP TABLE _closest_rdns AS
 SELECT * EXCEPT(rn) FROM (
   SELECT
     *,
     ROW_NUMBER() OVER (
       PARTITION BY ip_address
-      ORDER BY ABS(DATE_DIFF(partition_date, DATE '${DAY}', DAY))
+      ORDER BY
+        (CASE WHEN hostname IS NULL OR hostname = '' THEN 1 ELSE 0 END) ASC,
+        ABS(DATE_DIFF(partition_date, DATE '${DAY}', DAY)) ASC
     ) AS rn
   FROM (
     SELECT *, 'v4' AS ip_version
@@ -51,13 +55,17 @@ SELECT * EXCEPT(rn) FROM (
 WHERE rn = 1;
 
 -- 3) Closest geo entry w.r.t. ${DAY} — UNION of IPv4 and IPv6 sources
+-- Resilience: prefer the closest partition that actually HAS a location, so a recent
+-- empty/NULL geoloc row never shadows an earlier known one for the same IP.
 CREATE TEMP TABLE _closest_geo AS
 SELECT * EXCEPT(rn) FROM (
   SELECT
     *,
     ROW_NUMBER() OVER (
       PARTITION BY ip_address
-      ORDER BY ABS(DATE_DIFF(partition_date, DATE '${DAY}', DAY))
+      ORDER BY
+        (CASE WHEN city IS NULL AND city_ip_info IS NULL AND metro IS NULL THEN 1 ELSE 0 END) ASC,
+        ABS(DATE_DIFF(partition_date, DATE '${DAY}', DAY)) ASC
     ) AS rn
   FROM (
     SELECT *, 'v4' AS ip_version
@@ -68,6 +76,40 @@ SELECT * EXCEPT(rn) FROM (
   )
 )
 WHERE rn = 1;
+
+-- 3b) Destination metro — derive a canonical `city-region-cc` metro string for
+--     each distinct destination coordinate. M-Lab servers are not present in the
+--     per-IP geoloc cache, so the destination hop (ttl = 1) would otherwise have
+--     no `metro`. Polygons in metro_polygons_with_population are stored INVERTED
+--     (each polygon is the complement of its metro area), so the single
+--     NON-containing polygon is the match — same semantics as _src_metro /
+--     adding_metro_into_ip_database.sql. `state_resolved` is the full region name.
+CREATE TEMP TABLE _dst_metro AS
+WITH dst_coords AS (
+  SELECT DISTINCT dst_lat, dst_lon
+  FROM `mlab-collaboration.hermes_union.transient_events_union`
+  WHERE partition_date = '${DAY}'
+    AND dst_lat IS NOT NULL AND dst_lon IS NOT NULL
+),
+matched AS (
+  SELECT
+    d.dst_lat,
+    d.dst_lon,
+    CONCAT(
+      COALESCE(mp.city, 'Unknown'), '-',
+      COALESCE(mp.state_resolved, mp.state_iso2, 'NA'), '-',
+      COALESCE(mp.country_code, 'Unknown')
+    ) AS metro
+  FROM dst_coords d
+  LEFT JOIN `mlab-collaboration.hermes.metro_polygons_with_population` mp
+    ON NOT(ST_CONTAINS(mp.polygon, ST_GEOGPOINT(d.dst_lon, d.dst_lat)))
+)
+SELECT
+  dst_lat,
+  dst_lon,
+  ARRAY_AGG(metro ORDER BY metro ASC LIMIT 1)[OFFSET(0)] AS dst_metro
+FROM matched
+GROUP BY dst_lat, dst_lon;
 
 -- 4) Extracted prefixes — IPv4 + IPv6 combined (stateless, no accumulation)
 CREATE TEMP TABLE _extracted_prefixes AS
@@ -314,23 +356,41 @@ node_with_geo_info AS (
     nwp.associated_asn,
     nwp.associated_ixp,
     nwp.ixp_partition_date,
+    -- lat/lon taken atomically from the SINGLE preferred source (HOIHO > IPInfo >
+    -- RIPE), so the coordinate pair is coherent and the polygon metro below maps a
+    -- real point — never a lat from one source mixed with a lon from another.
     CASE
       WHEN nwp.is_private THEN NULL
       WHEN nwp.ttl = 1 THEN nwp.dst_lat
-      ELSE COALESCE(geo.lat, ip_geo.lat_ip_info, ip_geo.lat)
+      WHEN geo.lat IS NOT NULL AND geo.lon IS NOT NULL THEN geo.lat
+      WHEN ip_geo.lat_ip_info IS NOT NULL AND ip_geo.lon_ip_info IS NOT NULL THEN ip_geo.lat_ip_info
+      ELSE ip_geo.lat
     END AS latitude,
     CASE
       WHEN nwp.is_private THEN NULL
       WHEN nwp.ttl = 1 THEN nwp.dst_lon
-      ELSE COALESCE(geo.lon, ip_geo.lon_ip_info, ip_geo.lon)
+      WHEN geo.lat IS NOT NULL AND geo.lon IS NOT NULL THEN geo.lon
+      WHEN ip_geo.lat_ip_info IS NOT NULL AND ip_geo.lon_ip_info IS NOT NULL THEN ip_geo.lon_ip_info
+      ELSE ip_geo.lon
     END AS longitude,
     CASE
       WHEN nwp.is_private THEN NULL
       WHEN nwp.ttl = 1 THEN CONCAT(nwp.dst_city, '-', nwp.dst_state, '-', nwp.dst_country)
-      ELSE COALESCE(geo.place, ip_geo.city_ip_info, ip_geo.city)
+      -- Canonical naming: prefer the metro polygon (single authority across IPInfo/
+      -- HOIHO/RIPE) so the same location groups identically regardless of source;
+      -- fall back to per-source free-text only when no polygon matched.
+      ELSE COALESCE(ip_geo.metro, geo.place, ip_geo.city_ip_info, ip_geo.city)
     END AS place,
     CASE WHEN nwp.is_private THEN NULL ELSE geo.clli END AS clli,
-    CASE WHEN nwp.is_private THEN NULL ELSE ip_geo.metro END AS metro,
+    -- metro is the canonical `city-region-cc` geo field (full region name).
+    -- Forward and reverse paths now derive it identically (COALESCE HOIHO + ipinfo),
+    -- and the destination (ttl = 1) gets its metro from _dst_metro so it is no
+    -- longer left NULL by the per-IP geoloc cache miss on M-Lab servers.
+    CASE
+      WHEN nwp.is_private THEN NULL
+      WHEN nwp.ttl = 1 THEN dm.dst_metro
+      ELSE COALESCE(geo.metro, ip_geo.metro)
+    END AS metro,
     CASE
       WHEN nwp.is_private THEN NULL
       WHEN nwp.ttl = 1 THEN nwp.dst_country
@@ -356,22 +416,12 @@ node_with_geo_info AS (
     ON REGEXP_REPLACE(nwp.rdns_name, r'\.$', '') = REGEXP_REPLACE(geo.hostname, r'\.$', '')
   LEFT JOIN closest_geo_entry ip_geo
     ON nwp.addr = ip_geo.ip_address
+  LEFT JOIN _dst_metro dm
+    ON nwp.dst_lat = dm.dst_lat AND nwp.dst_lon = dm.dst_lon
 ),
 
--- Reconstruct forward node_details array
-reconstructed_node_details AS (
-  SELECT
-    id, ip_version, dst_lat, dst_lon, src_lat, src_lon,
-    AVG(baseline_rtt) AS baseline_rtt,
-    ARRAY_AGG(
-      STRUCT(ttl, addr, rdns_name, rtts, associated_asn, associated_ixp,
-             latitude, longitude, place, clli, metro, cc, score,
-             geo_source, geo_partition_date, ixp_partition_date)
-      ORDER BY ttl
-    ) AS updated_node_details
-  FROM node_with_geo_info
-  GROUP BY id, ip_version, dst_lat, dst_lon, src_lat, src_lon
-),
+-- (forward hop-metro normalization + array reconstruction moved below, after the
+--  reverse node-geo CTE, so both paths share ONE hop_coord_metro polygon lookup.)
 
 --------------------------------------------------------------------------------
 -- Reverse path: flatten hops, map to ASN/IXP, attach geo
@@ -504,9 +554,20 @@ reverse_node_with_geo_info AS (
     nwp.associated_asn,
     nwp.associated_ixp,
     nwp.ixp_partition_date,
-    CASE WHEN nwp.is_private THEN NULL ELSE COALESCE(geo.lat, ip_geo.lat_ip_info, ip_geo.lat) END AS latitude,
-    CASE WHEN nwp.is_private THEN NULL ELSE COALESCE(geo.lon, ip_geo.lon_ip_info, ip_geo.lon) END AS longitude,
-    CASE WHEN nwp.is_private THEN NULL ELSE COALESCE(geo.place, ip_geo.city_ip_info, ip_geo.city) END AS place,
+    -- lat/lon taken atomically from the SINGLE preferred source (HOIHO > IPInfo > RIPE)
+    CASE
+      WHEN nwp.is_private THEN NULL
+      WHEN geo.lat IS NOT NULL AND geo.lon IS NOT NULL THEN geo.lat
+      WHEN ip_geo.lat_ip_info IS NOT NULL AND ip_geo.lon_ip_info IS NOT NULL THEN ip_geo.lat_ip_info
+      ELSE ip_geo.lat
+    END AS latitude,
+    CASE
+      WHEN nwp.is_private THEN NULL
+      WHEN geo.lat IS NOT NULL AND geo.lon IS NOT NULL THEN geo.lon
+      WHEN ip_geo.lat_ip_info IS NOT NULL AND ip_geo.lon_ip_info IS NOT NULL THEN ip_geo.lon_ip_info
+      ELSE ip_geo.lon
+    END AS longitude,
+    CASE WHEN nwp.is_private THEN NULL ELSE COALESCE(ip_geo.metro, geo.place, ip_geo.city_ip_info, ip_geo.city) END AS place,
     CASE WHEN nwp.is_private THEN NULL ELSE geo.clli END AS clli,
     CASE WHEN nwp.is_private THEN NULL ELSE COALESCE(geo.metro, ip_geo.metro) END AS metro,
     CASE WHEN nwp.is_private THEN NULL ELSE COALESCE(geo.cc, ip_geo.country_ip_info, ip_geo.country) END AS cc,
@@ -532,6 +593,71 @@ reverse_node_with_geo_info AS (
     ON nwp.addr = ip_geo.ip_address
 ),
 
+-- ── Single metro-polygon lookup, shared by BOTH forward and reverse hops ──────
+-- Step 04 is the sole metro authority: map each hop's FINAL chosen (preferred-source)
+-- lat/lon to a city-region-cc string via the metro polygon — the same NOT ST_CONTAINS
+-- lookup as _src_metro / _dst_metro, but ONE definition covering every intermediate
+-- hop on both paths AND the destination (ttl = 1). Independent of any precomputed
+-- source `metro` column, so metro coverage == lat/lon coverage on every day.
+hop_coords AS (
+  SELECT DISTINCT lat, lon
+  FROM (
+    SELECT latitude AS lat, longitude AS lon FROM node_with_geo_info
+    UNION ALL
+    SELECT latitude AS lat, longitude AS lon FROM reverse_node_with_geo_info
+  )
+  WHERE lat IS NOT NULL AND lon IS NOT NULL
+),
+hop_coord_metro AS (
+  SELECT lat, lon, ARRAY_AGG(metro ORDER BY metro ASC LIMIT 1)[OFFSET(0)] AS metro
+  FROM (
+    SELECT
+      c.lat, c.lon,
+      CONCAT(
+        COALESCE(mp.city, 'Unknown'), '-',
+        COALESCE(mp.state_resolved, mp.state_iso2, 'NA'), '-',
+        COALESCE(mp.country_code, 'Unknown')
+      ) AS metro
+    FROM hop_coords c
+    LEFT JOIN `mlab-collaboration.hermes.metro_polygons_with_population` mp
+      ON NOT(ST_CONTAINS(mp.polygon, ST_GEOGPOINT(c.lon, c.lat)))
+  )
+  GROUP BY lat, lon
+),
+
+node_with_geo_info_normalized AS (
+  SELECT
+    n.* EXCEPT(metro),
+    COALESCE(cm.metro, n.metro) AS metro   -- polygon authority (also covers dst ttl=1); NULL coords stay NULL
+  FROM node_with_geo_info n
+  LEFT JOIN hop_coord_metro cm
+    ON n.latitude = cm.lat AND n.longitude = cm.lon
+),
+
+-- Reconstruct forward node_details array
+reconstructed_node_details AS (
+  SELECT
+    id, ip_version, dst_lat, dst_lon, src_lat, src_lon,
+    AVG(baseline_rtt) AS baseline_rtt,
+    ARRAY_AGG(
+      STRUCT(ttl, addr, rdns_name, rtts, associated_asn, associated_ixp,
+             latitude, longitude, place, clli, metro, cc, score,
+             geo_source, geo_partition_date, ixp_partition_date)
+      ORDER BY ttl
+    ) AS updated_node_details
+  FROM node_with_geo_info_normalized
+  GROUP BY id, ip_version, dst_lat, dst_lon, src_lat, src_lon
+),
+
+reverse_node_with_geo_info_normalized AS (
+  SELECT
+    n.* EXCEPT(metro),
+    COALESCE(cm.metro, n.metro) AS metro
+  FROM reverse_node_with_geo_info n
+  LEFT JOIN hop_coord_metro cm
+    ON n.latitude = cm.lat AND n.longitude = cm.lon
+),
+
 -- Reconstruct reverse node_details array (keep hop_type, convert rtts to seconds)
 reverse_reconstructed_node_details_without_flag AS (
   SELECT
@@ -545,7 +671,7 @@ reverse_reconstructed_node_details_without_flag AS (
              hop_type)
       ORDER BY ttl
     ) AS updated_node_details
-  FROM reverse_node_with_geo_info
+  FROM reverse_node_with_geo_info_normalized
   GROUP BY id, ip_version, dst_lat, dst_lon, src_lat, src_lon
 ),
 
@@ -1198,6 +1324,31 @@ LEFT JOIN forward_as_loop_detection fal
   ON fr.id = fal.id
 LEFT JOIN reverse_as_loop_detection ral
   ON fr.id = ral.id;
+
+-- ============================================================================
+-- Normalize the SRC node to the metro polygon (same canonical naming as the hops):
+-- snap each measurement's client lat/lon to the metro polygon and replace the MaxMind
+-- src_city (e.g. Auckland-AUK-NZ -> Auckland-Auckland-NZ). Falls back to the original
+-- src_city when no polygon matches. Inverted polygons => NOT(ST_CONTAINS) = "inside".
+-- ============================================================================
+CREATE TEMP TABLE _src_metro AS
+SELECT lat, lon, ARRAY_AGG(metro ORDER BY metro ASC LIMIT 1)[OFFSET(0)] AS metro
+FROM (
+  SELECT u.lat, u.lon,
+    CONCAT(COALESCE(mp.city, 'Unknown'), '-',
+           COALESCE(mp.state_resolved, mp.state_iso2, 'NA'), '-',
+           COALESCE(mp.country_code, 'Unknown')) AS metro
+  FROM (SELECT DISTINCT src_lat AS lat, src_lon AS lon FROM _mapping_result
+        WHERE src_lat IS NOT NULL AND src_lon IS NOT NULL) u
+  LEFT JOIN `mlab-collaboration.hermes.metro_polygons_with_population` mp
+    ON NOT(ST_CONTAINS(mp.polygon, ST_GEOGPOINT(u.lon, u.lat)))
+)
+GROUP BY lat, lon;
+
+CREATE OR REPLACE TEMP TABLE _mapping_result AS
+SELECT m.* REPLACE (COALESCE(sm.metro, m.src_city) AS src_city)
+FROM _mapping_result m
+LEFT JOIN _src_metro sm ON m.src_lat = sm.lat AND m.src_lon = sm.lon;
 
 -- ============================================================================
 -- Write to both output tables from the temp table (no re-scan).

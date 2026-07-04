@@ -26,3 +26,14 @@ def test_metro_sql_packaged():
         "enrich_ip_geoloc_add_metro.sql",
     ):
         assert paths.query_path(name).is_file(), name
+
+
+def test_new_pipeline_sql_files_packaged():
+    from hermes.sql import paths
+
+    for name in (
+        "05_temporal_edge_prevalences_union.sql",
+        "06_correlation_tomography_unexplained_hops_union.sql",
+        "07_translating_to_public_format_union.sql",
+    ):
+        assert paths.query_path(name).is_file(), name

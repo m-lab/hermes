@@ -222,31 +222,78 @@ Scamper2FilteredData AS (
 --------------------------------------------------------------------------------
 -- E) Expand traceroute nodes — scamper1 (MDA) + scamper2 (BYOS), merged
 --------------------------------------------------------------------------------
+-- scamper1 (MDA) is multipath: one trace is a DAG of nodes×links×Links×Probes×
+-- Replies across several flows. The previous version CROSS JOIN UNNEST-ed all five
+-- levels into one global table and picked, per (id, TTL), the lowest-RTT node via a
+-- global ROW_NUMBER. That (a) materialized a ~1B-row intermediate + full sort that
+-- exhausts query memory on large days, and (b) chose nodes independently per TTL,
+-- so it could stitch hops from different flows into one incoherent "path".
+--
+-- Instead: collapse each trace's nested arrays *inside the row* (per-trace ARRAY
+-- subquery — no global flatten) into per-(flow, ttl) hops with the min reply RTT,
+-- then keep only the single MOST-RESPONSIVE flow's path (most responding hops, then
+-- furthest TTL, then lowest flow id). That removes the explosion and yields one
+-- coherent real path per trace.
+ScamperFlowHops AS (
+  SELECT
+    fd.* EXCEPT(nodes, raw),
+    ARRAY(
+      SELECT AS STRUCT
+        probe.Flowid                 AS flow_id,
+        probe.TTL                    AS probe_ttl,
+        node.addr                    AS addr,
+        node.name                    AS rdns_name,
+        link_item.addr               AS link_addr,
+        MIN(replies.RTT)             AS rtts,
+        ANY_VALUE(replies.TTL)       AS probe_rttl
+      FROM UNNEST(fd.nodes)              AS node,
+           UNNEST(node.links)            AS link,
+           UNNEST(link.Links)            AS link_item,
+           UNNEST(link_item.Probes)      AS probe,
+           UNNEST(probe.Replies)         AS replies
+      GROUP BY flow_id, probe_ttl, node.addr, node.name, link_item.addr
+    ) AS hops
+  FROM FilteredData fd
+),
+
+ScamperBestFlow AS (
+  SELECT
+    sfh.* EXCEPT(hops),
+    hops,
+    (
+      SELECT t.flow_id
+      FROM (
+        SELECT
+          flow_id,
+          -- prefer a flow that actually reaches the destination (its path includes
+          -- dst as a hop or as a link far-end), so the multipath collapse never drops
+          -- a dst-reaching path in favour of a merely-longer one
+          MAX(CASE WHEN addr = sfh.dst OR link_addr = sfh.dst THEN 1 ELSE 0 END) AS reaches_dst,
+          COUNT(DISTINCT IF(addr != '*', probe_ttl, NULL)) AS responsive_hops,
+          MAX(probe_ttl)                                    AS max_ttl
+        FROM UNNEST(hops)
+        GROUP BY flow_id
+      ) t
+      ORDER BY t.reaches_dst DESC, t.responsive_hops DESC, t.max_ttl DESC, t.flow_id ASC
+      LIMIT 1
+    ) AS best_flow_id
+  FROM ScamperFlowHops sfh
+),
+
 WithoutDstNodeExtraction AS (
-  SELECT *
-  FROM (
-    SELECT
-      fd.* EXCEPT(nodes, raw),
-      node.addr                 AS addr,
-      node.name                 AS rdns_name,
-      replies.RTT               AS rtts,
-      probe.TTL                 AS probe_ttl,
-      replies.TTL               AS probe_rttl,
-      probe.Flowid              AS flow_id,
-      link_item.addr            AS link_addr,
-      ROW_NUMBER() OVER (
-        PARTITION BY fd.id, probe.TTL, node.addr
-        ORDER BY replies.RTT ASC
-      ) AS rtt_order
-    FROM FilteredData fd
-    CROSS JOIN UNNEST(fd.nodes)              AS node
-    CROSS JOIN UNNEST(node.links)            AS link
-    CROSS JOIN UNNEST(link.Links)            AS link_item
-    CROSS JOIN UNNEST(link_item.Probes)      AS probe
-    CROSS JOIN UNNEST(probe.Replies)         AS replies
-    WHERE probe.Flowid = 1
-  )
-  WHERE rtt_order = 1
+  SELECT
+    bf.* EXCEPT(hops, best_flow_id),
+    h.addr,
+    h.rdns_name,
+    h.rtts,
+    h.probe_ttl,
+    h.probe_rttl,
+    h.flow_id,
+    h.link_addr,
+    1 AS rtt_order
+  FROM ScamperBestFlow bf
+  CROSS JOIN UNNEST(bf.hops) AS h
+  WHERE h.flow_id = bf.best_flow_id
 ),
 
 -- scamper2: flat hops (no multipath — no Flowid / link_item nesting)
