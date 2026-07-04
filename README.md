@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/hermes-logo.png" alt="HERMES" width="520">
+</p>
+
 # HERMES
 
 HERMES is a public, path-aware Internet performance observatory that repurposes user-initiated M-Lab NDT speed tests to detect and localize user-facing performance degradations at Internet scale.
@@ -5,6 +9,33 @@ HERMES is a public, path-aware Internet performance observatory that repurposes 
 HERMES starts from the user perspective rather than from control-plane events, operator telemetry, or outage reports. It combines NDT latency, throughput, and packet-loss measurements with forward and inferred reverse paths to identify when groups of users in the same network and metro experience a statistically significant degradation and to localize the network entities most likely associated with the event.
 
 The system targets degradations that affect users but may remain invisible to existing public observatories, including persistent congestion, routing detours, degraded interconnections, metro-level disruptions, and reverse-path problems that do not necessarily produce a visible BGP event or complete outage.
+
+## Run HERMES with Docker
+
+The whole pipeline ships as a container — this is the fastest way to run it. Full setup (service-account keys, cache volume, cron) is in **[README-docker.md](README-docker.md)**; the short version:
+
+```bash
+# 1. Build the image (from the repo root)
+docker build -t hermes-pipeline:latest .
+
+# 2. Provide credentials + tokens
+mkdir -p /etc/hermes /data/hermes-cache
+cp /path/to/service-account-key.json /etc/hermes/
+cat > /etc/hermes/hermes.env <<'EOF'
+IPINFO_TOKEN=your-token-here
+HOIHO_TOKEN=your-token-here
+EOF
+
+# 3. Run (defaults to the last 2 days — ideal for a daily cron)
+docker run --rm \
+  --env-file /etc/hermes/hermes.env \
+  -e GOOGLE_APPLICATION_CREDENTIALS=/app/credentials.json \
+  -v /etc/hermes/service-account-key.json:/app/credentials.json:ro \
+  -v /data/hermes-cache:/app/cache \
+  hermes-pipeline
+```
+
+On a GCE VM with an attached service account, drop the key mount and the `GOOGLE_APPLICATION_CREDENTIALS` line. To process a specific range, append pipeline flags, e.g. `hermes-pipeline --start-date 2026-05-17 --end-date 2026-05-23`. See **[README-docker.md](README-docker.md)** for the persistent cache, first-run behavior, and cron examples.
 
 ## What HERMES Is
 
