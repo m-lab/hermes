@@ -1,0 +1,91 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "hermes"
+version = "0.1.0"
+description = "HERMES network monitoring and anomaly detection pipeline"
+requires-python = ">=3.11"
+dependencies = [
+    "google-cloud-bigquery>=3.11.4",
+    "db-dtypes>=1.0.0",  # required by bigquery .to_dataframe() for DATE/TIME columns (download_edges)
+    "google-auth>=2.0.0",
+    "pandas>=2.0.0",
+    "requests>=2.31.0",
+    "geopy>=2.4.1",
+    "tqdm>=4.66.1",
+    "maxminddb>=2.2.0",
+    "python-dotenv>=1.0.0",
+    "scipy>=1.11.0",
+    "wget>=3.2",
+]
+
+[project.optional-dependencies]
+plot = ["matplotlib>=3.7.0", "geopandas>=0.14.0", "folium>=0.15.0"]
+dev = ["ruff>=0.6.0", "mypy>=1.11.0", "pytest>=8.0.0", "pre-commit>=3.8.0", "pandas-stubs", "types-requests", "pyarrow>=14.0.0"]
+
+[project.scripts]
+hermes-pipeline = "hermes.pipeline.union:main"
+hermes-tomography = "hermes.pipeline.correlation_tomography:main"
+hermes-budget = "hermes.pipeline.budget:main"
+hermes-refresh-topology = "hermes.pipeline.refresh_topology_tables:main"
+hermes-table-rerun = "hermes.pipeline.table_rerun:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/hermes"]
+# .sql assets under src/hermes/sql/** are shipped automatically as package data
+# (they live inside the package). Do NOT add a force-include for them — that
+# duplicates the files and fails the wheel build with "A second file is being
+# added to the wheel archive at the same path".
+
+[tool.ruff]
+src = ["src", "tests"]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.ruff.lint.per-file-ignores]
+# Legacy code moved from hermes_enrichment/ — long strings/log messages/SQL
+# that can't be broken without semantic changes; deferring to Task 14 cleanup.
+"src/hermes/enrichment/**/*.py" = ["E501"]
+# Legacy pipeline scripts — long SQL table/field names and argparse help strings.
+"src/hermes/pipeline/**/*.py" = ["E501"]
+
+[tool.mypy]
+python_version = "3.11"
+ignore_missing_imports = true
+files = ["src/hermes"]
+
+# Legacy enrichment modules moved from hermes_enrichment/ — have implicit Optional,
+# untyped module-level dicts, maxminddb union-attr noise, and enricher class
+# inheritance mismatches.  Full typing pass deferred to Task 14.
+[[tool.mypy.overrides]]
+module = [
+    "hermes.enrichment.as_metadata.enricher",
+    "hermes.enrichment.as_metadata.inetintel_downloader",
+    "hermes.enrichment.hoiho.enricher",
+    "hermes.enrichment.hoiho.enricher_ipv6",
+    "hermes.enrichment.ipinfo.enricher",
+    "hermes.enrichment.ipinfo.enricher_ipv6",
+    "hermes.enrichment.main",
+    "hermes.enrichment.peeringdb_ixp.ixp_collector",
+    "hermes.enrichment.ripe_ipmap.enricher",
+    "hermes.enrichment.ripe_ipmap.enricher_ipv6",
+    "hermes.enrichment.routeviews.enricher_ipv6",
+]
+ignore_errors = true
+
+# Fully-typed new modules — enforce strict untyped-def checking.
+[[tool.mypy.overrides]]
+module = [
+    "hermes.sql.paths",
+    "hermes.sql.loader",
+    "hermes.pipeline.tomography",
+]
+disallow_untyped_defs = true
+
+[tool.pytest.ini_options]
+markers = ["bq: tests that require BigQuery credentials (on-demand only)"]
