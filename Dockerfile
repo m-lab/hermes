@@ -1,7 +1,7 @@
 # ============================================================
 # Stage 1: Build zdns from source
 # ============================================================
-FROM golang:1.25-bookworm AS zdns-builder
+FROM golang:1.26-bookworm AS zdns-builder
 
 RUN apt-get update && apt-get install -y git && rm -rf /var/lib/apt/lists/*
 
