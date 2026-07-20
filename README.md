@@ -4,6 +4,14 @@
 
 # HERMES
 
+<p align="center">
+  <a href="https://github.com/m-lab/hermes/actions/workflows/ci.yml"><img src="https://github.com/m-lab/hermes/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/m-lab/hermes/actions/workflows/codeql.yml"><img src="https://github.com/m-lab/hermes/actions/workflows/codeql.yml/badge.svg" alt="CodeQL"></a>
+  <a href="https://github.com/m-lab/hermes/actions/workflows/sql-lint.yml"><img src="https://github.com/m-lab/hermes/actions/workflows/sql-lint.yml/badge.svg" alt="SQL Lint"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="License: Apache 2.0"></a>
+  <img src="https://img.shields.io/badge/python-3.11%2B-blue.svg" alt="Python 3.11+">
+</p>
+
 HERMES is a public, path-aware Internet performance observatory that repurposes user-initiated M-Lab NDT speed tests to detect and localize user-facing performance degradations at Internet scale.
 
 HERMES starts from the user perspective rather than from control-plane events, operator telemetry, or outage reports. It combines NDT latency, throughput, and packet-loss measurements with forward and inferred reverse paths to identify when groups of users in the same network and metro experience a statistically significant degradation and to localize the network entities most likely associated with the event.
