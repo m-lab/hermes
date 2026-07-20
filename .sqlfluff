@@ -1,0 +1,16 @@
+# sqlfluff config for the BigQuery SQL under src/hermes/sql/**.
+#
+# The queries are parameterized with ${DAY}-style placeholders (Flyway var
+# style), so sqlfluff needs the placeholder templater with concrete sample
+# values to parse them. CI (sql-lint.yml) enforces only *parse/templating*
+# correctness — a syntax error here means a failed pipeline run. Layout/style
+# rules are advisory (the research SQL predates any style guide).
+[sqlfluff]
+dialect = bigquery
+templater = placeholder
+max_line_length = 120
+
+[sqlfluff:templater:placeholder]
+param_style = flyway_var
+DAY = 2026-01-01
+ONE_WEEK_EARLIER = 2025-12-25

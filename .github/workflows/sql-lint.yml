@@ -1,0 +1,38 @@
+name: SQL Lint
+
+# Validates that the BigQuery SQL under src/hermes/sql/** parses cleanly with
+# the ${DAY} placeholder templating (a syntax/templating error here means a
+# failed pipeline run). Layout/style violations are printed as advisory output
+# but do NOT fail the job — the research SQL predates a style guide.
+
+on:
+  pull_request:
+    paths:
+      - "src/hermes/sql/**"
+      - ".sqlfluff"
+      - ".github/workflows/sql-lint.yml"
+  push:
+    branches: [main]
+    paths:
+      - "src/hermes/sql/**"
+      - ".sqlfluff"
+
+jobs:
+  sqlfluff-parse:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install sqlfluff
+      - name: Lint (advisory) + fail on parse/templating errors
+        run: |
+          set -o pipefail
+          sqlfluff lint src/hermes/sql | tee sqlfluff.log || true
+          echo "--- checking for parse (PRS) / templating (TMP) errors ---"
+          if grep -qE '\| (PRS|TMP) \|' sqlfluff.log; then
+            echo "::error::SQL has parse or templating errors — see the log above."
+            exit 1
+          fi
+          echo "SQL parses cleanly (style violations, if any, are advisory)."
