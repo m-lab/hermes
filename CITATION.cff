@@ -1,0 +1,45 @@
+cff-version: 1.2.0
+message: "If you find HERMES useful in your research or work, please cite the paper below."
+title: "HERMES: Repurposing User-Driven Speed Tests to Monitor the Internet"
+authors:
+  - family-names: Salamatian
+    given-names: Loqman
+    affiliation: Columbia University
+  - family-names: Vermeulen
+    given-names: Kevin
+    affiliation: LIX-CNRS
+  - family-names: Choffnes
+    given-names: Dave
+    affiliation: Northeastern University
+  - family-names: Katz-Bassett
+    given-names: Ethan
+    affiliation: Columbia University and Google
+  - family-names: Gill
+    given-names: Phillipa
+    affiliation: Google
+preferred-citation:
+  type: conference-paper
+  title: "HERMES: Repurposing User-Driven Speed Tests to Monitor the Internet"
+  authors:
+    - family-names: Salamatian
+      given-names: Loqman
+    - family-names: Vermeulen
+      given-names: Kevin
+    - family-names: Choffnes
+      given-names: Dave
+    - family-names: Katz-Bassett
+      given-names: Ethan
+    - family-names: Gill
+      given-names: Phillipa
+  collection-title: "ACM SIGCOMM 2026 Conference (SIGCOMM '26)"
+  conference:
+    name: "ACM SIGCOMM 2026 Conference"
+    city: "New York"
+    region: "NY"
+    country: "US"
+  year: 2026
+  month: 8
+  publisher:
+    name: "Association for Computing Machinery"
+  doi: "10.1145/3789240.3829129"
+  url: "https://doi.org/10.1145/3789240.3829129"
