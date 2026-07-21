@@ -18,6 +18,29 @@ HERMES starts from the user perspective rather than from control-plane events, o
 
 The system targets degradations that affect users but may remain invisible to existing public observatories, including persistent congestion, routing detours, degraded interconnections, metro-level disruptions, and reverse-path problems that do not necessarily produce a visible BGP event or complete outage.
 
+## Paper & citation
+
+HERMES is described in our ACM SIGCOMM 2026 paper — **[HERMES: Repurposing User-Driven Speed Tests to Monitor the Internet](docs/hermes-paper.pdf)** ([doi.org/10.1145/3789240.3829129](https://doi.org/10.1145/3789240.3829129)):
+
+> HERMES is the first *open* system that uses publicly available M-Lab speed tests — data that has existed for years but has not previously been used to automatically detect and explain end-user performance degradations at scale. HERMES combines statistical techniques to detect performance degradation with novel tomography methods and forward and reverse path measurements to localize the source of a problem. Despite relying only on public data, HERMES matches a reimplementation of a large cloud provider's monitoring system for 94.5% of events and surfaces 11× more publicly discussed events than existing public observatories.
+
+**If you find HERMES useful in your research or work, please cite it:**
+
+```bibtex
+@inproceedings{salamatian2026hermes,
+  title     = {{HERMES}: Repurposing User-Driven Speed Tests to Monitor the Internet},
+  author    = {Salamatian, Loqman and Vermeulen, Kevin and Choffnes, Dave and Katz-Bassett, Ethan and Gill, Phillipa},
+  booktitle = {ACM SIGCOMM 2026 Conference (SIGCOMM '26)},
+  year      = {2026},
+  publisher = {Association for Computing Machinery},
+  address   = {New York, NY, USA},
+  doi       = {10.1145/3789240.3829129},
+  url       = {https://doi.org/10.1145/3789240.3829129},
+}
+```
+
+GitHub's "Cite this repository" button (top-right) is backed by [`CITATION.cff`](CITATION.cff). The paper PDF ([`docs/hermes-paper.pdf`](docs/hermes-paper.pdf)) is © the authors, licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).
+
 ## Run HERMES with Docker
 
 The whole pipeline ships as a container — this is the fastest way to run it. Full setup (service-account keys, cache volume, cron) is in **[README-docker.md](README-docker.md)**; the short version:
