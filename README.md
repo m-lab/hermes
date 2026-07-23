@@ -10,6 +10,11 @@
   <a href="https://github.com/m-lab/hermes/actions/workflows/sql-lint.yml"><img src="https://github.com/m-lab/hermes/actions/workflows/sql-lint.yml/badge.svg" alt="SQL Lint"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="License: Apache 2.0"></a>
   <img src="https://img.shields.io/badge/python-3.11%2B-blue.svg" alt="Python 3.11+">
+  <a href="https://hermes-dashboard.org"><img src="https://img.shields.io/badge/dashboard-hermes--dashboard.org-brightgreen.svg" alt="Live dashboard"></a>
+</p>
+
+<p align="center">
+  <b>🌐 Live dashboard: <a href="https://hermes-dashboard.org">hermes-dashboard.org</a></b>
 </p>
 
 HERMES is a public, path-aware Internet performance observatory that repurposes user-initiated M-Lab NDT speed tests to detect and localize user-facing performance degradations at Internet scale.
@@ -123,3 +128,9 @@ Temporal tomography compares paths observed during the event with paths observed
 Correlation tomography compares affected and unaffected user groups and identifies entities whose presence is strongly associated with degraded performance. It is particularly useful when the responsible entity remains on the path throughout both the baseline and event periods, as can occur during congestion or other performance degradations that do not trigger a routing change.
 
 HERMES combines candidates identified across path directions and network granularities, including ASes, metros, IXPs, and AS–metro links. Based on the strength and consistency of the available evidence, it classifies each event as localized, ambiguous, or unresolved.
+
+## Acknowledgements
+
+HERMES uses IP geolocation data generously provided by **[IPinfo](https://ipinfo.io)**. We gratefully acknowledge IPinfo for supporting this research by making high-quality IP-to-geolocation data available.
+
+HERMES is built on measurements from **[Measurement Lab (M-Lab)](https://www.measurementlab.net)**, whose open NDT speed-test platform makes this work possible.
