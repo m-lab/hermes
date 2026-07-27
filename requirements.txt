@@ -1,8 +1,8 @@
 google-cloud-bigquery>=3.42.2
-pandas>=3.0.3
+pandas>=3.0.5
 requests>=2.34.2
 geopy>=2.5.0
-tqdm>=4.69.0
+tqdm>=4.70.0
 maxminddb>=3.1.1
 python-dotenv>=1.2.2
 matplotlib>=3.11.1
