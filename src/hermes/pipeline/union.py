@@ -441,6 +441,64 @@ def _run_sql_steps_worker(args):
         return f"Error: {day_str} - {str(e)}"
 
 
+def _result_is_success_for(result: str, days: set[date]) -> bool:
+    """True if ``result`` is a ``Success:`` line for a date in ``days``."""
+    if not result.startswith("Success: "):
+        return False
+    try:
+        parsed = datetime.strptime(result[len("Success: ") :].strip(), "%Y-%m-%d").date()
+    except ValueError:
+        return False
+    return parsed in days
+
+
+def find_unattributed_partitions(project_id: str, dates: list[date]) -> list[date]:
+    """Return dates whose ``events_explained_daily`` partition has NO attribution.
+
+    A partition where *every* row has ``attribution_method IS NULL`` means the
+    correlation tomography output was missing when ``06`` ran: its "unresolved"
+    branch then matches every anomalous pair and emits a normal-sized partition
+    with all root-cause columns NULL. Row counts look healthy, so this is only
+    detectable by checking the attribution columns.
+
+    Safe to call with an arbitrary date list, which makes it usable as a
+    standalone audit over history, not just over a single run.
+
+    Parameters
+    ----------
+    project_id
+        GCP project ID to bill the check to.
+    dates
+        Dates to check. An empty list short-circuits without querying.
+
+    Returns
+    -------
+    list[date]
+        Dates whose partition is fully unattributed, ascending.
+    """
+    if not dates:
+        return []
+
+    client = bigquery.Client(project=project_id)
+    query = f"""
+        SELECT partition_date
+        FROM `{FINAL_OUTPUT_TABLE}`
+        WHERE partition_date IN UNNEST(@days)
+        GROUP BY partition_date
+        HAVING COUNTIF(attribution_method IS NOT NULL) = 0
+        ORDER BY partition_date
+    """
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[bigquery.ArrayQueryParameter("days", "DATE", list(dates))]
+    )
+    try:
+        return [row.partition_date for row in client.query(query, job_config=job_config).result()]
+    except Exception as e:
+        # A failed audit must not mask the pipeline's own result.
+        logger.error(f"Could not run unattributed-partition check: {e}")
+        return []
+
+
 def _run_tomography_worker(args):
     """Worker: correlation v2 then temporal v2 for one date (parallel-safe)."""
     date, project_id, backend = args
@@ -613,16 +671,55 @@ def run_dates(
     # ── Phase E: public-format aggregation (parallel across dates) ──────
     # Runs after Phase D: reads correlation_hyperedges_tomography_v2 to attach
     # root-cause entities, writing the public events_explained_daily table.
-    logger.info(
-        f"═══ Phase E: Building public events table for {len(successful_dates)} date(s) ═══"
-    )
+    #
+    # Phase E MUST be gated on Phase D succeeding for the same date. 06's
+    # "unresolved" branch selects every anomalous pair NOT IN the correlation
+    # table, so when Phase D produced nothing that branch matches *everything*
+    # and the step happily writes a normal-sized partition with every
+    # attribution column NULL. That looks complete to the dashboard and to
+    # step_already_done(), so the bad data is sticky and invisible. Leaving the
+    # partition absent instead is strictly better: absent is visible and
+    # re-runnable. (Silently produced 11 fully-unattributed days before this
+    # gate existed.)
+    tomography_ok = {
+        day for day, result in zip(successful_dates, results_d) if result.startswith("Success:")
+    }
+    dates_for_e = [day for day in successful_dates if day in tomography_ok]
+    tomography_failed = [day for day in successful_dates if day not in tomography_ok]
+    if tomography_failed:
+        logger.error(
+            "Phase E SKIPPED for %d date(s) whose Phase D failed — writing the public "
+            "table for these would silently produce 100%% NULL attribution: %s",
+            len(tomography_failed),
+            ", ".join(day.strftime("%Y-%m-%d") for day in tomography_failed),
+        )
+
+    logger.info(f"═══ Phase E: Building public events table for {len(dates_for_e)} date(s) ═══")
     results_e = _run_parallel_sql(
-        successful_dates,
+        dates_for_e,
         project_id,
         SQL_FILES_PUBLIC,
         max_workers,
         skip_data_check=True,
     )
+    results_e += [f"Error: {day} - Phase D failed, Phase E skipped" for day in tomography_failed]
+
+    # ── Post-Phase-E integrity check ──────────────────────────────────────
+    # Belt-and-braces for the case the gate above cannot catch: Phase D
+    # "succeeds" but writes zero hyperedges, so 06 still emits an
+    # all-unattributed partition. Verify what actually landed.
+    degraded = find_unattributed_partitions(project_id, dates_for_e)
+    if degraded:
+        logger.error(
+            "INTEGRITY: %d partition(s) written by Phase E have 100%% NULL "
+            "attribution_method (tomography output was empty). These need Phase D+E "
+            "re-run and should NOT be trusted: %s",
+            len(degraded),
+            ", ".join(day.strftime("%Y-%m-%d") for day in degraded),
+        )
+        degraded_set = set(degraded)
+        results_e = [r for r in results_e if not _result_is_success_for(r, degraded_set)]
+        results_e += [f"Error: {day} - Phase E wrote 100% NULL attribution" for day in degraded]
 
     # ── Summary ───────────────────────────────────────────────────────────
     all_results = results_a + results_c + results_d + results_e
