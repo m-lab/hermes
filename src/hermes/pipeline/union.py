@@ -441,6 +441,98 @@ def _run_sql_steps_worker(args):
         return f"Error: {day_str} - {str(e)}"
 
 
+def get_populated_dates(project_id: str, table_name: str) -> set[date]:
+    """Dates that have a NON-EMPTY partition in ``table_name``.
+
+    Reads ``INFORMATION_SCHEMA.PARTITIONS`` rather than scanning the table, so
+    this is free metadata regardless of table size — unlike
+    :func:`get_existing_dates`, whose ``SELECT DISTINCT`` scans the whole
+    ``partition_date`` column (fine for the small public table, expensive if
+    pointed at a multi-TiB one).
+
+    Partitions with ``total_rows = 0`` are treated as absent: deleting a date's
+    rows leaves the partition metadata behind, and such a date still needs
+    re-processing. Non-date partition ids (``__NULL__``, ``__UNPARTITIONED__``)
+    are ignored.
+
+    Parameters
+    ----------
+    project_id
+        GCP project ID used for the BigQuery client (and billed for the query).
+    table_name
+        Fully-qualified table name (``project.dataset.table``).
+
+    Returns
+    -------
+    set of datetime.date
+        Dates whose partition exists and holds at least one row.
+    """
+    table_project, dataset, table = table_name.split(".")
+    client = bigquery.Client(project=project_id)
+    query = f"""
+        SELECT partition_id
+        FROM `{table_project}.{dataset}.INFORMATION_SCHEMA.PARTITIONS`
+        WHERE table_name = @table
+          AND total_rows > 0
+          AND REGEXP_CONTAINS(partition_id, r'^[0-9]{{8}}$')
+    """
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[bigquery.ScalarQueryParameter("table", "STRING", table)]
+    )
+    rows = client.query(query, job_config=job_config).result()
+    return {datetime.strptime(row.partition_id, "%Y%m%d").date() for row in rows}
+
+
+def resolve_missing_dates(
+    project_id: str,
+    candidate_dates: list[date],
+    table_name: str,
+    include_unattributed: bool = True,
+) -> list[date]:
+    """Narrow ``candidate_dates`` to those not properly present in ``table_name``.
+
+    A date counts as missing when its partition is absent or empty. When
+    ``table_name`` is the public events table and ``include_unattributed`` is
+    set, partitions that exist but are 100% NULL ``attribution_method`` also
+    count as missing — those are the silently-degraded partitions a failed
+    Phase D used to produce, and they are exactly what a repair run should
+    target. See :func:`find_unattributed_partitions`.
+
+    Parameters
+    ----------
+    project_id
+        GCP project ID used for the BigQuery client.
+    candidate_dates
+        Dates under consideration (typically an expanded ``--start-date`` /
+        ``--end-date`` range).
+    table_name
+        Fully-qualified table whose coverage defines "missing".
+    include_unattributed
+        Also treat fully-unattributed partitions as missing. Only meaningful
+        for the public events table; ignored for any other table.
+
+    Returns
+    -------
+    list of datetime.date
+        The subset needing processing, ascending.
+    """
+    populated = get_populated_dates(project_id, table_name)
+    missing = {day for day in candidate_dates if day not in populated}
+
+    if include_unattributed and table_name == FINAL_OUTPUT_TABLE:
+        present = [day for day in candidate_dates if day in populated]
+        degraded = find_unattributed_partitions(project_id, present)
+        if degraded:
+            logger.info(
+                "%d date(s) present but 100%% unattributed — treating as missing: %s",
+                len(degraded),
+                ", ".join(day.strftime("%Y-%m-%d") for day in degraded),
+            )
+            missing.update(degraded)
+
+    return sorted(missing)
+
+
 def _result_is_success_for(result: str, days: set[date]) -> bool:
     """True if ``result`` is a ``Success:`` line for a date in ``days``."""
     if not result.startswith("Success: "):
@@ -779,8 +871,33 @@ def main() -> None:
         help="Disable auto-filling missing baseline days (step 01 for the preceding "
         "7 days) before detection; warn instead.",
     )
+    parser.add_argument(
+        "--fill-missing",
+        action="store_true",
+        help="Between --start-date and --end-date, process ONLY the dates whose "
+        "partition is absent or empty in the reference table (see "
+        "--fill-missing-table), i.e. fill the gaps. For the public events table, "
+        "partitions that exist but are 100%% unattributed also count as missing. "
+        "Coverage is read from INFORMATION_SCHEMA.PARTITIONS, so the check is free "
+        "regardless of table size. Unlike the implicit default, this is honoured "
+        "under --dry-run, so the preview matches the real run.",
+    )
+    parser.add_argument(
+        "--fill-missing-table",
+        type=str,
+        default=FINAL_OUTPUT_TABLE,
+        help=f"Table whose coverage defines 'missing' for --fill-missing "
+        f"(default: {FINAL_OUTPUT_TABLE}).",
+    )
 
     args = parser.parse_args()
+
+    if args.fill_missing and args.force_rerun:
+        parser.error("--fill-missing and --force-rerun are mutually exclusive: the first "
+                     "processes only absent dates, the second reprocesses every date.")
+    if args.fill_missing and args.rerun_dates:
+        parser.error("--fill-missing operates on a --start-date/--end-date range; "
+                     "it cannot be combined with --rerun-dates.")
 
     project_id = "mlab-collaboration"
 
@@ -826,6 +943,37 @@ def main() -> None:
 
     # Generate dates with interval
     dates_to_process = generate_date_range(start_date, end_date, args.interval)
+
+    # --fill-missing: run only the gaps in the reference table. Explicit
+    # counterpart to the implicit skip below, and unlike it this is applied
+    # under --dry-run too, so the preview matches what a real run would do.
+    if args.fill_missing:
+        missing = resolve_missing_dates(project_id, dates_to_process, args.fill_missing_table)
+        if not missing:
+            logger.info(
+                "--fill-missing: no gaps in %s between %s and %s — nothing to do.",
+                args.fill_missing_table,
+                start_date.strftime("%Y-%m-%d"),
+                end_date.strftime("%Y-%m-%d"),
+            )
+            return
+        logger.info(
+            "--fill-missing: %d of %d date(s) missing from %s — processing only these: %s",
+            len(missing),
+            len(dates_to_process),
+            args.fill_missing_table,
+            ", ".join(day.strftime("%Y-%m-%d") for day in missing),
+        )
+        run_dates(
+            missing,
+            project_id,
+            args.max_workers,
+            args.skip_data_check,
+            args.dry_run,
+            tomography_backend=args.tomography_backend,
+            auto_baseline=not args.no_auto_baseline,
+        )
+        return
 
     # Delete existing entries if requested
     # if args.delete_first:
