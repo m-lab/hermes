@@ -71,16 +71,39 @@ class HermesEnrichment:
             self.ripe_ipmap = RIPEIPMapEnricher(project_id)
             self.routeviews = RouteViewsEnricher(project_id)
 
-    def process_geolocation(self, date: str) -> None:
-        """Process geolocation data for IPs from transient events that need updates."""
+    def process_geolocation(self, date: str, lookback_days: int = 30) -> None:
+        """Process geolocation data for IPs from transient events that need updates.
+
+        Parameters
+        ----------
+        date
+            Target date, ``YYYY-MM-DD``.
+        lookback_days
+            How far back to *collect candidate IPs* from ``transient_events``.
+            This must span every date the caller intends to map, because
+            enrichment runs once per batch (Phase B) while step 04 maps every
+            date. For a single-date run 0 is correct and much cheaper: measured
+            by dry run, this scan costs ~3.3 GiB for 1 day, ~20.5 GiB for 7 and
+            ~86.4 GiB for 30 — it is the dominant cost of enrichment, not the
+            lookup-table join (~2.1 GiB).
+
+        Notes
+        -----
+        The collection window is deliberately separate from the 30-day
+        *staleness* threshold below. They previously shared one variable, which
+        forced a 30-day scan on every nightly run even though a nightly only
+        needs the target day. Staleness stays at 30 days: an IP is re-enriched
+        when its stored geolocation is older than that. Narrowing the collection
+        window does not weaken it — an IP present in the batch's traffic is still
+        a candidate, and an IP absent from it does not need enriching for this run.
+        """
         logger.info(f"Processing {'IPv6' if self.ipv6 else 'IPv4'} geolocation for date: {date}")
 
-        # Calculate date threshold (one month ago)
         current_date = datetime.strptime(date, "%Y-%m-%d")
-        month_ago = current_date - timedelta(days=30)
-        # change this after the next run back to 30
-        month_ago_str = month_ago.strftime("%Y-%m-%d")
-        start_date = month_ago_str
+        # Staleness threshold: stored geolocation older than this is refetched.
+        month_ago_str = (current_date - timedelta(days=30)).strftime("%Y-%m-%d")
+        # Candidate-collection window: only needs to cover the batch being processed.
+        start_date = (current_date - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
 
         # Get IPs that need updates using a single SQL query
         if self.ipv6:

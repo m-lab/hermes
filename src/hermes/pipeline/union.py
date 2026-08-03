@@ -375,7 +375,7 @@ def execute_query(query: str, project_id: str, description: str = "") -> bigquer
     return query_job
 
 
-def run_enrichment(date_str: str, project_id: str) -> None:
+def run_enrichment(date_str: str, project_id: str, lookback_days: int = 30) -> None:
     """Geolocate new topology IPs found in transient_events_union.
 
     Runs between SQL steps 03 and 04 so that step 04's hop-level mapping
@@ -385,10 +385,17 @@ def run_enrichment(date_str: str, project_id: str) -> None:
     Parameters
     ----------
     date_str
-        Target date in ``YYYY-MM-DD`` format.  The 30-day IPInfo/RIPE-IPMap
-        lookback window means this covers IPs from earlier dates in the batch.
+        Target date in ``YYYY-MM-DD`` format — the LATEST date of the batch.
     project_id
         GCP project ID.
+    lookback_days
+        How far back to collect candidate IPs. Enrichment runs once per batch
+        while step 04 maps every date, so this must span the whole batch:
+        callers should pass ``(max(dates) - min(dates)).days``. It is the
+        dominant cost of enrichment — measured ~3.3 GiB for a 1-day window,
+        ~20.5 GiB for 7 days and ~86.4 GiB for 30 — so a single-date nightly
+        should not pay for 30. Defaults to 30 to preserve the old behaviour for
+        any caller that does not size it.
     """
     union_transient_table = "mlab-collaboration.hermes_union.transient_events_union"
 
@@ -403,7 +410,7 @@ def run_enrichment(date_str: str, project_id: str) -> None:
         enricher.zdns.tables["transient_events"] = union_transient_table
 
         # 1. Geolocate new IPs (IPInfo + RIPE IPMap) → unified_ip_to_geoloc
-        enricher.process_geolocation(date_str)
+        enricher.process_geolocation(date_str, lookback_days=lookback_days)
 
         # 2 & 3. rDNS + HOIHO — skip for dates >90 days in the past
         # (lookups would not return the hostnames that were valid then)
@@ -414,7 +421,7 @@ def run_enrichment(date_str: str, project_id: str) -> None:
                     f"[enrichment] Skipping rDNS/HOIHO for {date_str} (IPv6 data is too large for lookups to be useful)"
                 )
             else:
-                enricher.zdns.process_rdns(date_str)
+                enricher.zdns.process_rdns(date_str, lookback_days=lookback_days)
             enricher.process_hoiho_geolocation(date_str)
         else:
             logger.info(f"[enrichment] Skipping rDNS/HOIHO for {date_str} (>90 days in the past)")
@@ -830,8 +837,17 @@ def run_dates(
     # Use the latest date as the enrichment target — the 30-day lookback
     # window will cover all IPs from earlier dates too.
     enrichment_date = max(successful_dates).strftime("%Y-%m-%d")
-    logger.info(f"═══ Phase B: Running enrichment once (date={enrichment_date}) ═══")
-    run_enrichment(enrichment_date, project_id)
+    # Size the candidate-collection window to the actual batch rather than a
+    # fixed 30 days. Enrichment runs once but step 04 maps every date, so the
+    # window must span the batch — and only the batch. A single-date nightly
+    # previously scanned 30 days of transient_events (~86 GiB) to collect IPs
+    # for one day (~3 GiB).
+    enrichment_lookback = (max(successful_dates) - min(successful_dates)).days
+    logger.info(
+        f"═══ Phase B: Running enrichment once (date={enrichment_date}, "
+        f"lookback={enrichment_lookback}d) ═══"
+    )
+    run_enrichment(enrichment_date, project_id, lookback_days=enrichment_lookback)
 
     # ── Phase C: steps 04 + temporal tomography in parallel ─────────────
     logger.info(
