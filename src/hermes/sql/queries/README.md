@@ -6,24 +6,35 @@ Processes IPv4 and IPv6 jointly (hence "union").
 
 ## Quick start
 
+Installing the package (`pip install .`) provides the `hermes-pipeline` console
+script; the examples below use it.
+
 ```bash
-cd wrapper_automation
-
 # Run for yesterday (default)
-python hermes_pipeline_union.py
+hermes-pipeline
 
-# Run for a date range
-python hermes_pipeline_union.py --start-date 2026-05-17 --end-date 2026-05-23
+# Run for a date range (--end-date is INCLUSIVE)
+hermes-pipeline --start-date 2026-05-17 --end-date 2026-05-23
 
 # Dry run (show what would execute, no queries)
-python hermes_pipeline_union.py --start-date 2026-05-17 --end-date 2026-05-23 --dry-run
+hermes-pipeline --start-date 2026-05-17 --end-date 2026-05-23 --dry-run
 
-# Re-run specific dates (skips the "already processed" check)
-python hermes_pipeline_union.py --rerun-dates 2026-05-20 2026-05-21
+# Re-run specific dates, clearing their rows first (see "Resume and idempotency")
+hermes-pipeline --rerun-dates 2026-05-20 2026-05-21 --delete-first
 
-# Parallel workers (default: CPU count)
-python hermes_pipeline_union.py --start-date 2026-05-01 --end-date 2026-05-23 --max-workers 7
+# Fill only the gaps in a range — dates absent, empty, or fully unattributed
+hermes-pipeline --start-date 2026-05-01 --end-date 2026-05-23 --fill-missing
+
+# Parallelism. --max-workers covers the scan-bound SQL phases (A/C/E).
+# Phase D is throttled SEPARATELY and defaults to 1 — see the warning below.
+hermes-pipeline --start-date 2026-05-01 --end-date 2026-05-23 \
+    --max-workers 7 --tomography-workers 1
 ```
+
+> **Do not raise `--tomography-workers`.** A single date's correlation tomography
+> can spike to ~20 GB RSS, so 2+ workers OOM a typical container. It is
+> deliberately *not* tied to `--max-workers`: the SQL phases are BigQuery-bound
+> and parallelise safely, Phase D is memory-bound and does not.
 
 ## Prerequisites
 
@@ -152,6 +163,23 @@ For each traceroute hop:
 3. Computes cumulative distances, speed-of-light checks, baseline consistency flags.
 4. Detects AS-level loops in forward and reverse paths.
 
+Three details worth knowing before editing this query:
+
+- **`_rdns_geo` dedup.** The HOIHO join matches on a REGEXP-normalised hostname —
+  a computed expression, not a hash key — so running it per hop-occurrence
+  (~185M rows) was this step's single largest cost (~160 min / ~227 slot-hours).
+  It is instead evaluated once per DISTINCT `rdns_name` (a few million) and
+  equi-joined back on the raw column. Reintroducing a per-hop REGEXP join here
+  would silently restore that cost.
+- **Reverse-path loop cleanup.** RevTr stitches RR/atlas segments, and
+  `hop_type = 4` hops have ambiguous position, so they can manufacture spurious
+  AS/metro loops. The query drops `A-[4:B]-A` excursions and truncates at genuine
+  re-entry, comparing against the nearest NON-NULL neighbour so unmapped hops
+  don't fake an excursion.
+- **Bounded `hopannotation2` scan.** The read is windowed to
+  `DATE_SUB(DATE('${DAY}'), INTERVAL 1 MONTH) .. ${DAY}`. Do not replace this
+  with a fixed start date — that makes the scan grow without limit as time passes.
+
 Also writes the GIGA-meter subset: rows where `client_name = 'giga-meter'` OR the client IP appears in `hermes_union.giga_school_ips` (for older measurements before the explicit flag was adopted).
 
 ### Step 05: Temporal tomography
@@ -188,7 +216,26 @@ Pipeline: (1) pre-compute (measurement, edge) pairs from forward/reverse AS path
 **Reads:** `hermes_union.events_with_as_and_geoloc`, `hermes_union.correlation_hyperedges_tomography_v2`, `hermes.as_metadata`
 **Writes:** `hermes_union.events_explained_daily`
 
-Runs in Phase E (after Phase D). DELETE+INSERT per day: first deletes existing rows for the partition date, then inserts the rebuilt set. Joins the anomalous (ASN, city, site) groups from `events_with_as_and_geoloc` with the culprit-edge results from `correlation_hyperedges_tomography_v2` (resolved groups) and marks remaining groups as unresolved. Attaches AS names from `as_metadata`, computes distance extents and anomaly-site summaries, and produces the final public event rows. The dashboard reads `events_explained_daily` alongside `temporal_path_verdicts`.
+Runs in Phase E (after Phase D), **and only for dates whose Phase D succeeded.**
+That gate is load-bearing, not a nicety: this query's "unresolved" branch selects
+every anomalous pair `NOT IN` the correlation table, so if tomography produced
+nothing for a date, the exclusion set is empty, *every* pair falls through to the
+unresolved branch, and the step writes a normal-sized partition in which every
+attribution column is NULL. Nothing errors and the row count looks healthy, so
+such a partition is indistinguishable from a good one by size alone — and it then
+looks "already processed" to the resume check. Leaving the partition absent is
+strictly better: absent is visible and re-runnable. `run_dates()` therefore skips
+Phase E for failed-Phase-D dates, and re-checks what it wrote via
+`find_unattributed_partitions()`, downgrading any 100%-NULL partition to a
+failure. `--fill-missing` also treats such partitions as missing so they get
+repaired. To find them by hand:
+
+```sql
+SELECT partition_date FROM `mlab-collaboration.hermes_union.events_explained_daily`
+GROUP BY partition_date HAVING COUNTIF(attribution_method IS NOT NULL) = 0
+```
+
+DELETE+INSERT per day: first deletes existing rows for the partition date, then inserts the rebuilt set. Joins the anomalous (ASN, city, site) groups from `events_with_as_and_geoloc` with the culprit-edge results from `correlation_hyperedges_tomography_v2` (resolved groups) and marks remaining groups as unresolved. Attaches AS names from `as_metadata`, computes distance extents and anomaly-site summaries, and produces the final public event rows. The dashboard reads `events_explained_daily` alongside `temporal_path_verdicts`.
 
 ## Output tables
 
@@ -196,11 +243,13 @@ Runs in Phase E (after Phase D). DELETE+INSERT per day: first deletes existing r
 |-------|-------------|-------------|
 | `hermes_union.merged_download_upload` | `partition_date` | Joined upload+download NDT measurements |
 | `hermes_union.anomaly_counts_union` | `partition_date` | Per-group anomaly detection results |
-| `hermes_union.transient_events_union` | No | Measurements with traceroute paths attached |
-| `hermes_union.events_with_as_and_geoloc` | `partition_date` | Final enriched events with geolocated hops |
-| `hermes_union.giga_meter_measurements` | No | Subset of events from GIGA school measurements |
+| `hermes_union.transient_events_union` | `partition_date` | Measurements with traceroute paths attached. Pure intermediate: consumed only by Step 04, nothing downstream reads it |
+| `hermes_union.events_with_as_and_geoloc` | `partition_date` | Final enriched events with geolocated hops. Strictly 1:1 with `transient_events_union` — Step 04 enriches, it does not fan out |
+| `hermes_union.giga_meter_measurements` | `partition_date` | Subset of events from GIGA school measurements |
 | `hermes_union.temporal_correlations` | `partition_date` | Before/during edge frequency ratios (Step 05, Phase C) |
 | `hermes_union.correlation_hyperedges_tomography_v2` | `partition_date` | Culprit edges from iterative tomography v2 (Phase D) |
+| `hermes_union.correlation_culprits_multigranularity` | `partition_date` | Multi-granularity cover culprits (Phase D, phase 4) |
+| `hermes_union.correlation_entity_stats_multigranularity` | `partition_date` | Per-entity stats, winners and non-winners (Phase D, phase 4) |
 | `hermes_union.temporal_path_verdicts` | `partition_date` | Temporal verdict scores per path edge (Phase D; read by dashboard) |
 | `hermes_union.events_explained_daily` | `partition_date` | Public event table with resolved/unresolved attribution (Phase E; read by dashboard) |
 | `hermes_union.giga_school_ips` | No | School IPs for GIGA identification (loaded separately) |
@@ -208,18 +257,73 @@ Runs in Phase E (after Phase D). DELETE+INSERT per day: first deletes existing r
 ## Resume and idempotency
 
 - The pipeline checks each output table for existing data before running each step. If a date already has rows, that step is skipped.
-- To force a re-run: use `--rerun-dates` with `--delete-first` to clear existing rows first.
 - The `FINAL_OUTPUT_TABLE` (`events_explained_daily`) is checked at startup to skip fully-processed dates entirely.
+
+### `--delete-first` only applies to `--rerun-dates`
+
+This is the single easiest way to get a wrong result, so it is worth stating
+plainly:
+
+| Invocation | Effect of `--delete-first` |
+|---|---|
+| `hermes-pipeline --rerun-dates D1 D2 …` | **Clears** all six `OUTPUT_TABLES` for those dates |
+| `hermes-pipeline --start-date/--end-date` | **Silently does nothing** — accepted by the parser, never applied |
+| `hermes-table-rerun --table T --sql-file F` | Clears that one table for the given dates |
+
+So **a clean whole-pipeline re-run must use `--rerun-dates`.** With
+`--start-date/--end-date`, nothing is deleted, the per-step guard sees existing
+rows, and every step is skipped — the symptom is
+`Skipping 01_merge_upload_download_union.sql — … already has data` in the log.
+Confirm a real delete happened by looking for `Deleting entries for dates: …` /
+`Successfully deleted from …`.
+
+To re-run only the parts that are missing, prefer `--fill-missing`: it selects
+which *dates* to run, while the per-step guard still decides which *steps*
+execute, so a date needing only Phase E does not redo Phases A–D.
+
+### Tables `--delete-first` does not clear
+
+`delete_dates()` covers `OUTPUT_TABLES` only. It does **not** touch
+`giga_meter_measurements` (written by Step 04 alongside `events_with_as_and_geoloc`),
+`correlation_culprits_multigranularity`, `correlation_entity_stats_multigranularity`,
+or `temporal_path_verdicts`. Because Step 04 and the tomography writers append,
+re-running a date without clearing these yourself produces duplicate rows. Use
+`hermes-table-rerun --table … --delete-first` or an explicit `DELETE`.
 
 ## Monitoring cost
 
 ```bash
-cd wrapper_automation/available_budget
-python check_quota.py                    # today's usage
-python check_quota.py --date 2026-05-20  # specific date
+hermes-budget                    # today's usage
+hermes-budget --date 2026-05-20  # specific date
 ```
 
 Reports total bytes billed, estimated cost ($6.25/TiB on-demand), and top queries.
+
+**Budget for a backfill before starting one.** A single date costs roughly 560 GB
+of billed SQL (step 01 ~125 GB, 02 ~8 GB, 03 ~107 GB, 04 ~300 GB, 05 ~15 GB,
+07 ~5 GB) plus enrichment and tomography queries. A 30-date backfill is therefore
+on the order of 19 TiB, which can exceed a per-user daily quota on its own — and
+the daily pipeline consumes part of that budget too. Split large backfills across
+days and leave headroom for the scheduled run, or the backfill and the nightly
+will both start failing with `Custom quota exceeded ... QueryUsagePerUserPerDay`.
+Note such quotas are counted on a calendar day in the project's configured
+timezone, which may not be UTC — a job started late in the evening can bill
+against the previous day's allowance.
+
+To check remaining headroom directly:
+
+```sql
+SELECT DATE(creation_time) AS day,
+       ROUND(SUM(total_bytes_billed)/POW(1024,4), 3) AS tib_billed,
+       COUNTIF(error_result IS NOT NULL) AS errors
+FROM `<project>.region-us.INFORMATION_SCHEMA.JOBS_BY_USER`
+WHERE creation_time > TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 3 DAY)
+  AND job_type = 'QUERY'
+GROUP BY day ORDER BY day DESC
+```
+
+(`JOBS_BY_USER` needs no special grant; `JOBS_BY_PROJECT` requires
+`bigquery.jobs.listAll`.)
 
 ## SQL file reference
 
@@ -244,6 +348,8 @@ src/hermes/sql/queries/
   create_place_canonical_metro.sql                 creates hermes_union.place_canonical_metro (optional lookup;
                                                    created empty — LEFT JOINs in 05/06 degrade safely when empty;
                                                    populate later if canonical metro overrides are desired)
+  create_correlation_culprits_multigranularity.sql      creates hermes_union.correlation_culprits_multigranularity
+  create_correlation_entity_stats_multigranularity.sql  creates hermes_union.correlation_entity_stats_multigranularity
 
   # Enrichment helpers (Phase B; run by enrichment/main.py, not numbered steps)
   enrich_geolocation_add_metro.sql                rebuilds hermes.geolocation with metro
