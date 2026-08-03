@@ -14,6 +14,12 @@ DDL_FILES = [
     "create_temporal_path_verdicts.sql",
     "create_events_explained_daily.sql",
     "create_place_canonical_metro.sql",
+    # Phase-4 multi-granularity outputs. Production writes these on every run
+    # (write_multigranularity=True in _run_tomography_worker), so their DDL must
+    # be bootstrappable here — previously the tables existed only because they
+    # had been created by hand on the VM.
+    "create_correlation_culprits_multigranularity.sql",
+    "create_correlation_entity_stats_multigranularity.sql",
 ]
 
 

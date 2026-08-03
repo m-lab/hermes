@@ -597,8 +597,17 @@ def _run_tomography_worker(args):
     date, project_id, backend = args
     day_str = date.strftime("%Y-%m-%d")
     try:
+        # write_multigranularity=True matches deployed behaviour on hermes-ec2,
+        # which populates correlation_culprits_multigranularity and
+        # correlation_entity_stats_multigranularity on every run. The default is
+        # False (the parameter was added to gate an out-of-scope phase), so
+        # leaving it unset here would silently stop writing both tables.
+        # Their DDLs are bootstrapped via bootstrap_tables.DDL_FILES.
         run_tomography(
-            date, backend=backend, project_id=project_id
+            date,
+            backend=backend,
+            project_id=project_id,
+            write_multigranularity=True,
         )  # → correlation_hyperedges_tomography_v2
         from hermes.pipeline import temporal_verdict
 
