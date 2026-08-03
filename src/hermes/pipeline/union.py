@@ -98,8 +98,8 @@ def get_existing_dates(project_id: str, table_name: str) -> set[date]:
     return {row.date for row in results}
 
 
-def check_input_data(project_id: str, day: date) -> set[date]:
-    """Check that the NDT source has data for the 7-day window ending on ``day``.
+def check_input_data(project_id: str, day: date, window_days: int = 0) -> set[date]:
+    """Check that the NDT source has data for ``day`` (and optionally days before it).
 
     Queries the raw measurement source (``measurement-lab.ndt.ndt7_union``) — the
     table step 01 ingests — rather than the pipeline's own output. This reflects
@@ -112,29 +112,48 @@ def check_input_data(project_id: str, day: date) -> set[date]:
         GCP project the BigQuery job is billed to (the source table is public).
     day
         The target date (inclusive upper bound of the window).
+    window_days
+        How many days *before* ``day`` to check as well. Defaults to 0, i.e. the
+        target day only — see the cost note below.
 
     Returns
     -------
     set of datetime.date
-        Dates in ``[day-7, day]`` that have no rows in the NDT source.
+        Dates in ``[day - window_days, day]`` that have no rows in the NDT source.
         An empty set means all input data is present.
 
     Notes
     -----
-    Reads only the ``date`` column over the partitions in range, but scanning a
-    large public partitioned table still bills bytes — the pipeline's
-    ``--skip-data-check`` flag bypasses this check when availability is already known.
+    **This check is expensive and scales linearly with the window.** Measured by
+    dry run against the live view: ~34 GiB for one day, ~264 GiB for eight,
+    ~884 GiB for thirty — about 33 GiB per day of window. Partition pruning does
+    work; the cost is simply reading the ``date`` column of a very large table.
+    It is also run *per date*, so a 15-date backfill paid it 15 times.
+
+    ``window_days`` therefore defaults to 0. The previous behaviour checked a
+    7-day lookback, which cost ~230 GiB per date more and was **redundant**:
+    a caller that fails this check merely *skips* the target date, whereas the
+    trailing week is already handled properly by :func:`baseline_fill_dates` and
+    :func:`dates_missing_baseline`, which check ``merged_download_upload``, fill
+    missing step-01 days, and warn about a thin baseline. Pass ``window_days=7``
+    to restore the old behaviour.
+
+    ``--skip-data-check`` bypasses this entirely when availability is already known.
+
+    The source is a VIEW over tables in another project, so its partition
+    metadata is not readable from here — ``INFORMATION_SCHEMA.PARTITIONS`` cannot
+    be used to answer this for free.
     """
     client = bigquery.Client(project=project_id)
-    one_week_earlier = day - timedelta(days=7)
+    earliest = day - timedelta(days=window_days)
     query = f"""
         SELECT DISTINCT date
         FROM `measurement-lab.ndt.ndt7_union`
-        WHERE date BETWEEN '{one_week_earlier}' AND '{day}'
+        WHERE date BETWEEN '{earliest}' AND '{day}'
     """
     results = client.query(query).result()
     available = {row.date for row in results}
-    expected = {one_week_earlier + timedelta(days=i) for i in range(8)}
+    expected = {earliest + timedelta(days=i) for i in range(window_days + 1)}
     return expected - available
 
 
