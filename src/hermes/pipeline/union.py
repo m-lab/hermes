@@ -1,4 +1,5 @@
 import argparse
+import concurrent.futures as cf
 import logging
 import multiprocessing as mp
 from datetime import date, datetime, timedelta
@@ -611,6 +612,76 @@ def _run_tomography_worker(args):
         return f"Error: {day_str} - {e}"
 
 
+def _run_phase_d_tomography(worker_args, tomo_workers):
+    """Run Phase-D correlation tomography with crash-resilient parallelism.
+
+    Phase-D workers are memory-hungry: a single date loads millions of
+    node-edge rows and can spike to ~20 GB RSS, so a worker can be SIGKILLed by
+    the cgroup OOM-killer. ``multiprocessing.Pool.map`` deadlocks permanently in
+    that case — the killed task's result is never delivered and ``map()`` waits
+    forever (this wedged the April backfill and the July 10/11 dates).
+
+    We use :class:`concurrent.futures.ProcessPoolExecutor` instead, which raises
+    :class:`BrokenProcessPool` when a worker dies rather than hanging. Settings:
+
+    * ``max_tasks_per_child=1`` — a fresh process per date, so memory never
+      accumulates across dates.
+    * a killed worker (OOM) surfaces as ``BrokenProcessPool``; the dates that
+      did not complete are retried once, serialized at 1 worker to avoid a
+      repeat OOM, so a single bad date can't take the whole batch down.
+
+    Returns results in the same order as ``worker_args`` (list of ``"Success:"``
+    / ``"Error:"`` strings), matching the ``Pool.map`` contract.
+    """
+    ctx = mp.get_context("spawn")
+    results_by_date: dict[date, str] = {}
+    remaining = list(worker_args)
+    workers = max(1, tomo_workers)
+
+    while remaining:
+        batch = remaining
+        remaining = []
+        n = min(workers, len(batch))
+        try:
+            with cf.ProcessPoolExecutor(
+                max_workers=n, mp_context=ctx, max_tasks_per_child=1
+            ) as ex:
+                fut_to_arg = {ex.submit(_run_tomography_worker, wa): wa for wa in batch}
+                for fut in cf.as_completed(fut_to_arg):
+                    d = fut_to_arg[fut][0]
+                    try:
+                        # Handled errors come back as an "Error:" string (final);
+                        # only a hard worker death (OOM/segfault) raises here.
+                        results_by_date[d] = fut.result()
+                    except cf.process.BrokenProcessPool:
+                        pass  # leave unset → retried below
+                    except Exception as e:  # noqa: BLE001 - defensive
+                        results_by_date[d] = f"Error: {d.strftime('%Y-%m-%d')} - {e}"
+        except cf.process.BrokenProcessPool as e:
+            logger.error(f"Phase D pool broke (worker died, likely OOM): {e}")
+
+        # Any date without a result had its worker killed — retry, but serialized.
+        not_done = [wa for wa in batch if wa[0] not in results_by_date]
+        if not_done and workers > 1:
+            logger.warning(
+                f"Retrying {len(not_done)} Phase-D date(s) at 1 worker after a "
+                f"worker death: {[wa[0].strftime('%Y-%m-%d') for wa in not_done]}"
+            )
+            remaining = not_done
+            workers = 1
+        elif not_done:
+            # Already at 1 worker and it still died — the date itself OOMs even
+            # in isolation. Record a loud error instead of looping forever.
+            for wa in not_done:
+                d = wa[0]
+                results_by_date[d] = (
+                    f"Error: {d.strftime('%Y-%m-%d')} - tomography worker died "
+                    f"(likely OOM) even at 1 worker; needs a lower memory footprint"
+                )
+
+    return [results_by_date[wa[0]] for wa in worker_args]
+
+
 def _run_parallel_sql(dates, project_id, sql_files, max_workers, skip_data_check):
     """Run SQL steps for multiple dates in parallel. Returns list of result strings."""
     if not dates:
@@ -660,6 +731,7 @@ def run_dates(
     dry_run: bool,
     tomography_backend: str = "python",
     auto_baseline: bool = True,
+    tomography_workers: int | None = None,
 ) -> None:
     """Run the full union pipeline for a batch of dates.
 
@@ -751,14 +823,20 @@ def run_dates(
     logger.info(
         f"═══ Phase D: Running correlation + temporal tomography for {len(successful_dates)} date(s) ═══"
     )
-    effective_workers = max_workers or min(mp.cpu_count(), len(successful_dates))
+    # Phase D is throttled INDEPENDENTLY of max_workers and defaults to a SINGLE
+    # worker: one date can spike to ~20 GB RSS, so 2+ workers OOM the container
+    # cgroup. Do not reuse max_workers here — the scan-bound SQL phases can
+    # safely run 3-wide, Phase D cannot. The runner is crash-resilient
+    # (ProcessPoolExecutor, not Pool.map) so an OOM fails loudly instead of
+    # deadlocking — see _run_phase_d_tomography.
+    tomo_workers = tomography_workers or 1
+    logger.info(f"  Phase D parallelism: {tomo_workers} worker(s)")
     worker_args = [(date, project_id, tomography_backend) for date in successful_dates]
 
     if len(successful_dates) == 1:
         results_d = [_run_tomography_worker(worker_args[0])]
     else:
-        with mp.Pool(processes=effective_workers) as pool:
-            results_d = pool.map(_run_tomography_worker, worker_args)
+        results_d = _run_phase_d_tomography(worker_args, tomo_workers)
 
     # ── Phase E: public-format aggregation (parallel across dates) ──────
     # Runs after Phase D: reads correlation_hyperedges_tomography_v2 to attach
@@ -872,6 +950,15 @@ def main() -> None:
         "7 days) before detection; warn instead.",
     )
     parser.add_argument(
+        "--tomography-workers",
+        type=int,
+        default=None,
+        help="Maximum parallel workers for Phase D correlation tomography "
+        "(default: 1). Throttled separately from --max-workers: a single date can "
+        "spike to ~20 GB RSS, so 2+ workers OOM the container; only raise once the "
+        "cover's memory footprint is reduced.",
+    )
+    parser.add_argument(
         "--fill-missing",
         action="store_true",
         help="Between --start-date and --end-date, process ONLY the dates whose "
@@ -926,6 +1013,7 @@ def main() -> None:
             args.skip_data_check,
             args.dry_run,
             tomography_backend=args.tomography_backend,
+            tomography_workers=args.tomography_workers,
             auto_baseline=not args.no_auto_baseline,
         )
         return
@@ -971,6 +1059,7 @@ def main() -> None:
             args.skip_data_check,
             args.dry_run,
             tomography_backend=args.tomography_backend,
+            tomography_workers=args.tomography_workers,
             auto_baseline=not args.no_auto_baseline,
         )
         return
@@ -998,6 +1087,7 @@ def main() -> None:
         args.skip_data_check,
         args.dry_run,
         tomography_backend=args.tomography_backend,
+        tomography_workers=args.tomography_workers,
         auto_baseline=not args.no_auto_baseline,
     )
 
