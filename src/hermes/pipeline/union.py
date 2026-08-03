@@ -643,9 +643,7 @@ def _run_phase_d_tomography(worker_args, tomo_workers):
         remaining = []
         n = min(workers, len(batch))
         try:
-            with cf.ProcessPoolExecutor(
-                max_workers=n, mp_context=ctx, max_tasks_per_child=1
-            ) as ex:
+            with cf.ProcessPoolExecutor(max_workers=n, mp_context=ctx, max_tasks_per_child=1) as ex:
                 fut_to_arg = {ex.submit(_run_tomography_worker, wa): wa for wa in batch}
                 for fut in cf.as_completed(fut_to_arg):
                     d = fut_to_arg[fut][0]
@@ -852,7 +850,9 @@ def run_dates(
     # re-runnable. (Silently produced 11 fully-unattributed days before this
     # gate existed.)
     tomography_ok = {
-        day for day, result in zip(successful_dates, results_d) if result.startswith("Success:")
+        day
+        for day, result in zip(successful_dates, results_d, strict=True)
+        if result.startswith("Success:")
     }
     dates_for_e = [day for day in successful_dates if day in tomography_ok]
     tomography_failed = [day for day in successful_dates if day not in tomography_ok]
@@ -980,11 +980,15 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.fill_missing and args.force_rerun:
-        parser.error("--fill-missing and --force-rerun are mutually exclusive: the first "
-                     "processes only absent dates, the second reprocesses every date.")
+        parser.error(
+            "--fill-missing and --force-rerun are mutually exclusive: the first "
+            "processes only absent dates, the second reprocesses every date."
+        )
     if args.fill_missing and args.rerun_dates:
-        parser.error("--fill-missing operates on a --start-date/--end-date range; "
-                     "it cannot be combined with --rerun-dates.")
+        parser.error(
+            "--fill-missing operates on a --start-date/--end-date range; "
+            "it cannot be combined with --rerun-dates."
+        )
 
     project_id = "mlab-collaboration"
 
