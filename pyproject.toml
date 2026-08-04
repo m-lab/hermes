@@ -8,13 +8,13 @@ version = "0.1.0"
 description = "HERMES network monitoring and anomaly detection pipeline"
 requires-python = ">=3.11"
 dependencies = [
-    "google-cloud-bigquery>=3.42.2",
+    "google-cloud-bigquery>=3.42.3",
     "db-dtypes>=1.7.1",  # required by bigquery .to_dataframe() for DATE/TIME columns (download_edges)
-    "google-auth>=2.56.0",
-    "pandas>=3.0.3",
+    "google-auth>=2.56.2",
+    "pandas>=3.0.5",
     "requests>=2.34.2",
     "geopy>=2.5.0",
-    "tqdm>=4.69.0",
+    "tqdm>=4.70.0",
     "maxminddb>=3.1.1",
     "python-dotenv>=1.2.2",
     "scipy>=1.17.1",
@@ -23,7 +23,7 @@ dependencies = [
 
 [project.optional-dependencies]
 plot = ["matplotlib>=3.11.1", "geopandas>=1.1.4", "folium>=0.20.0"]
-dev = ["ruff>=0.15.22", "mypy>=2.3.0", "pytest>=9.1.1", "pre-commit>=4.6.0", "pandas-stubs", "types-requests", "pyarrow>=25.0.0"]
+dev = ["ruff>=0.16.1", "mypy>=2.3.0", "pytest>=9.1.1", "pre-commit>=4.6.1", "pandas-stubs", "types-requests", "pyarrow>=25.0.0"]
 
 [project.scripts]
 hermes-pipeline = "hermes.pipeline.union:main"
