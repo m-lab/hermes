@@ -41,7 +41,7 @@ collector = IXPCollector(
     wrapper_script_path="/path/to/wrapper.py",
     python_executable="/path/to/python",
     output_dir="/path/to/output",
-    batch_size=1000
+    batch_size=1000,
 )
 ```
 
