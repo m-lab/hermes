@@ -138,7 +138,7 @@ class HermesEnrichment:
             """
         else:
             # IPv4 query - look for addresses without colons
-            query = f"""
+            query = rf"""
             WITH latest_geoloc AS (
               SELECT ip_address, MAX(partition_date) AS partition_date
               FROM `{self.tables["ip_to_geoloc"]}`

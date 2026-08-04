@@ -12,7 +12,7 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /usr/local/bin/zdns
 # ============================================================
 # Stage 2: Python runtime with pipeline code
 # ============================================================
-FROM python:3.11-slim-bookworm
+FROM python:3.14-slim-bookworm
 
 # System dependencies for enrichment downloaders
 RUN apt-get update &&     apt-get install -y --no-install-recommends         wget         bzip2         curl     && rm -rf /var/lib/apt/lists/*
