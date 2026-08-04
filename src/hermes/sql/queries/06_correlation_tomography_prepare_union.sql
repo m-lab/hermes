@@ -32,28 +32,57 @@ WHERE NOT forward_distance / 100 > ndt_rtt
   AND NOT reverse_distance / 100 > ndt_rtt;
 
 -- 3. Extract ordered AS paths
+-- Canonicalize each hop's place to the polygon metro (lat/lon-derived) so the same
+-- physical place isn't split by ISO2-vs-full region naming across geo sources
+-- (e.g. 'Miami-FL-US' from server_metadata vs 'Miami-Florida-US' from ipinfo).
+-- The UNNEST + place_canonical_metro join is flattened into CTEs (rather than a
+-- correlated scalar subquery) because BigQuery cannot de-correlate a subquery that
+-- joins another table inside a correlated UNNEST.
 CREATE TEMP TABLE processed_paths AS
+WITH forward_hops AS (
+  SELECT
+    fr.id,
+    -- Prefer the lat/lon-derived metro (source-independent, full region name,
+    -- complete) over the place_canonical_metro string lookup, which is keyed on
+    -- place and misses code-form variants like 'Johannesburg-GT-ZA'; raw place last.
+    IFNULL(CONCAT(fwd.associated_asn, '-', COALESCE(fwd.metro, al.canon_metro, fwd.place)), '*') AS path,
+    fwd.ttl
+  FROM final_results AS fr,
+       UNNEST(fr.forward_updated_node_details) AS fwd
+  LEFT JOIN `mlab-collaboration.hermes_union.place_canonical_metro` al
+    ON al.place = fwd.place
+),
+forward_agg AS (
+  SELECT id, ARRAY_AGG(path ORDER BY min_ttl) AS forward_as_path
+  FROM (
+    SELECT id, path, MIN(ttl) AS min_ttl FROM forward_hops GROUP BY id, path
+  )
+  GROUP BY id
+),
+reverse_hops AS (
+  SELECT
+    fr.id,
+    IFNULL(CONCAT(rwd.associated_asn, '-', COALESCE(rwd.metro, al.canon_metro, rwd.place)), '*') AS path,
+    rwd.ttl
+  FROM final_results AS fr,
+       UNNEST(fr.reverse_updated_node_details) AS rwd
+  LEFT JOIN `mlab-collaboration.hermes_union.place_canonical_metro` al
+    ON al.place = rwd.place
+),
+reverse_agg AS (
+  SELECT id, ARRAY_AGG(path ORDER BY min_ttl) AS reverse_as_path
+  FROM (
+    SELECT id, path, MIN(ttl) AS min_ttl FROM reverse_hops GROUP BY id, path
+  )
+  GROUP BY id
+)
 SELECT
   fr.id,
-  (
-    SELECT ARRAY_AGG(x.path ORDER BY x.min_ttl)
-    FROM (
-      SELECT IFNULL(CONCAT(fwd.associated_asn, '-', fwd.place), '*') AS path,
-             MIN(fwd.ttl) AS min_ttl
-      FROM UNNEST(fr.forward_updated_node_details) fwd
-      GROUP BY path
-    ) x
-  ) AS forward_as_path,
-  (
-    SELECT ARRAY_AGG(x.path ORDER BY x.min_ttl)
-    FROM (
-      SELECT IFNULL(CONCAT(rwd.associated_asn, '-', rwd.place), '*') AS path,
-             MIN(rwd.ttl) AS min_ttl
-      FROM UNNEST(fr.reverse_updated_node_details) AS rwd
-      GROUP BY path
-    ) x
-  ) AS reverse_as_path
-FROM final_results AS fr;
+  fa.forward_as_path,
+  ra.reverse_as_path
+FROM final_results AS fr
+LEFT JOIN forward_agg AS fa ON fr.id = fa.id
+LEFT JOIN reverse_agg AS ra ON fr.id = ra.id;
 
 -- 4. Return all edges (last statement = what Python downloads)
 WITH path_with_anomaly AS (
