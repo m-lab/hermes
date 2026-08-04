@@ -400,8 +400,8 @@ def main() -> None:
             (date, project_id, args.sql_folder, args.sql_file) for date in dates_to_process
         ]
 
-        # Process in parallel
-        with mp.Pool(processes=max_workers) as pool:
+        # Process in parallel (spawn: fork after BigQuery/gRPC threads deadlocks children)
+        with mp.get_context("spawn").Pool(processes=max_workers) as pool:
             results = pool.map(process_date_worker, worker_args)
 
         # Log results

@@ -40,17 +40,22 @@ class ZDNSEnricherIPv6(BaseEnrichment):
         except ValueError:
             return False
 
-    def process_rdns(self, date: str) -> None:
-        """Process rDNS lookups for IPv6 addresses from transient events that need updates."""
+    def process_rdns(self, date: str, lookback_days: int = 30) -> None:
+        """Process rDNS lookups for IPv6 addresses from transient events that need updates.
+
+        See :meth:`hermes.enrichment.zdns.enricher.ZDNSEnricher.process_rdns` for
+        the rationale: ``lookback_days`` sizes only the backward candidate-collection
+        window to the batch being processed. The forward half is intentional and
+        unchanged, and the 30-day staleness threshold is unaffected.
+        """
         logger.info(f"Processing IPv6 rDNS for date: {date}")
 
-        # Calculate date thresholds (one month ago and one month ahead)
         current_date = datetime.strptime(date, "%Y-%m-%d")
-        month_ago = current_date - timedelta(days=30)
-        month_ago_str = month_ago.strftime("%Y-%m-%d")
-        month_ahead = current_date + timedelta(days=30)
-        month_ahead_str = month_ahead.strftime("%Y-%m-%d")
-        start_date = month_ago_str
+        # Staleness threshold: stored rDNS older than this is refetched.
+        month_ago_str = (current_date - timedelta(days=30)).strftime("%Y-%m-%d")
+        month_ahead_str = (current_date + timedelta(days=30)).strftime("%Y-%m-%d")
+        # Candidate-collection window: backward side sized to the batch.
+        start_date = (current_date - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
         end_date = month_ahead_str
 
         # Get IPv6 addresses that need updates using a single SQL query

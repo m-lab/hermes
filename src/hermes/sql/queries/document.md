@@ -31,9 +31,14 @@ The step is a single self-contained SQL script:
 
 ## Output Table
 
-**`mlab-collaboration.hermes_union.transient_events_with_as_and_geoloc`**
+**`mlab-collaboration.hermes_union.events_with_as_and_geoloc`**
 
-Partitioned by `partition_date`. One row per transient event, carrying all the original event metadata plus two enriched hop arrays (forward and reverse).
+Partitioned by `partition_date`. One row per transient event, carrying all the original event metadata plus two enriched hop arrays (forward and reverse) — exactly 1:1 with the input `transient_events_union` rows, since Step 04 enriches rather than fans out.
+
+> Earlier revisions of this document named the output
+> `transient_events_with_as_and_geoloc`. That table was the pre-rename
+> predecessor, was never written by the current pipeline, and has been dropped.
+> The live output is `events_with_as_and_geoloc`.
 
 ---
 

@@ -25,7 +25,12 @@ FROM (
     *,
     ROW_NUMBER() OVER (
       PARTITION BY asn
-      ORDER BY ABS(DATE_DIFF(partition_date, DATE '${DAY}', DAY))
+      ORDER BY
+        ABS(DATE_DIFF(partition_date, DATE '${DAY}', DAY)) ASC,
+        -- on a distance tie (a partition equally far in the past and the future),
+        -- prefer the PAST one, then the most recent — deterministic, no future bias.
+        (CASE WHEN partition_date <= DATE '${DAY}' THEN 0 ELSE 1 END) ASC,
+        partition_date DESC
     ) AS rn
   FROM `mlab-collaboration.hermes.as_metadata`
 )
@@ -42,7 +47,10 @@ SELECT * EXCEPT(rn) FROM (
       PARTITION BY ip_address
       ORDER BY
         (CASE WHEN hostname IS NULL OR hostname = '' THEN 1 ELSE 0 END) ASC,
-        ABS(DATE_DIFF(partition_date, DATE '${DAY}', DAY)) ASC
+        ABS(DATE_DIFF(partition_date, DATE '${DAY}', DAY)) ASC,
+        -- on a distance tie, prefer the PAST partition, then most recent (deterministic).
+        (CASE WHEN partition_date <= DATE '${DAY}' THEN 0 ELSE 1 END) ASC,
+        partition_date DESC
     ) AS rn
   FROM (
     SELECT *, 'v4' AS ip_version
@@ -65,7 +73,10 @@ SELECT * EXCEPT(rn) FROM (
       PARTITION BY ip_address
       ORDER BY
         (CASE WHEN city IS NULL AND city_ip_info IS NULL AND metro IS NULL THEN 1 ELSE 0 END) ASC,
-        ABS(DATE_DIFF(partition_date, DATE '${DAY}', DAY)) ASC
+        ABS(DATE_DIFF(partition_date, DATE '${DAY}', DAY)) ASC,
+        -- on a distance tie, prefer the PAST partition, then most recent (deterministic).
+        (CASE WHEN partition_date <= DATE '${DAY}' THEN 0 ELSE 1 END) ASC,
+        partition_date DESC
     ) AS rn
   FROM (
     SELECT *, 'v4' AS ip_version
@@ -122,7 +133,11 @@ ixp_ranked AS (
     partition_date,
     ROW_NUMBER() OVER (
       PARTITION BY ipv4
-      ORDER BY ABS(DATE_DIFF(partition_date, DATE('${DAY}'), DAY)) ASC
+      ORDER BY
+        ABS(DATE_DIFF(partition_date, DATE('${DAY}'), DAY)) ASC,
+        -- on a distance tie, prefer the PAST partition, then most recent (deterministic).
+        (CASE WHEN partition_date <= DATE('${DAY}') THEN 0 ELSE 1 END) ASC,
+        partition_date DESC
     ) AS rank
   FROM `mlab-collaboration.ix_data.ixp_members`
 ),
@@ -157,7 +172,7 @@ hop_prefixes AS (
     WHERE rank = 1
   ) ix
     ON ix.ipv4 = REGEXP_EXTRACT(hop.id, r'_([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)$')
-  WHERE date BETWEEN '2025-05-01' AND '${DAY}'
+  WHERE date BETWEEN DATE_SUB(DATE('${DAY}'), INTERVAL 1 MONTH) AND '${DAY}'
 ),
 unified_data_v4 AS (
   SELECT
@@ -196,6 +211,70 @@ extracted_prefixes_v6 AS (
 SELECT * FROM extracted_prefixes_v4
 UNION ALL
 SELECT * FROM extracted_prefixes_v6;
+
+-- 5) HOIHO geo-by-rDNS lookup, DEDUPED to the distinct set of hop rDNS names.
+--    The `hermes.geolocation` (HOIHO) join matches on a REGEXP-normalized hostname
+--    (a computed expression, not a hash key), so running it per hop-occurrence
+--    (~185M rows in node_with_geo_info) was step 04's single biggest cost
+--    (~160 min / ~227 slot-hours of one child). Here we run that REGEXP join ONCE
+--    per DISTINCT rdns_name (~a few million), then node_with_geo_info / its reverse
+--    counterpart equijoin back on the plain `rdns_name` column (hash-joinable).
+--    Output is identical: this LEFT JOIN keeps non-matches (a single NULL-geo row
+--    per rdns_name) AND any hostname fan-out, and we key on the RAW rdns_name, so
+--    broadcasting on rdns_name reproduces the original per-hop rows exactly
+--    (including trailing-dot variants, which each match via the same REGEXP).
+CREATE TEMP TABLE _rdns_geo AS
+WITH distinct_rdns AS (
+  SELECT DISTINCT rdns_name FROM (
+    SELECT node.rdns_name AS rdns_name
+    FROM `mlab-collaboration.hermes_union.transient_events_union` t,
+         UNNEST(t.node_details) AS node
+    WHERE t.partition_date = '${DAY}'
+    UNION ALL
+    SELECT rdns.hostname AS rdns_name
+    FROM `mlab-collaboration.hermes_union.transient_events_union` t,
+         UNNEST(t.reverse_node_details) AS reverse_node
+    LEFT JOIN _closest_rdns rdns
+      ON rdns.ip_address = reverse_node.hop_ip
+    WHERE t.partition_date = '${DAY}'
+  )
+  WHERE rdns_name IS NOT NULL
+),
+ranked AS (
+  SELECT
+    r.rdns_name,
+    geo.lat,
+    geo.lon,
+    geo.place,
+    geo.clli,
+    geo.metro,
+    geo.cc,
+    geo.hostname,
+    ROW_NUMBER() OVER (
+      PARTITION BY r.rdns_name
+      ORDER BY
+        -- HOIHO emits SEVERAL rows per hostname (coord-less duplicates plus one
+        -- or more coordinate guesses, e.g. a "winchester.tn" host resolving to
+        -- both Winchester-TN and Winchester-VA). Keep exactly ONE so a hop is
+        -- never duplicated into multiple node_details entries. Prefer the most
+        -- informative candidate — a coord-bearing / more-populated row always
+        -- beats a sparse one...
+        ( CAST(geo.lat IS NOT NULL AND geo.lon IS NOT NULL AS INT64)
+        + CAST(geo.clli IS NOT NULL AS INT64)
+        + CAST(geo.place IS NOT NULL AS INT64)
+        + CAST(geo.metro IS NOT NULL AS INT64)
+        + CAST(geo.cc IS NOT NULL AS INT64) ) DESC,
+        -- ...then break ties alphabetically for a deterministic single winner.
+        geo.place ASC, geo.clli ASC, geo.metro ASC, geo.cc ASC,
+        geo.lat ASC, geo.lon ASC, geo.hostname ASC
+    ) AS rn
+  FROM distinct_rdns r
+  LEFT JOIN `mlab-collaboration.hermes.geolocation` geo
+    ON REGEXP_REPLACE(r.rdns_name, r'\.$', '') = REGEXP_REPLACE(geo.hostname, r'\.$', '')
+)
+SELECT rdns_name, lat, lon, place, clli, metro, cc, hostname
+FROM ranked
+WHERE rn = 1;
 
 -- ============================================================================
 -- Main query: enrich hops + compute distances + produce final output
@@ -257,14 +336,29 @@ source_ip_address AS (
 masked_ip_addresses_v4 AS (
   SELECT ip, asn, ixp, mask, ixp_partition_date
   FROM (
-    SELECT *, ROW_NUMBER() OVER (PARTITION BY ip ORDER BY mask DESC) AS rn
+    SELECT
+      m.ip, m.asn, m.ixp, m.mask, m.ixp_partition_date,
+      ROW_NUMBER() OVER (
+        PARTITION BY m.ip
+        ORDER BY
+          m.mask DESC,                    -- most-specific prefix wins
+          -- prefix overlap (two same-length prefixes, e.g. MOAS): prefer the
+          -- network with the largest CAIDA customer cone, then the smallest ASN,
+          -- so the pick is stable/deterministic instead of an arbitrary tie.
+          cam.cone.numberAsns DESC,
+          SAFE_CAST(m.asn AS INT64) ASC
+      ) AS rn
     FROM (
-      SELECT *, NET.SAFE_IP_FROM_STRING(ip) & NET.IP_NET_MASK(4, mask) AS network_bin
-      FROM source_ip_address, UNNEST(GENERATE_ARRAY(8, 32)) mask
-      WHERE BYTE_LENGTH(NET.SAFE_IP_FROM_STRING(ip)) = 4
-    )
-    JOIN extracted_prefixes USING (network_bin, mask)
-    WHERE extracted_prefixes.ip_version = 'v4'
+      SELECT ip, asn, ixp, mask, ixp_partition_date
+      FROM (
+        SELECT *, NET.SAFE_IP_FROM_STRING(ip) & NET.IP_NET_MASK(4, mask) AS network_bin
+        FROM source_ip_address, UNNEST(GENERATE_ARRAY(8, 32)) mask
+        WHERE BYTE_LENGTH(NET.SAFE_IP_FROM_STRING(ip)) = 4
+      )
+      JOIN extracted_prefixes USING (network_bin, mask)
+      WHERE extracted_prefixes.ip_version = 'v4'
+    ) m
+    LEFT JOIN closest_metadata cam ON CAST(m.asn AS STRING) = cam.asn
   )
   WHERE rn = 1
 ),
@@ -272,14 +366,26 @@ masked_ip_addresses_v4 AS (
 masked_ip_addresses_v6 AS (
   SELECT ip, asn, ixp, mask, ixp_partition_date
   FROM (
-    SELECT *, ROW_NUMBER() OVER (PARTITION BY ip ORDER BY mask DESC) AS rn
+    SELECT
+      m.ip, m.asn, m.ixp, m.mask, m.ixp_partition_date,
+      ROW_NUMBER() OVER (
+        PARTITION BY m.ip
+        ORDER BY
+          m.mask DESC,
+          cam.cone.numberAsns DESC,        -- overlap tie: largest customer cone
+          SAFE_CAST(m.asn AS INT64) ASC    -- then smallest ASN (deterministic)
+      ) AS rn
     FROM (
-      SELECT *, NET.SAFE_IP_FROM_STRING(ip) & NET.IP_NET_MASK(16, mask) AS network_bin
-      FROM source_ip_address, UNNEST(GENERATE_ARRAY(8, 128)) mask
-      WHERE BYTE_LENGTH(NET.SAFE_IP_FROM_STRING(ip)) = 16
-    )
-    JOIN extracted_prefixes USING (network_bin, mask)
-    WHERE extracted_prefixes.ip_version = 'v6'
+      SELECT ip, asn, ixp, mask, ixp_partition_date
+      FROM (
+        SELECT *, NET.SAFE_IP_FROM_STRING(ip) & NET.IP_NET_MASK(16, mask) AS network_bin
+        FROM source_ip_address, UNNEST(GENERATE_ARRAY(8, 128)) mask
+        WHERE BYTE_LENGTH(NET.SAFE_IP_FROM_STRING(ip)) = 16
+      )
+      JOIN extracted_prefixes USING (network_bin, mask)
+      WHERE extracted_prefixes.ip_version = 'v6'
+    ) m
+    LEFT JOIN closest_metadata cam ON CAST(m.asn AS STRING) = cam.asn
   )
   WHERE rn = 1
 ),
@@ -412,8 +518,10 @@ node_with_geo_info AS (
       ELSE ip_geo.partition_date
     END AS geo_partition_date
   FROM node_with_prefix_matches nwp
-  LEFT JOIN `mlab-collaboration.hermes.geolocation` geo
-    ON REGEXP_REPLACE(nwp.rdns_name, r'\.$', '') = REGEXP_REPLACE(geo.hostname, r'\.$', '')
+  -- deduped HOIHO geo lookup (see _rdns_geo); equijoin on the plain rdns_name
+  -- column replaces the per-hop REGEXP hostname join — identical result.
+  LEFT JOIN _rdns_geo geo
+    ON nwp.rdns_name = geo.rdns_name
   LEFT JOIN closest_geo_entry ip_geo
     ON nwp.addr = ip_geo.ip_address
   LEFT JOIN _dst_metro dm
@@ -458,14 +566,26 @@ reverse_source_ip_address AS (
 reverse_masked_ip_addresses_v4 AS (
   SELECT ip, asn, ixp, mask, ixp_partition_date
   FROM (
-    SELECT *, ROW_NUMBER() OVER (PARTITION BY ip ORDER BY mask DESC) AS rn
+    SELECT
+      m.ip, m.asn, m.ixp, m.mask, m.ixp_partition_date,
+      ROW_NUMBER() OVER (
+        PARTITION BY m.ip
+        ORDER BY
+          m.mask DESC,
+          cam.cone.numberAsns DESC,        -- overlap tie: largest customer cone
+          SAFE_CAST(m.asn AS INT64) ASC    -- then smallest ASN (deterministic)
+      ) AS rn
     FROM (
-      SELECT *, NET.SAFE_IP_FROM_STRING(ip) & NET.IP_NET_MASK(4, mask) AS network_bin
-      FROM reverse_source_ip_address, UNNEST(GENERATE_ARRAY(8, 32)) mask
-      WHERE BYTE_LENGTH(NET.SAFE_IP_FROM_STRING(ip)) = 4
-    )
-    JOIN extracted_prefixes USING (network_bin, mask)
-    WHERE extracted_prefixes.ip_version = 'v4'
+      SELECT ip, asn, ixp, mask, ixp_partition_date
+      FROM (
+        SELECT *, NET.SAFE_IP_FROM_STRING(ip) & NET.IP_NET_MASK(4, mask) AS network_bin
+        FROM reverse_source_ip_address, UNNEST(GENERATE_ARRAY(8, 32)) mask
+        WHERE BYTE_LENGTH(NET.SAFE_IP_FROM_STRING(ip)) = 4
+      )
+      JOIN extracted_prefixes USING (network_bin, mask)
+      WHERE extracted_prefixes.ip_version = 'v4'
+    ) m
+    LEFT JOIN closest_metadata cam ON CAST(m.asn AS STRING) = cam.asn
   )
   WHERE rn = 1
 ),
@@ -473,14 +593,26 @@ reverse_masked_ip_addresses_v4 AS (
 reverse_masked_ip_addresses_v6 AS (
   SELECT ip, asn, ixp, mask, ixp_partition_date
   FROM (
-    SELECT *, ROW_NUMBER() OVER (PARTITION BY ip ORDER BY mask DESC) AS rn
+    SELECT
+      m.ip, m.asn, m.ixp, m.mask, m.ixp_partition_date,
+      ROW_NUMBER() OVER (
+        PARTITION BY m.ip
+        ORDER BY
+          m.mask DESC,
+          cam.cone.numberAsns DESC,        -- overlap tie: largest customer cone
+          SAFE_CAST(m.asn AS INT64) ASC    -- then smallest ASN (deterministic)
+      ) AS rn
     FROM (
-      SELECT *, NET.SAFE_IP_FROM_STRING(ip) & NET.IP_NET_MASK(16, mask) AS network_bin
-      FROM reverse_source_ip_address, UNNEST(GENERATE_ARRAY(8, 128)) mask
-      WHERE BYTE_LENGTH(NET.SAFE_IP_FROM_STRING(ip)) = 16
-    )
-    JOIN extracted_prefixes USING (network_bin, mask)
-    WHERE extracted_prefixes.ip_version = 'v6'
+      SELECT ip, asn, ixp, mask, ixp_partition_date
+      FROM (
+        SELECT *, NET.SAFE_IP_FROM_STRING(ip) & NET.IP_NET_MASK(16, mask) AS network_bin
+        FROM reverse_source_ip_address, UNNEST(GENERATE_ARRAY(8, 128)) mask
+        WHERE BYTE_LENGTH(NET.SAFE_IP_FROM_STRING(ip)) = 16
+      )
+      JOIN extracted_prefixes USING (network_bin, mask)
+      WHERE extracted_prefixes.ip_version = 'v6'
+    ) m
+    LEFT JOIN closest_metadata cam ON CAST(m.asn AS STRING) = cam.asn
   )
   WHERE rn = 1
 ),
@@ -587,8 +719,10 @@ reverse_node_with_geo_info AS (
     END AS geo_partition_date,
     nwp.hop_type
   FROM reverse_node_with_prefix_matches nwp
-  LEFT JOIN `mlab-collaboration.hermes.geolocation` geo
-    ON REGEXP_REPLACE(nwp.rdns_name, r'\.$', '') = REGEXP_REPLACE(geo.hostname, r'\.$', '')
+  -- deduped HOIHO geo lookup (see _rdns_geo); equijoin on the plain rdns_name
+  -- column replaces the per-hop REGEXP hostname join — identical result.
+  LEFT JOIN _rdns_geo geo
+    ON nwp.rdns_name = geo.rdns_name
   LEFT JOIN closest_geo_entry ip_geo
     ON nwp.addr = ip_geo.ip_address
 ),
@@ -627,8 +761,9 @@ hop_coord_metro AS (
 
 node_with_geo_info_normalized AS (
   SELECT
-    n.* EXCEPT(metro),
-    COALESCE(cm.metro, n.metro) AS metro   -- polygon authority (also covers dst ttl=1); NULL coords stay NULL
+    n.* EXCEPT(metro, place),
+    COALESCE(cm.metro, n.metro) AS metro,  -- polygon authority (also covers dst ttl=1); NULL coords stay NULL
+    COALESCE(cm.metro, n.place) AS place    -- place := polygon metro (coord-canonical); was raw source string
   FROM node_with_geo_info n
   LEFT JOIN hop_coord_metro cm
     ON n.latitude = cm.lat AND n.longitude = cm.lon
@@ -651,11 +786,74 @@ reconstructed_node_details AS (
 
 reverse_node_with_geo_info_normalized AS (
   SELECT
-    n.* EXCEPT(metro),
-    COALESCE(cm.metro, n.metro) AS metro
+    n.* EXCEPT(metro, place),
+    COALESCE(cm.metro, n.metro) AS metro,
+    COALESCE(cm.metro, n.place) AS place    -- place := polygon metro (coord-canonical); was raw source string
   FROM reverse_node_with_geo_info n
   LEFT JOIN hop_coord_metro cm
     ON n.latitude = cm.lat AND n.longitude = cm.lon
+),
+
+--------------------------------------------------------------------------------
+-- Reverse-path loop cleanup (AS + metro) — per M-Lab RevTr guidance.
+-- RevTr stitches RR/atlas segments; hop_type=4 ("intersected record-route atlas")
+-- hops have an ambiguous position and can manufacture spurious AS/geographic
+-- loops. Rule (matches M-Lab docs): (1) drop hop_type=4 hops that create an
+-- A-[4:B]-A excursion in AS or metro (keep the rest); (2) truncate at any genuine
+-- re-entry (a hop whose AS/metro reappears after leaving it), keeping the
+-- reliable dst-side prefix. Loop detection uses HERMES-derived associated_asn +
+-- metro, compared against the nearest NON-NULL neighbor so unmapped/infra hops
+-- (NULL asn) don't fake an excursion. NOTE: truncation keeps ttl < reentry_ttl;
+-- confirm on a sample that low ttl == dst-side before wide deployment.
+--------------------------------------------------------------------------------
+reverse_hops_neighbors AS (
+  SELECT n.*,
+    LAST_VALUE(associated_asn IGNORE NULLS)  OVER w_prev AS prev_asn_nn,
+    FIRST_VALUE(associated_asn IGNORE NULLS) OVER w_next AS next_asn_nn,
+    LAST_VALUE(metro IGNORE NULLS)  OVER w_prev AS prev_metro_nn,
+    FIRST_VALUE(metro IGNORE NULLS) OVER w_next AS next_metro_nn
+  FROM reverse_node_with_geo_info_normalized n
+  WINDOW
+    w_prev AS (PARTITION BY id ORDER BY ttl ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING),
+    w_next AS (PARTITION BY id ORDER BY ttl ROWS BETWEEN 1 FOLLOWING AND UNBOUNDED FOLLOWING)
+),
+-- (1) remove hop_type=4 A-[4:B]-A excursions in AS or metro
+reverse_hops_drop4 AS (
+  SELECT * EXCEPT(prev_asn_nn, next_asn_nn, prev_metro_nn, next_metro_nn)
+  FROM reverse_hops_neighbors
+  WHERE NOT (
+    hop_type = 4 AND (
+      (associated_asn IS NOT NULL AND prev_asn_nn = next_asn_nn AND associated_asn != prev_asn_nn)
+      OR (metro IS NOT NULL AND prev_metro_nn = next_metro_nn AND metro != prev_metro_nn)
+    )
+  )
+),
+-- (2) detect the first genuine AS re-entry among surviving hops.
+--     NB: truncation fires on AS re-entry ONLY. Metro/city re-entry is deliberately
+--     NOT a truncation trigger — a real-data test (2026-07-01) showed metro-only
+--     re-entry hits ~35% of paths and is dominated by geoloc noise (a backbone
+--     router geolocated to a neighbouring metro and back), not real routing loops.
+--     Metro loops caused by hop_type=4 are still removed by step (1) above.
+reverse_hops_scan AS (
+  SELECT *,
+    LAST_VALUE(associated_asn IGNORE NULLS)
+      OVER (PARTITION BY id ORDER BY ttl ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING) AS pv_asn,
+    MIN(IF(associated_asn IS NOT NULL, ttl, NULL)) OVER (PARTITION BY id, associated_asn) AS first_ttl_asn
+  FROM reverse_hops_drop4
+),
+reverse_hops_truncpt AS (
+  SELECT id,
+    MIN(CASE
+      WHEN associated_asn IS NOT NULL AND associated_asn != pv_asn AND first_ttl_asn < ttl
+      THEN ttl END) AS reentry_ttl
+  FROM reverse_hops_scan
+  GROUP BY id
+),
+reverse_hops_clean AS (
+  SELECT s.* EXCEPT(pv_asn, first_ttl_asn)
+  FROM reverse_hops_scan s
+  LEFT JOIN reverse_hops_truncpt t USING (id)
+  WHERE t.reentry_ttl IS NULL OR s.ttl < t.reentry_ttl
 ),
 
 -- Reconstruct reverse node_details array (keep hop_type, convert rtts to seconds)
@@ -671,7 +869,7 @@ reverse_reconstructed_node_details_without_flag AS (
              hop_type)
       ORDER BY ttl
     ) AS updated_node_details
-  FROM reverse_node_with_geo_info_normalized
+  FROM reverse_hops_clean
   GROUP BY id, ip_version, dst_lat, dst_lon, src_lat, src_lon
 ),
 
@@ -786,14 +984,9 @@ reverse_distance_rtt_checks_with_metas_info AS (
     hop_type,
     as_metadata.organization.OrgName AS associated_org,
     as_metadata.PeeringDB_name AS associated_peeringdb_name,
-    ARRAY_AGG(STRUCT(
-      sub.facility_name AS facility_name,
-      sub.facility_city AS facility_city,
-      sub.distance_km
-    )) AS facilities_info
+    -- facilities_info DISABLED (storage cost); proximity logic preserved in corrections/facility_proximity.sql
+    ARRAY<STRUCT<facility_name STRING, facility_city STRING, distance_km FLOAT64>>[] AS facilities_info
   FROM reverse_distance_rtt_checks rd
-  LEFT JOIN `mlab-collaboration.hermes.asn_facility_matched` sub
-    ON rd.associated_asn = sub.asn AND rd.place = sub.city
   LEFT JOIN closest_metadata as_metadata
     ON CAST(as_metadata.asn AS INT64) = CAST(rd.associated_asn AS INT64)
   GROUP BY
@@ -1055,14 +1248,9 @@ distance_rtt_checks_with_metas_info AS (
     END AS baseline_consistency_flag,
     as_metadata.organization.OrgName AS associated_org,
     as_metadata.PeeringDB_name AS associated_peeringdb_name,
-    ARRAY_AGG(STRUCT(
-      sub.facility_name AS facility_name,
-      sub.facility_city AS facility_city,
-      sub.distance_km
-    )) AS facilities_info
+    -- facilities_info DISABLED (storage cost); proximity logic preserved in corrections/facility_proximity.sql
+    ARRAY<STRUCT<facility_name STRING, facility_city STRING, distance_km FLOAT64>>[] AS facilities_info
   FROM distance_rtt_checks rd
-  LEFT JOIN `mlab-collaboration.hermes.asn_facility_matched` sub
-    ON rd.associated_asn = sub.asn AND rd.place = sub.city
   LEFT JOIN closest_metadata as_metadata
     ON CAST(as_metadata.asn AS INT64) = CAST(rd.associated_asn AS INT64)
   GROUP BY
