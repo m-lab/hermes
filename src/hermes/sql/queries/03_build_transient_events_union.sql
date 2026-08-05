@@ -52,21 +52,31 @@ ScamperDataIntermediary AS (
     AVG(a.baseline_median_upload_throughput)     AS baseline_median_upload_throughput,
     AVG(a.baseline_median_loss)          AS baseline_median_loss,
 
-    a.src_city AS src_city,
-    a.src_asn AS src_asn,
-    AVG(a.src_lat) AS src_lat,
-    ANY_VALUE(a.src_state) AS src_state,
-    AVG(a.src_lon) AS src_lon,
-    AVG(a.dst_lat) AS dst_lat,
-    AVG(a.dst_lon) AS dst_lon,
-    a.dst_site AS dst_site,
-    ANY_VALUE(a.dst_city) AS dst_city,
-    ANY_VALUE(a.dst_country) AS dst_country,
-    ANY_VALUE(a.dst_asn) AS dst_asn,
-    ANY_VALUE(a.src_country) AS src_country,
-    ANY_VALUE(a.src_asn_name) AS src_asn_name,
-    ANY_VALUE(a.client_name) AS client_name,
-    a.ip_version AS ip_version,
+    -- Fall back to the scamper record when NO AnomalyCounts row matched.
+    -- Keyed on a.src_asn IS NULL (did the join match at all?) and NOT on each
+    -- column being NULL: COALESCE(a.src_lat, ...) would also fire for a MATCHED
+    -- row whose src_lat happens to be NULL, silently changing existing output.
+    IF(a.src_asn IS NULL,
+       CONCAT(scamper.client.Geo.city, '-',
+              scamper.client.Geo.Subdivision1ISOCode, '-',
+              scamper.client.Geo.CountryCode),
+       a.src_city) AS src_city,
+    IF(a.src_asn IS NULL, scamper.client.Network.ASNumber, a.src_asn) AS src_asn,
+    AVG(IF(a.src_asn IS NULL, scamper.client.Geo.Latitude, a.src_lat)) AS src_lat,
+    ANY_VALUE(IF(a.src_asn IS NULL, scamper.client.Geo.Subdivision1ISOCode, a.src_state)) AS src_state,
+    AVG(IF(a.src_asn IS NULL, scamper.client.Geo.Longitude, a.src_lon)) AS src_lon,
+    AVG(IF(a.src_asn IS NULL, scamper.server.Geo.Latitude, a.dst_lat)) AS dst_lat,
+    AVG(IF(a.src_asn IS NULL, scamper.server.Geo.Longitude, a.dst_lon)) AS dst_lon,
+    IF(a.src_asn IS NULL, scamper.server.Site, a.dst_site) AS dst_site,
+    ANY_VALUE(IF(a.src_asn IS NULL, scamper.server.Geo.City, a.dst_city)) AS dst_city,
+    ANY_VALUE(IF(a.src_asn IS NULL, scamper.server.Geo.CountryCode, a.dst_country)) AS dst_country,
+    ANY_VALUE(IF(a.src_asn IS NULL, scamper.server.Network.ASNumber, a.dst_asn)) AS dst_asn,
+    ANY_VALUE(IF(a.src_asn IS NULL, scamper.client.Geo.CountryCode, a.src_country)) AS src_country,
+    ANY_VALUE(IF(a.src_asn IS NULL, scamper.client.Network.ASName, a.src_asn_name)) AS src_asn_name,
+    ANY_VALUE(IF(a.src_asn IS NULL, ndt.client_name, a.client_name)) AS client_name,
+    IF(a.src_asn IS NULL,
+       IF(REGEXP_CONTAINS(scamper.raw.Tracelb.src, ':'), 'v6', 'v4'),
+       a.ip_version) AS ip_version,
 
     TIMESTAMP_TRUNC(TIMESTAMP_SECONDS(scamper.raw.Tracelb.start.sec), HOUR) AS window_start,
     MAX(a.is_consistent) AS is_consistent,
@@ -75,7 +85,13 @@ ScamperDataIntermediary AS (
     AVG(a.unique_ip_count_per_site) AS unique_ip_count_per_site,
     AVG(a.measurement_count_per_site) AS measurement_count_per_site
   FROM `measurement-lab.ndt.scamper1` scamper
-  JOIN AnomalyCounts a
+  -- Needed only to identify giga clients (and supply client_name) when the
+  -- AnomalyCounts join does not match. LEFT so it can never drop a row that
+  -- reaches this CTE today.
+  LEFT JOIN `mlab-collaboration.hermes_union.merged_download_upload` ndt
+    ON ndt.id = scamper.id
+    AND ndt.partition_date BETWEEN '${ONE_WEEK_EARLIER}' AND '${DAY}'
+  LEFT JOIN AnomalyCounts a
     ON CONCAT(
          scamper.client.Geo.city, '-',
          scamper.client.Geo.Subdivision1ISOCode, '-',
@@ -85,9 +101,15 @@ ScamperDataIntermediary AS (
     AND scamper.server.Site = a.dst_site
     AND a.ip_version = IF(REGEXP_CONTAINS(scamper.raw.Tracelb.src, ':'), 'v6', 'v4')
   WHERE scamper.date BETWEEN '${ONE_WEEK_EARLIER}' AND '${DAY}'
+    -- Keep a trace if its group was detected that day (unchanged behaviour) OR
+    -- if it is a giga client. 03 previously INNER JOINed AnomalyCounts, so giga
+    -- traces from groups absent that day were discarded before 04 ever saw them
+    -- (measured 2026-08-05: 17.6% of giga measurements never reached 04, 99.6%
+    -- of which DID have a trace available).
+    AND (a.src_asn IS NOT NULL OR ndt.client_name = 'giga-meter')
   GROUP BY
-    scamper.id, a.src_city, a.src_asn, a.dst_site, window_start,
-    a.ip_version
+    scamper.id, src_city, src_asn, dst_site, window_start,
+    ip_version
 ),
 
 ScamperData AS (
@@ -147,21 +169,30 @@ Scamper2DataIntermediary AS (
     AVG(a.baseline_median_upload_throughput)     AS baseline_median_upload_throughput,
     AVG(a.baseline_median_loss)          AS baseline_median_loss,
 
-    a.src_city AS src_city,
-    a.src_asn AS src_asn,
-    AVG(a.src_lat) AS src_lat,
-    ANY_VALUE(a.src_state) AS src_state,
-    AVG(a.src_lon) AS src_lon,
-    AVG(a.dst_lat) AS dst_lat,
-    AVG(a.dst_lon) AS dst_lon,
-    a.dst_site AS dst_site,
-    ANY_VALUE(a.dst_city) AS dst_city,
-    ANY_VALUE(a.dst_country) AS dst_country,
-    ANY_VALUE(a.dst_asn) AS dst_asn,
-    ANY_VALUE(a.src_country) AS src_country,
-    ANY_VALUE(a.src_asn_name) AS src_asn_name,
-    ANY_VALUE(a.client_name) AS client_name,
-    a.ip_version AS ip_version,
+    -- Same fallback rule as the scamper1 branch above; see the note there on
+    -- why this is IF(a.src_asn IS NULL, ...) and not COALESCE. Fallback values
+    -- come from ndt, which this branch already joins.
+    IF(a.src_asn IS NULL,
+       CONCAT(ndt.client.Geo.city, '-',
+              ndt.client.Geo.Subdivision1ISOCode, '-',
+              ndt.client.Geo.CountryCode),
+       a.src_city) AS src_city,
+    IF(a.src_asn IS NULL, ndt.client.Network.ASNumber, a.src_asn) AS src_asn,
+    AVG(IF(a.src_asn IS NULL, ndt.client.Geo.Latitude, a.src_lat)) AS src_lat,
+    ANY_VALUE(IF(a.src_asn IS NULL, ndt.client.Geo.Subdivision1ISOCode, a.src_state)) AS src_state,
+    AVG(IF(a.src_asn IS NULL, ndt.client.Geo.Longitude, a.src_lon)) AS src_lon,
+    AVG(IF(a.src_asn IS NULL, ndt.server.Geo.Latitude, a.dst_lat)) AS dst_lat,
+    AVG(IF(a.src_asn IS NULL, ndt.server.Geo.Longitude, a.dst_lon)) AS dst_lon,
+    IF(a.src_asn IS NULL, ndt.server.Site, a.dst_site) AS dst_site,
+    ANY_VALUE(IF(a.src_asn IS NULL, ndt.server.Geo.City, a.dst_city)) AS dst_city,
+    ANY_VALUE(IF(a.src_asn IS NULL, ndt.server.Geo.CountryCode, a.dst_country)) AS dst_country,
+    ANY_VALUE(IF(a.src_asn IS NULL, ndt.server.Network.ASNumber, a.dst_asn)) AS dst_asn,
+    ANY_VALUE(IF(a.src_asn IS NULL, ndt.client.Geo.CountryCode, a.src_country)) AS src_country,
+    ANY_VALUE(IF(a.src_asn IS NULL, ndt.client.Network.ASName, a.src_asn_name)) AS src_asn_name,
+    ANY_VALUE(IF(a.src_asn IS NULL, ndt.client_name, a.client_name)) AS client_name,
+    IF(a.src_asn IS NULL,
+       IF(REGEXP_CONTAINS(scamper.raw.Trace.src, ':'), 'v6', 'v4'),
+       a.ip_version) AS ip_version,
 
     TIMESTAMP_TRUNC(TIMESTAMP_SECONDS(SAFE_CAST(scamper.raw.Trace.start.sec AS INT64)), HOUR) AS window_start,
     MAX(a.is_consistent) AS is_consistent,
@@ -175,7 +206,7 @@ Scamper2DataIntermediary AS (
     AND ndt.client_ip = scamper.raw.Trace.dst
     AND ndt.partition_date = CAST(scamper.date AS DATE)
     AND ndt.partition_date BETWEEN '${ONE_WEEK_EARLIER}' AND '${DAY}'
-  JOIN AnomalyCounts a
+  LEFT JOIN AnomalyCounts a
     ON ndt.client.Network.ASNumber = a.src_asn
     AND ndt.server.Site = a.dst_site
     AND CONCAT(
@@ -185,9 +216,14 @@ Scamper2DataIntermediary AS (
        ) = a.src_city
     AND a.ip_version = IF(REGEXP_CONTAINS(scamper.raw.Trace.src, ':'), 'v6', 'v4')
   WHERE scamper.date BETWEEN '${ONE_WEEK_EARLIER}' AND '${DAY}'
+    -- Same rule as the scamper1 branch. BYOS is where most of the loss sits:
+    -- measured capture rate 68.6% for BYOS-only traces vs 90.9% for scamper1,
+    -- because BYOS deployments are sparser and their groups more often absent
+    -- from anomaly_counts_union on a given day.
+    AND (a.src_asn IS NOT NULL OR ndt.client_name = 'giga-meter')
   GROUP BY
-    scamper.raw.Metadata.UUID, a.src_city, a.src_asn, a.dst_site, window_start,
-    a.ip_version
+    scamper.raw.Metadata.UUID, src_city, src_asn, dst_site, window_start,
+    ip_version
 ),
 
 Scamper2Data AS (

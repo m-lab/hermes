@@ -1665,24 +1665,51 @@ WHERE (
           WHERE month_start = DATE_TRUNC(CAST('${DAY}' AS DATE), MONTH)
         )
       )
-  -- Write each measurement exactly ONCE, on the analysis date that equals its
-  -- own measurement date.
+  -- Write each measurement exactly ONCE, without ever dropping one.
   --
   -- partition_date here is the HERMES *analysis* date, not the measurement's.
-  -- A measurement sits in the trailing window of every analysis date from its
-  -- own day through +7, so without this filter 04 writes it eight times — once
-  -- per analysis date — giving ~8x duplication on
-  -- (id, src_asn, src_city, dst_site). Measured 2026-08-05 over
-  -- 2026-07-28..08-03: the analysis-minus-measurement lag is uniform across
-  -- 0..7 days (61k-77k rows each), and restricting to lag 0 keeps exactly one
-  -- copy of each measurement.
+  -- Step 03 pulls scamper traces over a 7-day lookback
+  -- (s.date BETWEEN ${ONE_WEEK_EARLIER} AND ${DAY}) and attaches them to that
+  -- day's groups, so one trace is written once per analysis date that pulls it
+  -- in — ~8x duplication on (id, src_asn, src_city, dst_site).
+  --
+  -- DO NOT dedup with "DATE(window_start) = ${DAY}". It looks equivalent and is
+  -- not: a trace only gets an offset-0 row if its group also appears in
+  -- anomaly_counts_union on the trace's OWN day. Groups present every day
+  -- always do; intermittent groups often never do, so the rule silently deletes
+  -- them entirely. Measured 2026-08-05 on events_with_as_and_geoloc, cohort
+  -- window_start = 2026-06-10:
+  --   IN 24560 / Bangalore   present 8/8 days  ->   0.0% lost
+  --   TH 24378 / Nonthaburi  present 1/8 days  -> 100.0% lost
+  --   ID 4761  / Bekasi      present 6/8 days  -> 100.0% lost
+  --   giga-meter cohort overall             -> 24.6% lost
+  -- The bias runs precisely against the sparse/bursty groups this pipeline
+  -- exists to find.
+  --
+  -- (ANY_VALUE(window_start) in 03 was considered as a second cause and ruled
+  -- out: the grain there is (id, src, dst, ip_version) and the rows collapsed
+  -- are hops of one trace, so window_start is constant within the group.
+  -- Measured over 2026-06-10..06-17: 0 of 58,608 multi-partition keys had more
+  -- than one distinct window_start.)
+  --
+  -- Instead: first-writer-wins. Whichever analysis date reaches a measurement
+  -- first writes it; later dates skip it. Same one-row-per-key guarantee, no
+  -- dependence on any particular offset existing, so nothing is ever lost.
+  --
+  -- The NOT EXISTS is bounded to the last 8 partitions: a prior copy can only
+  -- have been written by an analysis date within the 7-day lookback, so this
+  -- prunes to 8 partitions instead of scanning the table.
   --
   -- NOTE the parentheses above: the giga selector is an OR, so this AND must
   -- wrap it or it would bind to the src IN branch alone and silently drop every
   -- client_name = 'giga-meter' row.
-  --
-  -- Trade-off: a measurement is only captured if the pipeline runs for its own
-  -- date. If an analysis date is skipped, its measurements are not picked up by
-  -- the neighbouring runs any more — re-run that date (--fill-missing) to
-  -- recover them.
-  AND DATE(window_start) = DATE('${DAY}');
+  AND NOT EXISTS (
+        SELECT 1
+        FROM `mlab-collaboration.hermes_union.giga_meter_measurements` g
+        WHERE g.partition_date BETWEEN DATE_SUB(DATE('${DAY}'), INTERVAL 7 DAY)
+                                   AND DATE('${DAY}')
+          AND g.id       = _mapping_result.id
+          AND g.src_asn  = _mapping_result.src_asn
+          AND g.src_city = _mapping_result.src_city
+          AND g.dst_site = _mapping_result.dst_site
+      );
