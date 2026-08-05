@@ -1657,9 +1657,32 @@ SELECT
   mann_whitney_latency, mann_whitney_throughput, mann_whitney_upload_throughput,
   t_test_latency
 FROM _mapping_result
-WHERE client_name = 'giga-meter'
-   OR src IN (
-        SELECT ip_address
-        FROM `mlab-collaboration.hermes_union.giga_school_ips`
-        WHERE month_start = DATE_TRUNC(CAST('${DAY}' AS DATE), MONTH)
-      );
+WHERE (
+        client_name = 'giga-meter'
+     OR src IN (
+          SELECT ip_address
+          FROM `mlab-collaboration.hermes_union.giga_school_ips`
+          WHERE month_start = DATE_TRUNC(CAST('${DAY}' AS DATE), MONTH)
+        )
+      )
+  -- Write each measurement exactly ONCE, on the analysis date that equals its
+  -- own measurement date.
+  --
+  -- partition_date here is the HERMES *analysis* date, not the measurement's.
+  -- A measurement sits in the trailing window of every analysis date from its
+  -- own day through +7, so without this filter 04 writes it eight times — once
+  -- per analysis date — giving ~8x duplication on
+  -- (id, src_asn, src_city, dst_site). Measured 2026-08-05 over
+  -- 2026-07-28..08-03: the analysis-minus-measurement lag is uniform across
+  -- 0..7 days (61k-77k rows each), and restricting to lag 0 keeps exactly one
+  -- copy of each measurement.
+  --
+  -- NOTE the parentheses above: the giga selector is an OR, so this AND must
+  -- wrap it or it would bind to the src IN branch alone and silently drop every
+  -- client_name = 'giga-meter' row.
+  --
+  -- Trade-off: a measurement is only captured if the pipeline runs for its own
+  -- date. If an analysis date is skipped, its measurements are not picked up by
+  -- the neighbouring runs any more — re-run that date (--fill-missing) to
+  -- recover them.
+  AND DATE(window_start) = DATE('${DAY}');
