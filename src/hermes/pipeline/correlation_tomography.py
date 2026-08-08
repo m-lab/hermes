@@ -37,6 +37,21 @@ def _read_df(query_job) -> pd.DataFrame:
     """Materialize a query job to a DataFrame via the Arrow-based BigQuery Storage
     Read API, which is far faster than the REST/paginated path for the multi-million
     row edge/hop downloads. Falls back to REST if the storage client is unavailable.
+
+    The fallback MUST pass ``create_bqstorage_client=False``. That argument defaults
+    to True, so a bare ``to_dataframe()`` silently constructs its own Storage client
+    whenever ``google-cloud-bigquery-storage`` is importable — meaning the fallback
+    re-attempts the very thing it is falling back from, and re-raises the identical
+    error. This stayed hidden while the package was simply absent (the import failed
+    first, so the retry had nothing to auto-create). Installing the package exposed
+    it: every Phase D died with
+    ``403 ... does not have 'bigquery.readsessions.create' permission`` *after*
+    logging "using REST download".
+
+    Availability is a per-identity IAM question, not just a packaging one — the
+    pipeline's ADC identity needs ``roles/bigquery.readSessionUser`` on the billing
+    project. Without it this degrades to REST, which works but is slower and much
+    heavier (a 13.7M-row download OOM-killed the worker at 22.1 GB in a 28 GB cgroup).
     """
     try:
         from google.cloud import bigquery_storage  # type: ignore[attr-defined]
@@ -44,7 +59,7 @@ def _read_df(query_job) -> pd.DataFrame:
         return query_job.to_dataframe(bqstorage_client=bigquery_storage.BigQueryReadClient())
     except Exception as exc:  # pragma: no cover - REST fallback path
         logger.warning("  Storage Read API unavailable (%s); using REST download", exc)
-        return query_job.to_dataframe()
+        return query_job.to_dataframe(create_bqstorage_client=False)
 
 
 # Confidence-tier cutoffs (Phase 1 defaults; tune in Phase 4 validation).
