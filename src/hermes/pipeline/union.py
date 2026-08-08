@@ -38,21 +38,55 @@ SQL_FILES_PUBLIC = [
 
 SQL_FILES = SQL_FILES_PRE_ENRICHMENT + SQL_FILES_POST_ENRICHMENT + SQL_FILES_PUBLIC
 
-OUTPUT_TABLES = [
-    "mlab-collaboration.hermes_union.merged_download_upload",
-    "mlab-collaboration.hermes_union.anomaly_counts_union",
-    "mlab-collaboration.hermes_union.transient_events_union",
-    # 04_mapping_union.sql now writes both events_with_as_and_geoloc
-    # AND giga_meter_measurements from a single computation (no separate step 05).
-    "mlab-collaboration.hermes_union.events_with_as_and_geoloc",
-    "mlab-collaboration.hermes_union.temporal_correlations",
+# Maps each SQL file to the output table whose presence means "this step already
+# ran for this date". Used for per-step resume only.
+#
+# This is written out explicitly rather than zipped against SQL_FILES. A
+# positional ``zip`` made this dict and the delete list the *same* list, which
+# capped the delete list at "one table per SQL file" — so tables written by
+# Phase D (Python) or written as a *second* output of a SQL step could never be
+# added without raising. See DERIVED_OUTPUT_TABLES / DELETE_TABLES below.
+SQL_FILE_TO_OUTPUT_TABLE = {
+    "01_merge_upload_download_union.sql": "mlab-collaboration.hermes_union.merged_download_upload",
+    "02_detect_anomalies_union.sql": "mlab-collaboration.hermes_union.anomaly_counts_union",
+    "03_build_transient_events_union.sql": "mlab-collaboration.hermes_union.transient_events_union",
+    # 04 writes events_with_as_and_geoloc AND giga_meter_measurements from a
+    # single computation; only the former gates the resume check.
+    "04_mapping_union.sql": "mlab-collaboration.hermes_union.events_with_as_and_geoloc",
+    "05_temporal_tomography_union.sql": "mlab-collaboration.hermes_union.temporal_correlations",
     # Phase E public-events table.
-    "mlab-collaboration.hermes_union.events_explained_daily",
+    "07_translating_to_public_format_union.sql": "mlab-collaboration.hermes_union.events_explained_daily",
+}
+
+# Every SQL step must have a resume target, or step_already_done() would silently
+# never skip it. Checked at import so a new step cannot be added without one.
+_missing_resume_targets = [f for f in SQL_FILES if f not in SQL_FILE_TO_OUTPUT_TABLE]
+if _missing_resume_targets:
+    raise RuntimeError(
+        f"SQL files with no entry in SQL_FILE_TO_OUTPUT_TABLE: {_missing_resume_targets}"
+    )
+
+OUTPUT_TABLES = list(SQL_FILE_TO_OUTPUT_TABLE.values())
+
+# Tables the pipeline writes that are NOT the resume target of any SQL file, and
+# so cannot live in SQL_FILE_TO_OUTPUT_TABLE. All three are Phase-D (Python)
+# outputs written with insert_rows_json (append-only, no self-delete), so a
+# re-run without deleting them first APPENDS a second copy for that date.
+DERIVED_OUTPUT_TABLES = [
+    "mlab-collaboration.hermes_union.correlation_hyperedges_tomography_v2",
+    "mlab-collaboration.hermes_union.correlation_culprits_multigranularity",
+    "mlab-collaboration.hermes_union.correlation_entity_stats_multigranularity",
 ]
 
-# Maps each SQL file to the output table it writes to.
-# Used for per-step resume: if the table already has data for a date, skip that step.
-SQL_FILE_TO_OUTPUT_TABLE = dict(zip(SQL_FILES, OUTPUT_TABLES, strict=True))
+# What --delete-first clears.
+#
+# NB: giga_meter_measurements is deliberately NOT here. It is 04's second output,
+# but unlike everything above it accumulates history under first-writer-wins
+# (04 inserts only rows absent from the trailing 8 partitions), and a chunk of
+# its history was recovered by hand. A delete that is not followed by a
+# successful 04 would lose traces permanently, so clearing it stays a deliberate
+# manual act (`hermes-table-rerun --table giga_meter_measurements --delete-first`).
+DELETE_TABLES = OUTPUT_TABLES + DERIVED_OUTPUT_TABLES
 
 # The pipeline's true final output. main() uses this for the "already processed"
 # resume check, so it must be the Phase-E table — not the tomography table.
@@ -295,14 +329,17 @@ def delete_dates(project_id: str, dates: list[date]) -> None:
     project_id
         GCP project ID.
     dates
-        Dates to delete from every table in :data:`OUTPUT_TABLES`.
+        Dates to delete from every table in :data:`DELETE_TABLES` — the per-step
+        resume targets *plus* the Phase-D correlation tables, which are
+        append-only and would otherwise accumulate a second copy on re-run.
+        ``giga_meter_measurements`` is excluded by design; see DELETE_TABLES.
     """
     client = bigquery.Client(project=project_id)
 
     date_strings = [f"'{date.strftime('%Y-%m-%d')}'" for date in dates]
     date_list = ", ".join(date_strings)
 
-    for table in OUTPUT_TABLES:
+    for table in DELETE_TABLES:
         logger.info(
             f"Deleting entries for dates: {', '.join(d.strftime('%Y-%m-%d') for d in dates)} from table: {table}"
         )
@@ -571,6 +608,115 @@ def _result_is_success_for(result: str, days: set[date]) -> bool:
     return parsed in days
 
 
+def find_stale_merged_partitions(
+    project_id: str,
+    dates: list[date] | None = None,
+    window_days: int = 7,
+    ratio_threshold: float = 0.5,
+) -> list[tuple[date, int, int, float]]:
+    """Return ``merged_download_upload`` partitions that captured far too few rows.
+
+    Step 01 can write a partition that is *structurally* fine — present, non-empty,
+    and therefore invisible to both ``step_already_done()`` and the Phase-E
+    attribution check — while holding only a fraction of the measurements that
+    were actually available in the NDT source. Everything downstream then scales
+    down with it: fewer events, a near-empty tomography, and a public partition
+    that looks small rather than wrong.
+
+    Three such dates were found by hand in Aug 2026 (2026-05-27, 2026-07-13,
+    2026-07-17), holding 8.1%, 4.5% and 13.7% of the available measurements. Each
+    recovered to ~5M rows on re-run, so the shortfall was stale pipeline output,
+    not a gap in the source. Nothing in the pipeline detected them.
+
+    Detection compares each partition's row count to the **median of its
+    neighbours** (excluding itself, so a stale date cannot drag down its own
+    baseline). Volume drifts slowly week to week, so a partition below
+    ``ratio_threshold`` of the local median is anomalous rather than merely quiet.
+
+    This reads ``INFORMATION_SCHEMA.PARTITIONS`` only, so it is **free** and
+    scans no table data — cheap enough to run on every pipeline invocation.
+
+    To confirm a flagged date is genuinely stale rather than a real traffic dip,
+    compare against the source (this one does cost a scan)::
+
+        SELECT COUNT(*) FROM `measurement-lab.ndt.ndt7_union` WHERE date = 'YYYY-MM-DD'
+
+    A stale date shows a large source count against a small captured count; a real
+    dip shows both low.
+
+    Parameters
+    ----------
+    project_id
+        GCP project ID to bill the (metadata-only) query to.
+    dates
+        Restrict the result to these dates. ``None`` screens all history, which is
+        what makes this usable as a standalone audit. Neighbour medians are always
+        computed over all partitions regardless, so restricting does not distort them.
+    window_days
+        Half-width of the neighbour window used for the median. Defaults to 7.
+    ratio_threshold
+        Flag a partition whose rows are below this fraction of its neighbour
+        median. Defaults to 0.5. The three known-bad dates were at 0.08-0.24 of
+        their local median; healthy dates sit near 1.0.
+
+    Returns
+    -------
+    list of (date, total_rows, local_median, ratio)
+        Flagged partitions, ascending by date. Empty means nothing looks stale.
+    """
+    client = bigquery.Client(project=project_id)
+    table = SQL_FILE_TO_OUTPUT_TABLE["01_merge_upload_download_union.sql"]
+    dataset = table.rsplit(".", 1)[0]
+    table_name = table.rsplit(".", 1)[1]
+
+    query = f"""
+        WITH p AS (
+          SELECT PARSE_DATE('%Y%m%d', partition_id) AS d, total_rows
+          FROM `{dataset}.INFORMATION_SCHEMA.PARTITIONS`
+          WHERE table_name = @table_name
+            AND partition_id NOT IN ('__NULL__', '__UNPARTITIONED__')
+        ),
+        neighbours AS (
+          SELECT
+            a.d,
+            a.total_rows,
+            -- median of the surrounding window, EXCLUDING the day itself
+            APPROX_QUANTILES(b.total_rows, 2)[OFFSET(1)] AS local_median
+          FROM p a
+          JOIN p b
+            ON b.d BETWEEN DATE_SUB(a.d, INTERVAL @window DAY)
+                       AND DATE_ADD(a.d, INTERVAL @window DAY)
+           AND b.d != a.d
+          GROUP BY a.d, a.total_rows
+        )
+        SELECT d, total_rows, local_median,
+               SAFE_DIVIDE(total_rows, local_median) AS ratio
+        FROM neighbours
+        WHERE local_median > 0
+          AND SAFE_DIVIDE(total_rows, local_median) < @ratio
+          AND (@all_dates OR d IN UNNEST(@days))
+        ORDER BY d
+    """
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[
+            bigquery.ScalarQueryParameter("table_name", "STRING", table_name),
+            bigquery.ScalarQueryParameter("window", "INT64", window_days),
+            bigquery.ScalarQueryParameter("ratio", "FLOAT64", ratio_threshold),
+            bigquery.ScalarQueryParameter("all_dates", "BOOL", dates is None),
+            bigquery.ArrayQueryParameter("days", "DATE", list(dates or [])),
+        ]
+    )
+    try:
+        return [
+            (row.d, row.total_rows, row.local_median, row.ratio)
+            for row in client.query(query, job_config=job_config).result()
+        ]
+    except Exception as e:
+        # A failed audit must not mask the pipeline's own result.
+        logger.error(f"Could not run stale-merged-partition check: {e}")
+        return []
+
+
 def find_unattributed_partitions(project_id: str, dates: list[date]) -> list[date]:
     """Return dates whose ``events_explained_daily`` partition has NO attribution.
 
@@ -832,6 +978,28 @@ def run_dates(
     if not successful_dates:
         logger.info("No dates completed phase A. Nothing to enrich or map.")
         return
+
+    # ── Post-Phase-A volume check ─────────────────────────────────────────
+    # Step 01 can write a present, non-empty, badly-short partition that no
+    # other check sees (step_already_done only asks "any rows?"; the Phase-E
+    # attribution check passes because tomography still produces *something*).
+    # Free — INFORMATION_SCHEMA.PARTITIONS only. Warn rather than fail: a real
+    # traffic dip looks the same from metadata alone, and the confirming query
+    # against the source costs a scan.
+    stale = find_stale_merged_partitions(project_id, successful_dates)
+    if stale:
+        logger.warning(
+            "VOLUME: %d date(s) wrote a merged_download_upload partition far below "
+            "their neighbour median. Everything downstream scales down with this. "
+            "Confirm against `measurement-lab.ndt.ndt7_union` for the same date — a "
+            "large source count means step 01 under-captured and the date needs a "
+            "--delete-first re-run; a small one means a genuine dip. %s",
+            len(stale),
+            "; ".join(
+                f"{d:%Y-%m-%d}: {rows:,} rows vs median {med:,} ({ratio:.1%})"
+                for d, rows, med, ratio in stale
+            ),
+        )
 
     # ── Phase B: enrichment (single pass, covers all dates) ───────────────
     # Use the latest date as the enrichment target — the 30-day lookback

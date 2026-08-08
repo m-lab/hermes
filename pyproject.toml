@@ -9,6 +9,16 @@ description = "HERMES network monitoring and anomaly detection pipeline"
 requires-python = ">=3.14"
 dependencies = [
     "google-cloud-bigquery>=3.42.3",
+    # Arrow-based download path for tomography. WITHOUT this, the client logs
+    # "Storage Read API unavailable ... using REST download" and builds result
+    # frames from JSON rows instead of Arrow buffers. That is both far slower
+    # (13.7M node-edge rows took 19.5 min on 2025-08-01) and far heavier: the
+    # retained frame plus Phase 4's allocations OOM-killed the worker at 22.1 GB
+    # inside a 28 GB cgroup, failing the whole 2025-08 backfill chunk.
+    # pyarrow is the wire format for that path — pin it here rather than relying
+    # on it arriving transitively via pandas/db-dtypes.
+    "google-cloud-bigquery-storage>=2.28.0",
+    "pyarrow>=25.0.0",
     "db-dtypes>=1.7.1",  # required by bigquery .to_dataframe() for DATE/TIME columns (download_edges)
     "google-auth>=2.56.2",
     "pandas>=3.0.5",
