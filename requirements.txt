@@ -1,4 +1,4 @@
-google-cloud-bigquery>=3.42.3
+google-cloud-bigquery>=3.43.0
 pandas>=3.0.5
 requests>=2.34.2
 geopy>=2.5.0
@@ -6,7 +6,7 @@ tqdm>=4.70.0
 maxminddb>=3.1.1
 python-dotenv>=1.2.2
 matplotlib>=3.11.1
-scipy>=1.17.1
+scipy>=1.18.0
 geopandas>=1.1.4  # optional: enables map panel in plot_event_timeline
 folium>=0.20.0  # optional: interactive maps
 wget>=3.2
