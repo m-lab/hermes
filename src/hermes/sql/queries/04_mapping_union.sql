@@ -112,45 +112,33 @@ WITH dst_coords AS (
   FROM `mlab-collaboration.${DS}.transient_events_union`
   WHERE partition_date = '${DAY}'
     AND dst_lat IS NOT NULL AND dst_lon IS NOT NULL
-),
-covered AS (
-  SELECT
-    d.dst_lat,
-    d.dst_lon,
-    ARRAY_AGG(mp.metro ORDER BY
-      ST_DISTANCE(ST_GEOGPOINT(d.dst_lon, d.dst_lat),
-                  ST_GEOGPOINT(mp.seed_lon, mp.seed_lat)), mp.metro_id
-      LIMIT 1)[OFFSET(0)] AS metro
-  FROM dst_coords d
-  JOIN `${METRO_POLYGONS}` mp
-    ON ST_COVERS(mp.polygon, ST_GEOGPOINT(d.dst_lon, d.dst_lat))
-  GROUP BY 1, 2
-),
--- Coordinates no cell covers are offshore of the boundary dataset's coastline.
--- Bounded at 100 km so a mid-ocean coordinate is left Unknown rather than being
--- handed a metro thousands of km away, which is what the old table did.
-nearby AS (
-  SELECT
-    d.dst_lat,
-    d.dst_lon,
-    ARRAY_AGG(mp.metro ORDER BY
-      ST_DISTANCE(ST_GEOGPOINT(d.dst_lon, d.dst_lat),
-                  ST_GEOGPOINT(mp.seed_lon, mp.seed_lat)), mp.metro_id
-      LIMIT 1)[OFFSET(0)] AS metro
-  FROM dst_coords d
-  LEFT JOIN covered c ON c.dst_lat = d.dst_lat AND c.dst_lon = d.dst_lon
-  JOIN `${METRO_POLYGONS}` mp
-    ON ST_DWITHIN(mp.polygon, ST_GEOGPOINT(d.dst_lon, d.dst_lat), 100000)
-  WHERE c.dst_lat IS NULL
-  GROUP BY 1, 2
 )
+-- Single pass: join every cell within the coastal tolerance, then let the ORDER BY
+-- express the preference. ST_COVERS first, so a containing cell always wins; the
+-- seed distance only decides among non-containing cells. Deliberately ONE CTE and
+-- ONE spatial join: the earlier covered/nearby/join formulation added CTEs and a
+-- second join to a statement that already had 67, and BigQuery rejected the whole
+-- script with "Not enough resources for query planning - too many subqueries".
+--
+-- ST_DWITHIN(...,100000) is a superset of ST_COVERS (a containing cell is at
+-- distance 0), so one join covers both cases. Beyond 100 km the point gets no cell
+-- rather than a metro thousands of km away, which is what the old table did.
 SELECT
   d.dst_lat,
   d.dst_lon,
-  COALESCE(c.metro, n.metro, 'Unknown-NA-Unknown') AS dst_metro
+  COALESCE(
+    ARRAY_AGG(mp.metro ORDER BY
+      ST_COVERS(mp.polygon, ST_GEOGPOINT(d.dst_lon, d.dst_lat)) DESC,
+      ST_DISTANCE(ST_GEOGPOINT(d.dst_lon, d.dst_lat),
+                  ST_GEOGPOINT(mp.seed_lon, mp.seed_lat)),
+      mp.metro_id
+      LIMIT 1)[SAFE_OFFSET(0)],
+    'Unknown-NA-Unknown'
+  ) AS dst_metro
 FROM dst_coords d
-LEFT JOIN covered c ON c.dst_lat = d.dst_lat AND c.dst_lon = d.dst_lon
-LEFT JOIN nearby  n ON n.dst_lat = d.dst_lat AND n.dst_lon = d.dst_lon;
+LEFT JOIN `${METRO_POLYGONS}` mp
+  ON ST_DWITHIN(mp.polygon, ST_GEOGPOINT(d.dst_lon, d.dst_lat), 100000)
+GROUP BY 1, 2;
 
 -- 4) Extracted prefixes — IPv4 + IPv6 combined (stateless, no accumulation)
 CREATE TEMP TABLE _extracted_prefixes AS
@@ -772,39 +760,24 @@ hop_coords AS (
   )
   WHERE lat IS NOT NULL AND lon IS NOT NULL
 ),
--- Positive geometry via ST_COVERS against ${METRO_POLYGONS}; see the _dst_metro
--- header for why no country constraint is required. Offshore hops fall back to
--- the nearest cell within 100 km, and stay NULL beyond that so an anycast or
--- mid-ocean coordinate is not given a spurious metro.
-hop_covered AS (
-  SELECT c.lat, c.lon,
+-- Single pass, same shape as _dst_metro; see its header for why this is one CTE
+-- and one join rather than covered/nearby/join. This statement already carries
+-- ~67 CTEs, and the three-CTE form tipped the script past BigQuery's query
+-- planning limit.
+hop_coord_metro AS (
+  SELECT
+    c.lat,
+    c.lon,
     ARRAY_AGG(mp.metro ORDER BY
+      ST_COVERS(mp.polygon, ST_GEOGPOINT(c.lon, c.lat)) DESC,
       ST_DISTANCE(ST_GEOGPOINT(c.lon, c.lat),
-                  ST_GEOGPOINT(mp.seed_lon, mp.seed_lat)), mp.metro_id
-      LIMIT 1)[OFFSET(0)] AS metro
+                  ST_GEOGPOINT(mp.seed_lon, mp.seed_lat)),
+      mp.metro_id
+      LIMIT 1)[SAFE_OFFSET(0)] AS metro
   FROM hop_coords c
-  JOIN `${METRO_POLYGONS}` mp
-    ON ST_COVERS(mp.polygon, ST_GEOGPOINT(c.lon, c.lat))
-  GROUP BY 1, 2
-),
-hop_nearby AS (
-  SELECT c.lat, c.lon,
-    ARRAY_AGG(mp.metro ORDER BY
-      ST_DISTANCE(ST_GEOGPOINT(c.lon, c.lat),
-                  ST_GEOGPOINT(mp.seed_lon, mp.seed_lat)), mp.metro_id
-      LIMIT 1)[OFFSET(0)] AS metro
-  FROM hop_coords c
-  LEFT JOIN hop_covered v ON v.lat = c.lat AND v.lon = c.lon
   JOIN `${METRO_POLYGONS}` mp
     ON ST_DWITHIN(mp.polygon, ST_GEOGPOINT(c.lon, c.lat), 100000)
-  WHERE v.lat IS NULL
   GROUP BY 1, 2
-),
-hop_coord_metro AS (
-  SELECT c.lat, c.lon, COALESCE(v.metro, n.metro) AS metro
-  FROM hop_coords c
-  LEFT JOIN hop_covered v ON v.lat = c.lat AND v.lon = c.lon
-  LEFT JOIN hop_nearby  n ON n.lat = c.lat AND n.lon = c.lon
 ),
 
 node_with_geo_info_normalized AS (
@@ -1586,43 +1559,32 @@ WITH src_coords AS (
   FROM _mapping_result
   WHERE src_lat IS NOT NULL AND src_lon IS NOT NULL
     AND COALESCE(detection_granularity, 'maxmind_city') != 'metro'
-),
-covered AS (
-  SELECT u.lat, u.lon,
-    ARRAY_AGG(STRUCT(mp.metro, mp.state_resolved AS metro_state) ORDER BY
-      ST_DISTANCE(ST_GEOGPOINT(u.lon, u.lat),
-                  ST_GEOGPOINT(mp.seed_lon, mp.seed_lat)), mp.metro_id
-      LIMIT 1)[OFFSET(0)] AS m
-  FROM src_coords u
-  JOIN `${METRO_POLYGONS}` mp
-    ON ST_COVERS(mp.polygon, ST_GEOGPOINT(u.lon, u.lat))
-  GROUP BY 1, 2
-),
--- 924 of 60,142 source coordinates (1.5%) sit offshore of the boundary coastline.
--- Without this fallback they would regress from a wrong metro to no metro.
--- Bounded at 100 km so a mid-ocean coordinate stays NULL instead of being given a
--- metro thousands of km away, which is what the old table did.
-nearby AS (
-  SELECT u.lat, u.lon,
-    ARRAY_AGG(STRUCT(mp.metro, mp.state_resolved AS metro_state) ORDER BY
-      ST_DISTANCE(ST_GEOGPOINT(u.lon, u.lat),
-                  ST_GEOGPOINT(mp.seed_lon, mp.seed_lat)), mp.metro_id
-      LIMIT 1)[OFFSET(0)] AS m
-  FROM src_coords u
-  LEFT JOIN covered c ON c.lat = u.lat AND c.lon = u.lon
-  JOIN `${METRO_POLYGONS}` mp
-    ON ST_DWITHIN(mp.polygon, ST_GEOGPOINT(u.lon, u.lat), 100000)
-  WHERE c.lat IS NULL
-  GROUP BY 1, 2
 )
+-- Single pass; see the _dst_metro header. Measured on this exact coordinate set
+-- for 2026-08-08 (29,698,426 rows / 60,142 distinct coordinates) against the old
+-- inverted lookup: unassigned 36 -> 0, ambiguous 49,641 -> 0, cross-country
+-- 184,105 -> 0, and metro region agreement with MaxMind's own src_state
+-- 62.83% -> 78.60%. 924 of those coordinates (1.5%) sit offshore of the boundary
+-- coastline and reach their cell through the 100 km tolerance.
 SELECT
   u.lat,
   u.lon,
-  COALESCE(c.m.metro, n.m.metro)             AS metro,
-  COALESCE(c.m.metro_state, n.m.metro_state) AS metro_state
+  ARRAY_AGG(mp.metro ORDER BY
+    ST_COVERS(mp.polygon, ST_GEOGPOINT(u.lon, u.lat)) DESC,
+    ST_DISTANCE(ST_GEOGPOINT(u.lon, u.lat),
+                ST_GEOGPOINT(mp.seed_lon, mp.seed_lat)),
+    mp.metro_id
+    LIMIT 1)[SAFE_OFFSET(0)] AS metro,
+  ARRAY_AGG(mp.state_resolved ORDER BY
+    ST_COVERS(mp.polygon, ST_GEOGPOINT(u.lon, u.lat)) DESC,
+    ST_DISTANCE(ST_GEOGPOINT(u.lon, u.lat),
+                ST_GEOGPOINT(mp.seed_lon, mp.seed_lat)),
+    mp.metro_id
+    LIMIT 1)[SAFE_OFFSET(0)] AS metro_state
 FROM src_coords u
-LEFT JOIN covered c ON c.lat = u.lat AND c.lon = u.lon
-LEFT JOIN nearby  n ON n.lat = u.lat AND n.lon = u.lon;
+JOIN `${METRO_POLYGONS}` mp
+  ON ST_DWITHIN(mp.polygon, ST_GEOGPOINT(u.lon, u.lat), 100000)
+GROUP BY 1, 2;
 
 CREATE OR REPLACE TEMP TABLE _mapping_result AS
 SELECT
