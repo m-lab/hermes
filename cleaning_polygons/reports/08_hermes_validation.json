@@ -1,0 +1,254 @@
+{
+  "polar_verification": [
+    {
+      "country_code": "AQ",
+      "seeds": 40,
+      "resolve_to_self": 40,
+      "no_match": 0,
+      "resolve_to_other": 0,
+      "multi_match": 0
+    }
+  ],
+  "named_cases": [
+    {
+      "case_name": "Apia, Samoa",
+      "expected_cc": "WS",
+      "metro": "Apia-Tuamasaga-WS",
+      "metro_cc": "WS",
+      "km": 2.6,
+      "n_matches": 1,
+      "method": "polygon",
+      "ok": true
+    },
+    {
+      "case_name": "Atka, Alaska",
+      "expected_cc": "US",
+      "metro": "Atka-Alaska-US",
+      "metro_cc": "US",
+      "km": 0.1,
+      "n_matches": 1,
+      "method": "polygon",
+      "ok": true
+    },
+    {
+      "case_name": "Auckland, New Zealand",
+      "expected_cc": "NZ",
+      "metro": "Auckland-Auckland-NZ",
+      "metro_cc": "NZ",
+      "km": 0.3,
+      "n_matches": 1,
+      "method": "polygon",
+      "ok": true
+    },
+    {
+      "case_name": "Beringovskiy, Russia",
+      "expected_cc": "RU",
+      "metro": "Beringovskiy-Chukchi Autonomous Okrug-RU",
+      "metro_cc": "RU",
+      "km": 1.7,
+      "n_matches": 0,
+      "method": "country_nearest_fallback",
+      "ok": true
+    },
+    {
+      "case_name": "Kjollefjord, Norway",
+      "expected_cc": "NO",
+      "metro": "Vads\u00f8-Finnmark-NO",
+      "metro_cc": "NO",
+      "km": 130.3,
+      "n_matches": 0,
+      "method": "country_nearest_fallback",
+      "ok": true
+    },
+    {
+      "case_name": "Longyearbyen, Svalbard",
+      "expected_cc": "SJ",
+      "metro": "Longyearbyen-Svalbard-SJ",
+      "metro_cc": "SJ",
+      "km": 2.3,
+      "n_matches": 0,
+      "method": "country_nearest_fallback",
+      "ok": true
+    },
+    {
+      "case_name": "Majuro, Marshall Islands",
+      "expected_cc": "MH",
+      "metro": "Majuro-Ratak Chain-MH",
+      "metro_cc": "MH",
+      "km": 0.3,
+      "n_matches": 0,
+      "method": "country_nearest_fallback",
+      "ok": true
+    },
+    {
+      "case_name": "Mata-Utu, Wallis and Futuna",
+      "expected_cc": "WF",
+      "metro": "Mata-Utu-`Uvea-WF",
+      "metro_cc": "WF",
+      "km": 0.0,
+      "n_matches": 1,
+      "method": "polygon",
+      "ok": true
+    },
+    {
+      "case_name": "Nuiqsut, Alaska",
+      "expected_cc": "US",
+      "metro": "Prudhoe Bay-Alaska-US",
+      "metro_cc": "US",
+      "km": 87.0,
+      "n_matches": 1,
+      "method": "polygon",
+      "ok": true
+    },
+    {
+      "case_name": "Pago Pago, American Samoa",
+      "expected_cc": "AS",
+      "metro": "Pago Pago-Eastern-AS",
+      "metro_cc": "AS",
+      "km": 0.8,
+      "n_matches": 1,
+      "method": "polygon",
+      "ok": true
+    },
+    {
+      "case_name": "Polyarnyy, Russia",
+      "expected_cc": "RU",
+      "metro": "Polyarnyy-Murmansk-RU",
+      "metro_cc": "RU",
+      "km": 0.6,
+      "n_matches": 1,
+      "method": "polygon",
+      "ok": true
+    },
+    {
+      "case_name": "Prudhoe Bay, Alaska",
+      "expected_cc": "US",
+      "metro": "Prudhoe Bay-Alaska-US",
+      "metro_cc": "US",
+      "km": 13.1,
+      "n_matches": 1,
+      "method": "polygon",
+      "ok": true
+    },
+    {
+      "case_name": "Qaanaaq, Greenland",
+      "expected_cc": "GL",
+      "metro": "Qaanaaq-Qaasuitsup Kommunia-GL",
+      "metro_cc": "GL",
+      "km": 3.0,
+      "n_matches": 1,
+      "method": "polygon",
+      "ok": true
+    },
+    {
+      "case_name": "Suva, Fiji",
+      "expected_cc": "FJ",
+      "metro": "Suva-Central-FJ",
+      "metro_cc": "FJ",
+      "km": 0.8,
+      "n_matches": 1,
+      "method": "polygon",
+      "ok": true
+    },
+    {
+      "case_name": "Tarawa, Kiribati",
+      "expected_cc": "KI",
+      "metro": "Tarawa-Kiribati-KI",
+      "metro_cc": "KI",
+      "km": 4.3,
+      "n_matches": 0,
+      "method": "country_nearest_fallback",
+      "ok": true
+    },
+    {
+      "case_name": "Tiksi, Russia",
+      "expected_cc": "RU",
+      "metro": "Tiksi-Sakha (Yakutia)-RU",
+      "metro_cc": "RU",
+      "km": 6.8,
+      "n_matches": 0,
+      "method": "country_nearest_fallback",
+      "ok": true
+    },
+    {
+      "case_name": "Utqiagvik, Alaska",
+      "expected_cc": "US",
+      "metro": "Utqia\u0121vik-Alaska-US",
+      "metro_cc": "US",
+      "km": 0.0,
+      "n_matches": 1,
+      "method": "polygon",
+      "ok": true
+    },
+    {
+      "case_name": "Wake Island",
+      "expected_cc": "UM",
+      "metro": "Wake Island-Wake Island-UM",
+      "metro_cc": "UM",
+      "km": 0.0,
+      "n_matches": 0,
+      "method": "country_nearest_fallback",
+      "ok": true
+    }
+  ],
+  "new_table": [
+    {
+      "total_rows": 99437215,
+      "rows_with_coords": 91566517,
+      "rows_with_country": 92601273,
+      "coords_without_country": 0,
+      "rows_assigned_metro": 91566473,
+      "rows_cross_country": 0,
+      "rows_multi_polygon_match": 0,
+      "rows_via_polygon": 90409420,
+      "rows_via_fallback": 1138866,
+      "rows_via_fallback_far": 18187,
+      "distinct_metros_used": 5872,
+      "metro_distance_p50_km": 30.202,
+      "metro_distance_p95_km": 95.192,
+      "metro_distance_p99_km": 150.41,
+      "metro_distance_max_km": 10947.1
+    }
+  ],
+  "old_table": [
+    {
+      "rows_with_coords": 91566517,
+      "rows_unassigned": 146,
+      "rows_multi_polygon_match": 229705,
+      "rows_cross_country": 993552,
+      "distinct_metros_used": 5898
+    }
+  ],
+  "disagreement": [
+    {
+      "category": "same_city_region_renamed",
+      "n_rows": 83822690,
+      "n_coords": 99488,
+      "p50_km_to_new_seed": 24.65
+    },
+    {
+      "category": "different_city",
+      "n_rows": 6749818,
+      "n_coords": 21111,
+      "p50_km_to_new_seed": 56.76
+    },
+    {
+      "category": "old_was_cross_country",
+      "n_rows": 993508,
+      "n_coords": 5025,
+      "p50_km_to_new_seed": 68.92
+    },
+    {
+      "category": "identical",
+      "n_rows": 311,
+      "n_coords": 11,
+      "p50_km_to_new_seed": 14.67
+    },
+    {
+      "category": "old_unassigned_now_assigned",
+      "n_rows": 146,
+      "n_coords": 7,
+      "p50_km_to_new_seed": 3.06
+    }
+  ]
+}

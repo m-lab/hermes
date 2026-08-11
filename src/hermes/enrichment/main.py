@@ -27,6 +27,7 @@ from hermes.enrichment.utils.common import logger
 from hermes.enrichment.zdns.enricher import ZDNSEnricher
 from hermes.enrichment.zdns.enricher_ipv6 import ZDNSEnricherIPv6
 from hermes.sql import paths
+from hermes.sql import loader
 
 
 class HermesEnrichment:
@@ -332,11 +333,10 @@ class HermesEnrichment:
             "`mlab-collaboration.hermes.geolocation`", f"`{self.project_id}.{table_name}`"
         )
 
-        # Also update the project reference if needed
-        query = query.replace(
-            "mlab-collaboration.hermes.metro_polygons_with_population",
-            f"{self.project_id}.hermes.metro_polygons_with_population",
-        )
+        # The metro polygon table is named once, in hermes.sql.loader.DEFAULT_PARAMS.
+        # These files are read directly rather than through loader.load_query, so
+        # substitute the placeholder here and keep the two paths in agreement.
+        query = Template(query).safe_substitute(loader.DEFAULT_PARAMS)
 
         try:
             logger.info("Executing metro computation query...")
@@ -372,11 +372,10 @@ class HermesEnrichment:
         )
         query = query.replace("`hermes.unified_ip_to_geoloc`", f"`{self.project_id}.{table_name}`")
 
-        # Also update the project reference if needed
-        query = query.replace(
-            "mlab-collaboration.hermes.metro_polygons_with_population",
-            f"{self.project_id}.hermes.metro_polygons_with_population",
-        )
+        # The metro polygon table is named once, in hermes.sql.loader.DEFAULT_PARAMS.
+        # These files are read directly rather than through loader.load_query, so
+        # substitute the placeholder here and keep the two paths in agreement.
+        query = Template(query).safe_substitute(loader.DEFAULT_PARAMS)
 
         # For IPv6, add PARTITION BY partition_date clause
         if self.ipv6:

@@ -1,0 +1,666 @@
+{
+  "cells": 8437,
+  "metros": 7349,
+  "pieces": 14415,
+  "seed_ownership": {
+    "seeds_tested": 8437,
+    "failures": 0,
+    "resolved_via_fallback": 12,
+    "detail": []
+  },
+  "interior_uniqueness": {
+    "points_tested": 1789,
+    "multi_match": 0,
+    "zero_match": 2,
+    "examples": [
+      {
+        "country_code": "AQ",
+        "lon": 21.35396911365322,
+        "lat": -89.09012708740944,
+        "n": 0
+      },
+      {
+        "country_code": "AQ",
+        "lon": 97.5158999388552,
+        "lat": -89.02460833549901,
+        "n": 0
+      }
+    ]
+  },
+  "nearest_seed": {
+    "points_tested": 8628,
+    "mismatches": 0,
+    "detail": []
+  },
+  "land_coverage": {
+    "land_points_tested": 342919,
+    "unmatched": 22216,
+    "unmatched_by_country_sampled": {
+      "AQ": 200
+    },
+    "detail": [
+      {
+        "lon": -179.875,
+        "lat": -89.875,
+        "country_code": "AQ"
+      },
+      {
+        "lon": -179.625,
+        "lat": -89.875,
+        "country_code": "AQ"
+      },
+      {
+        "lon": -179.375,
+        "lat": -89.875,
+        "country_code": "AQ"
+      },
+      {
+        "lon": -179.125,
+        "lat": -89.875,
+        "country_code": "AQ"
+      },
+      {
+        "lon": -178.875,
+        "lat": -89.875,
+        "country_code": "AQ"
+      },
+      {
+        "lon": -178.625,
+        "lat": -89.875,
+        "country_code": "AQ"
+      },
+      {
+        "lon": -178.375,
+        "lat": -89.875,
+        "country_code": "AQ"
+      },
+      {
+        "lon": -178.125,
+        "lat": -89.875,
+        "country_code": "AQ"
+      },
+      {
+        "lon": -177.875,
+        "lat": -89.875,
+        "country_code": "AQ"
+      },
+      {
+        "lon": -177.625,
+        "lat": -89.875,
+        "country_code": "AQ"
+      },
+      {
+        "lon": -177.375,
+        "lat": -89.875,
+        "country_code": "AQ"
+      },
+      {
+        "lon": -177.125,
+        "lat": -89.875,
+        "country_code": "AQ"
+      },
+      {
+        "lon": -176.875,
+        "lat": -89.875,
+        "country_code": "AQ"
+      },
+      {
+        "lon": -176.625,
+        "lat": -89.875,
+        "country_code": "AQ"
+      },
+      {
+        "lon": -176.375,
+        "lat": -89.875,
+        "country_code": "AQ"
+      },
+      {
+        "lon": -176.125,
+        "lat": -89.875,
+        "country_code": "AQ"
+      },
+      {
+        "lon": -175.875,
+        "lat": -89.875,
+        "country_code": "AQ"
+      },
+      {
+        "lon": -175.625,
+        "lat": -89.875,
+        "country_code": "AQ"
+      },
+      {
+        "lon": -175.375,
+        "lat": -89.875,
+        "country_code": "AQ"
+      },
+      {
+        "lon": -175.125,
+        "lat": -89.875,
+        "country_code": "AQ"
+      },
+      {
+        "lon": -174.875,
+        "lat": -89.875,
+        "country_code": "AQ"
+      },
+      {
+        "lon": -174.625,
+        "lat": -89.875,
+        "country_code": "AQ"
+      },
+      {
+        "lon": -174.375,
+        "lat": -89.875,
+        "country_code": "AQ"
+      },
+      {
+        "lon": -174.125,
+        "lat": -89.875,
+        "country_code": "AQ"
+      },
+      {
+        "lon": -173.875,
+        "lat": -89.875,
+        "country_code": "AQ"
+      },
+      {
+        "lon": -173.625,
+        "lat": -89.875,
+        "country_code": "AQ"
+      },
+      {
+        "lon": -173.375,
+        "lat": -89.875,
+        "country_code": "AQ"
+      },
+      {
+        "lon": -173.125,
+        "lat": -89.875,
+        "country_code": "AQ"
+      },
+      {
+        "lon": -172.875,
+        "lat": -89.875,
+        "country_code": "AQ"
+      },
+      {
+        "lon": -172.625,
+        "lat": -89.875,
+        "country_code": "AQ"
+      },
+      {
+        "lon": -172.375,
+        "lat": -89.875,
+        "country_code": "AQ"
+      },
+      {
+        "lon": -172.125,
+        "lat": -89.875,
+        "country_code": "AQ"
+      },
+      {
+        "lon": -171.875,
+        "lat": -89.875,
+        "country_code": "AQ"
+      },
+      {
+        "lon": -171.625,
+        "lat": -89.875,
+        "country_code": "AQ"
+      },
+      {
+        "lon": -171.375,
+        "lat": -89.875,
+        "country_code": "AQ"
+      },
+      {
+        "lon": -171.125,
+        "lat": -89.875,
+        "country_code": "AQ"
+      },
+      {
+        "lon": -170.875,
+        "lat": -89.875,
+        "country_code": "AQ"
+      },
+      {
+        "lon": -170.625,
+        "lat": -89.875,
+        "country_code": "AQ"
+      },
+      {
+        "lon": -170.375,
+        "lat": -89.875,
+        "country_code": "AQ"
+      },
+      {
+        "lon": -170.125,
+        "lat": -89.875,
+        "country_code": "AQ"
+      },
+      {
+        "lon": -169.875,
+        "lat": -89.875,
+        "country_code": "AQ"
+      },
+      {
+        "lon": -169.625,
+        "lat": -89.875,
+        "country_code": "AQ"
+      },
+      {
+        "lon": -169.375,
+        "lat": -89.875,
+        "country_code": "AQ"
+      },
+      {
+        "lon": -169.125,
+        "lat": -89.875,
+        "country_code": "AQ"
+      },
+      {
+        "lon": -168.875,
+        "lat": -89.875,
+        "country_code": "AQ"
+      },
+      {
+        "lon": -168.625,
+        "lat": -89.875,
+        "country_code": "AQ"
+      },
+      {
+        "lon": -168.375,
+        "lat": -89.875,
+        "country_code": "AQ"
+      },
+      {
+        "lon": -168.125,
+        "lat": -89.875,
+        "country_code": "AQ"
+      },
+      {
+        "lon": -167.875,
+        "lat": -89.875,
+        "country_code": "AQ"
+      },
+      {
+        "lon": -167.625,
+        "lat": -89.875,
+        "country_code": "AQ"
+      },
+      {
+        "lon": -167.375,
+        "lat": -89.875,
+        "country_code": "AQ"
+      },
+      {
+        "lon": -167.125,
+        "lat": -89.875,
+        "country_code": "AQ"
+      },
+      {
+        "lon": -166.875,
+        "lat": -89.875,
+        "country_code": "AQ"
+      },
+      {
+        "lon": -166.625,
+        "lat": -89.875,
+        "country_code": "AQ"
+      },
+      {
+        "lon": -166.375,
+        "lat": -89.875,
+        "country_code": "AQ"
+      },
+      {
+        "lon": -166.125,
+        "lat": -89.875,
+        "country_code": "AQ"
+      },
+      {
+        "lon": -165.875,
+        "lat": -89.875,
+        "country_code": "AQ"
+      },
+      {
+        "lon": -165.625,
+        "lat": -89.875,
+        "country_code": "AQ"
+      },
+      {
+        "lon": -165.375,
+        "lat": -89.875,
+        "country_code": "AQ"
+      },
+      {
+        "lon": -165.125,
+        "lat": -89.875,
+        "country_code": "AQ"
+      }
+    ]
+  },
+  "named_cases": {
+    "antimeridian": [
+      {
+        "case": "Majuro, Marshall Islands",
+        "expected_cc": "MH",
+        "metro": "Majuro-Ratak Chain-MH",
+        "cc": "MH",
+        "n_matches": 0,
+        "method": "country_nearest_fallback",
+        "ok": true
+      },
+      {
+        "case": "Tarawa, Kiribati",
+        "expected_cc": "KI",
+        "metro": "Tarawa-Kiribati-KI",
+        "cc": "KI",
+        "n_matches": 0,
+        "method": "country_nearest_fallback",
+        "ok": true
+      },
+      {
+        "case": "Suva, Fiji",
+        "expected_cc": "FJ",
+        "metro": "Suva-Central-FJ",
+        "cc": "FJ",
+        "n_matches": 1,
+        "method": "polygon",
+        "ok": true
+      },
+      {
+        "case": "Pago Pago, American Samoa",
+        "expected_cc": "AS",
+        "metro": "Pago Pago-Eastern-AS",
+        "cc": "AS",
+        "n_matches": 1,
+        "method": "polygon",
+        "ok": true
+      },
+      {
+        "case": "Apia, Samoa",
+        "expected_cc": "WS",
+        "metro": "Apia-Tuamasaga-WS",
+        "cc": "WS",
+        "n_matches": 1,
+        "method": "polygon",
+        "ok": true
+      },
+      {
+        "case": "Auckland, New Zealand",
+        "expected_cc": "NZ",
+        "metro": "Auckland-Auckland-NZ",
+        "cc": "NZ",
+        "n_matches": 1,
+        "method": "polygon",
+        "ok": true
+      },
+      {
+        "case": "Atka, Alaska",
+        "expected_cc": "US",
+        "metro": "Atka-Alaska-US",
+        "cc": "US",
+        "n_matches": 1,
+        "method": "polygon",
+        "ok": true
+      },
+      {
+        "case": "Beringovskiy, Russia",
+        "expected_cc": "RU",
+        "metro": "Beringovskiy-Chukchi Autonomous Okrug-RU",
+        "cc": "RU",
+        "n_matches": 0,
+        "method": "country_nearest_fallback",
+        "ok": true
+      },
+      {
+        "case": "Mata-Utu, Wallis and Futuna",
+        "expected_cc": "WF",
+        "metro": "Mata-Utu-`Uvea-WF",
+        "cc": "WF",
+        "n_matches": 1,
+        "method": "polygon",
+        "ok": true
+      },
+      {
+        "case": "Wake Island",
+        "expected_cc": "UM",
+        "metro": "Wake Island-Wake Island-UM",
+        "cc": "UM",
+        "n_matches": 0,
+        "method": "country_nearest_fallback",
+        "ok": true
+      }
+    ],
+    "arctic": [
+      {
+        "case": "Utqiagvik, Alaska",
+        "expected_cc": "US",
+        "metro": "Utqia\u0121vik-Alaska-US",
+        "cc": "US",
+        "method": "polygon",
+        "ok": true
+      },
+      {
+        "case": "Nuiqsut, Alaska",
+        "expected_cc": "US",
+        "metro": "Prudhoe Bay-Alaska-US",
+        "cc": "US",
+        "method": "polygon",
+        "ok": true
+      },
+      {
+        "case": "Prudhoe Bay, Alaska",
+        "expected_cc": "US",
+        "metro": "Prudhoe Bay-Alaska-US",
+        "cc": "US",
+        "method": "polygon",
+        "ok": true
+      },
+      {
+        "case": "Longyearbyen, Svalbard",
+        "expected_cc": "SJ",
+        "metro": "Longyearbyen-Svalbard-SJ",
+        "cc": "SJ",
+        "method": "country_nearest_fallback",
+        "ok": true
+      },
+      {
+        "case": "Qaanaaq, Greenland",
+        "expected_cc": "GL",
+        "metro": "Qaanaaq-Qaasuitsup Kommunia-GL",
+        "cc": "GL",
+        "method": "polygon",
+        "ok": true
+      },
+      {
+        "case": "Kjollefjord, Norway",
+        "expected_cc": "NO",
+        "metro": "Vads\u00f8-Finnmark-NO",
+        "cc": "NO",
+        "method": "country_nearest_fallback_far",
+        "ok": true
+      },
+      {
+        "case": "Polyarnyy, Russia",
+        "expected_cc": "RU",
+        "metro": "Polyarnyy-Murmansk-RU",
+        "cc": "RU",
+        "method": "polygon",
+        "ok": true
+      },
+      {
+        "case": "Tiksi, Russia",
+        "expected_cc": "RU",
+        "metro": "Tiksi-Sakha (Yakutia)-RU",
+        "cc": "RU",
+        "method": "country_nearest_fallback",
+        "ok": true
+      }
+    ],
+    "seam_probe": [
+      {
+        "lon": 179.999,
+        "lat": -45.0,
+        "matches": 0
+      },
+      {
+        "lon": -179.999,
+        "lat": -45.0,
+        "matches": 0
+      },
+      {
+        "lon": 179.999,
+        "lat": -20.0,
+        "matches": 0
+      },
+      {
+        "lon": -179.999,
+        "lat": -20.0,
+        "matches": 0
+      },
+      {
+        "lon": 179.999,
+        "lat": 0.0,
+        "matches": 0
+      },
+      {
+        "lon": -179.999,
+        "lat": 0.0,
+        "matches": 0
+      },
+      {
+        "lon": 179.999,
+        "lat": 20.0,
+        "matches": 0
+      },
+      {
+        "lon": -179.999,
+        "lat": 20.0,
+        "matches": 0
+      },
+      {
+        "lon": 179.999,
+        "lat": 45.0,
+        "matches": 0
+      },
+      {
+        "lon": -179.999,
+        "lat": 45.0,
+        "matches": 0
+      },
+      {
+        "lon": 179.999,
+        "lat": 60.0,
+        "matches": 0
+      },
+      {
+        "lon": -179.999,
+        "lat": 60.0,
+        "matches": 0
+      }
+    ],
+    "antimeridian_failures": 0,
+    "arctic_failures": 0,
+    "seam_double_matches": 0
+  },
+  "state_consistency": {
+    "state_tier_cells": 7269,
+    "country_tier_cells": 1168,
+    "seeded_states": 2756,
+    "cross_state_area_km2": 16.351829377535616,
+    "cross_state_examples": [
+      {
+        "metro": "Al Ayn-Abu Dhabi-AE",
+        "state_code": "AE-AZ",
+        "outside_km2": 0.0037
+      },
+      {
+        "metro": "Abu Dhabi-Abu Dhabi-AE",
+        "state_code": "AE-AZ",
+        "outside_km2": 0.0109
+      },
+      {
+        "metro": "Balkh-Balkh-AF",
+        "state_code": "AF-BAL",
+        "outside_km2": 0.0001
+      },
+      {
+        "metro": "Mazar-i-Sharif-Balkh-AF",
+        "state_code": "AF-BAL",
+        "outside_km2": 0.0
+      },
+      {
+        "metro": "Pol-e Khomri-Baghlan-AF",
+        "state_code": "AF-BGL",
+        "outside_km2": 0.0059
+      },
+      {
+        "metro": "Baghlan-Baghlan-AF",
+        "state_code": "AF-BGL",
+        "outside_km2": 0.0049
+      },
+      {
+        "metro": "Meymaneh-Faryab-AF",
+        "state_code": "AF-FYB",
+        "outside_km2": 0.0
+      },
+      {
+        "metro": "Karokh-Hirat-AF",
+        "state_code": "AF-HER",
+        "outside_km2": 0.0052
+      },
+      {
+        "metro": "Herat-Hirat-AF",
+        "state_code": "AF-HER",
+        "outside_km2": 0.001
+      },
+      {
+        "metro": "Berat-Berat-AL",
+        "state_code": "AL-01",
+        "outside_km2": 0.0001
+      },
+      {
+        "metro": "\u00c7orovod\u00eb-Berat-AL",
+        "state_code": "AL-01",
+        "outside_km2": 0.0001
+      },
+      {
+        "metro": "Kruj\u00eb-Durr\u00ebs-AL",
+        "state_code": "AL-02",
+        "outside_km2": 0.0013
+      },
+      {
+        "metro": "Durr\u00ebs-Durr\u00ebs-AL",
+        "state_code": "AL-02",
+        "outside_km2": 0.0002
+      },
+      {
+        "metro": "Librazhd-Elbasan-AL",
+        "state_code": "AL-03",
+        "outside_km2": 0.0
+      },
+      {
+        "metro": "Elbasan-Elbasan-AL",
+        "state_code": "AL-03",
+        "outside_km2": 0.0001
+      }
+    ],
+    "points_tested": 16445,
+    "points_in_wrong_state": 0,
+    "examples": []
+  },
+  "gate_deferred_to_bigquery": [
+    "AQ"
+  ],
+  "gate_passed": true,
+  "gate_problems": [],
+  "global": {
+    "country_area_km2": 146714816.95161477,
+    "uncovered_km2": 150774.69220236593,
+    "overlap_km2": 10.410849267730054,
+    "escape_km2": 172.92221139515595
+  }
+}

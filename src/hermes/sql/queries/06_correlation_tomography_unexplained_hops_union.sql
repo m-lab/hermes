@@ -1,11 +1,14 @@
 -- correlation_tomography_unexplained_hops.sql
 -- Per-hop latency flags for single-path (path-local) attribution. Parameters: ${DAY}
+-- Group identity follows docs/proposals/2026-08-group-granularity.md.
 WITH base AS (
   SELECT id,
-    CONCAT(src_asn, ' - ', src_city, ' - ', dst_site) AS src_dst_pair,
+    -- Must use the same immutable identity as the main prepare query. Python
+    -- intersects these strings with its src_group_label-keyed target set.
+    CONCAT(src_asn, ' - ', src_group_label, ' - ', dst_site) AS src_dst_pair,
     forward_updated_node_details AS fwd,
     reverse_updated_node_details AS rev
-  FROM `mlab-collaboration.hermes_union.events_with_as_and_geoloc`
+  FROM `mlab-collaboration.${DS}.events_with_as_and_geoloc`
   WHERE partition_date = '${DAY}' AND DATE(window_start) >= partition_date
     -- Only anomalous measurements: path-local attribution targets the day's
     -- anomalous groups, and this keeps the hop download bounded (otherwise it
@@ -25,11 +28,11 @@ SELECT id, src_dst_pair, 'forward' AS information_source,
   IFNULL(CONCAT(n.associated_asn, '-', COALESCE(n.metro, al.canon_metro, n.place)), '*') AS asn_metro,
   n.above_baseline_flag, n.increasing_latency_flag, n.distance_rtt_check, n.rtts
 FROM base, UNNEST(fwd) AS n
-LEFT JOIN `mlab-collaboration.hermes_union.place_canonical_metro` al ON al.place = n.place
+LEFT JOIN `mlab-collaboration.${DS}.place_canonical_metro` al ON al.place = n.place
 UNION ALL
 SELECT id, src_dst_pair, 'reverse' AS information_source,
   n.ttl,
   IFNULL(CONCAT(n.associated_asn, '-', COALESCE(n.metro, al.canon_metro, n.place)), '*') AS asn_metro,
   n.above_baseline_flag, n.increasing_latency_flag, n.distance_rtt_check, n.rtts
 FROM base, UNNEST(rev) AS n
-LEFT JOIN `mlab-collaboration.hermes_union.place_canonical_metro` al ON al.place = n.place;
+LEFT JOIN `mlab-collaboration.${DS}.place_canonical_metro` al ON al.place = n.place;

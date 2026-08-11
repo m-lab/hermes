@@ -1,7 +1,7 @@
 --------------------------------------------------------------------------------
 -- HERMES (union): merge download + upload into one row per test
 --
--- Output: `mlab-collaboration.hermes_union.merged_download_upload`
+-- Output: `mlab-collaboration.${DS}.merged_download_upload`
 -- Partition: partition_date (same as ndt.date)
 --
 -- Notes:
@@ -9,10 +9,10 @@
 -- - Reads uploads from `measurement-lab.ndt_raw.ndt7` (raw.Upload.*)
 -- - Joins upload to download via access_token in ClientMetadata
 --------------------------------------------------------------------------------
--- CREATE OR REPLACE TABLE `mlab-collaboration.hermes_union.merged_download_upload`
+-- CREATE OR REPLACE TABLE `mlab-collaboration.${DS}.merged_download_upload`
 -- PARTITION BY partition_date
 -- AS
-INSERT INTO `mlab-collaboration.hermes_union.merged_download_upload`
+INSERT INTO `mlab-collaboration.${DS}.merged_download_upload`
 
 WITH
 UploadsByAccessToken AS (

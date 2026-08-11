@@ -8,7 +8,7 @@
 -- pointed here (or this table is renamed over the original).
 --
 -- Idempotent: safe to run repeatedly. Bills 0 bytes.
-CREATE TABLE IF NOT EXISTS `mlab-collaboration.hermes_union.correlation_hyperedges_tomography_v2`
+CREATE TABLE IF NOT EXISTS `mlab-collaboration.${DS}.correlation_hyperedges_tomography_v2`
 (
   edge_asn_metro STRING,
   day STRING,

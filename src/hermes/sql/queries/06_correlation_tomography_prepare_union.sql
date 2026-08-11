@@ -3,6 +3,7 @@
 --
 -- Script that scans events_with_as_and_geoloc ONCE into temp tables, then
 -- returns all precomputed edges as the final SELECT (downloaded by Python).
+-- Group identity follows docs/proposals/2026-08-group-granularity.md.
 --
 -- Parameters: ${DAY}
 --------------------------------------------------------------------------------
@@ -10,7 +11,7 @@
 -- 1. Base events (broad filter)
 CREATE TEMP TABLE _base_events AS
 SELECT *
-FROM `mlab-collaboration.hermes_union.events_with_as_and_geoloc`
+FROM `mlab-collaboration.${DS}.events_with_as_and_geoloc`
 WHERE partition_date = '${DAY}'
   AND DATE(window_start) >= partition_date
   AND NOT EXISTS (
@@ -49,7 +50,7 @@ WITH forward_hops AS (
     fwd.ttl
   FROM final_results AS fr,
        UNNEST(fr.forward_updated_node_details) AS fwd
-  LEFT JOIN `mlab-collaboration.hermes_union.place_canonical_metro` al
+  LEFT JOIN `mlab-collaboration.${DS}.place_canonical_metro` al
     ON al.place = fwd.place
 ),
 forward_agg AS (
@@ -66,7 +67,7 @@ reverse_hops AS (
     rwd.ttl
   FROM final_results AS fr,
        UNNEST(fr.reverse_updated_node_details) AS rwd
-  LEFT JOIN `mlab-collaboration.hermes_union.place_canonical_metro` al
+  LEFT JOIN `mlab-collaboration.${DS}.place_canonical_metro` al
     ON al.place = rwd.place
 ),
 reverse_agg AS (
@@ -88,7 +89,7 @@ LEFT JOIN reverse_agg AS ra ON fr.id = ra.id;
 WITH path_with_anomaly AS (
   SELECT
     fr.id,
-    CONCAT(fr.src_asn, ' - ', fr.src_city, ' - ', fr.dst_site) AS src_dst_pair,
+    CONCAT(fr.src_asn, ' - ', fr.src_group_label, ' - ', fr.dst_site) AS src_dst_pair,
     pp.forward_as_path,
     pp.reverse_as_path,
     (

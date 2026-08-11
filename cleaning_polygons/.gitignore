@@ -1,0 +1,4 @@
+# Build inputs and intermediates: large, regenerable, and pinned by the SHA-256
+# hashes recorded in reports/03_seed_validation.json.
+data/raw/*.zip
+data/stages/*.parquet

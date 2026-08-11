@@ -18,6 +18,7 @@ import argparse
 import datetime as _dt
 import logging
 import math
+import re
 from datetime import datetime, timedelta
 
 import numpy as np
@@ -31,6 +32,45 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 PROJECT_ID = "mlab-collaboration"
+DEFAULT_DATASET = "hermes_union"
+_DATASET_SCOPED_QUERY_TABLES = ("events_with_as_and_geoloc",)
+
+
+def _dataset_table(
+    table: str, *, project_id: str = PROJECT_ID, dataset: str = DEFAULT_DATASET
+) -> str:
+    """Return a validated fully-qualified pipeline table name."""
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", dataset):
+        raise ValueError(f"invalid BigQuery dataset name: {dataset!r}")
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", table):
+        raise ValueError(f"invalid BigQuery table name: {table!r}")
+    return f"{project_id}.{dataset}.{table}"
+
+
+def _load_dataset_query(
+    name: str,
+    params: dict[str, object],
+    *,
+    project_id: str = PROJECT_ID,
+    dataset: str = DEFAULT_DATASET,
+) -> str:
+    """Load a query and retarget only union-dataset references.
+
+    Reference datasets such as ``hermes`` and ``measurement-lab`` deliberately
+    remain unchanged. This is the same isolation rule used by the staging SQL
+    builder, now available to the Python-driven Phase D queries.
+    """
+    _dataset_table("validation", project_id=project_id, dataset=dataset)
+    rewritten = loader.load_query(name, params)
+    for table in _DATASET_SCOPED_QUERY_TABLES:
+        source = f"{PROJECT_ID}.{DEFAULT_DATASET}.{table}"
+        target = f"{project_id}.{dataset}.{table}"
+        rewritten = rewritten.replace(source, target)
+        if dataset != DEFAULT_DATASET and source in rewritten:
+            raise ValueError(
+                f"production operational-table reference survived while rendering {name}: {table}"
+            )
+    return rewritten
 
 
 def _read_df(query_job) -> pd.DataFrame:
@@ -120,11 +160,17 @@ def _sanitize_for_json(obj):
     return obj
 
 
-OUTPUT_TABLE = f"{PROJECT_ID}.hermes_union.correlation_hyperedges_tomography_v2"
+OUTPUT_TABLE = _dataset_table("correlation_hyperedges_tomography_v2")
 
 
 def attribute_unexplained(
-    client, day_str: str, explained_pairs: set[str], anomalous_pairs: set[str]
+    client,
+    day_str: str,
+    explained_pairs: set[str],
+    anomalous_pairs: set[str],
+    *,
+    project_id: str = PROJECT_ID,
+    dataset: str = DEFAULT_DATASET,
 ) -> list[dict]:
     """Path-local culprits for ANOMALOUS src_dst_pairs not covered by set-cover.
 
@@ -137,8 +183,11 @@ def attribute_unexplained(
     targets = anomalous_pairs - explained_pairs
     if not targets:
         return []
-    sql = loader.load_query(
-        "06_correlation_tomography_unexplained_hops_union.sql", {"DAY": day_str}
+    sql = _load_dataset_query(
+        "06_correlation_tomography_unexplained_hops_union.sql",
+        {"DAY": day_str},
+        project_id=project_id,
+        dataset=dataset,
     )
     hops_df = _read_df(client.query(sql))
     if hops_df.empty:
@@ -200,7 +249,13 @@ def step_already_done(client: bigquery.Client, table_name: str, day_str: str) ->
 # =========================================================================
 
 
-def download_edges(client: bigquery.Client, day_str: str) -> pd.DataFrame:
+def download_edges(
+    client: bigquery.Client,
+    day_str: str,
+    *,
+    project_id: str = PROJECT_ID,
+    dataset: str = DEFAULT_DATASET,
+) -> pd.DataFrame:
     """Run the prepare SQL script and download the resulting edge rows.
 
     Parameters
@@ -220,7 +275,12 @@ def download_edges(client: bigquery.Client, day_str: str) -> pd.DataFrame:
     """
     logger.info("  Phase 1: extracting edges from BigQuery...")
     params: dict[str, object] = {"DAY": day_str}
-    sql = loader.load_query("06_correlation_tomography_prepare_union.sql", params)
+    sql = _load_dataset_query(
+        "06_correlation_tomography_prepare_union.sql",
+        params,
+        project_id=project_id,
+        dataset=dataset,
+    )
     df = _read_df(client.query(sql))
     logger.info(f"  Downloaded {len(df):,} edge rows")
     return df
@@ -616,6 +676,9 @@ def compute_hyperedges(
     culprit_rows: list[dict],
     day_str: str,
     all_edges: pd.DataFrame | None = None,
+    *,
+    project_id: str = PROJECT_ID,
+    dataset: str = DEFAULT_DATASET,
 ) -> None:
     """Download all edges, compute node-level culprit fractions, and upload.
 
@@ -644,7 +707,12 @@ def compute_hyperedges(
     # Download all_edges_per_node (unless a preloaded frame was passed in)
     if all_edges is None:
         logger.info("  Phase 3: downloading all_edges_per_node...")
-        sql = loader.load_query("06_correlation_tomography_all_edges_union.sql", {"DAY": day_str})
+        sql = _load_dataset_query(
+            "06_correlation_tomography_all_edges_union.sql",
+            {"DAY": day_str},
+            project_id=project_id,
+            dataset=dataset,
+        )
         all_edges = _read_df(client.query(sql))
         logger.info(f"  Downloaded {len(all_edges):,} node-edge rows")
 
@@ -848,8 +916,11 @@ def compute_hyperedges(
         output_rows.append(_sanitize_for_json(row))
 
     # Upload to BigQuery
-    logger.info(f"  Uploading {len(output_rows)} rows to {OUTPUT_TABLE}...")
-    errors = client.insert_rows_json(OUTPUT_TABLE, output_rows)
+    output_table = _dataset_table(
+        "correlation_hyperedges_tomography_v2", project_id=project_id, dataset=dataset
+    )
+    logger.info(f"  Uploading {len(output_rows)} rows to {output_table}...")
+    errors = client.insert_rows_json(output_table, output_rows)
     if errors:
         logger.error(f"  Upload errors: {errors[:3]}")
         raise RuntimeError(f"Failed to upload: {errors[:3]}")
@@ -861,8 +932,8 @@ def compute_hyperedges(
 # Multi-granularity cover (§4.3.2 aggregation: edge → node → AS → metro → IXP)
 # =========================================================================
 
-MULTIGRAN_TABLE = f"{PROJECT_ID}.hermes_union.correlation_culprits_multigranularity"
-ENTITY_STATS_TABLE = f"{PROJECT_ID}.hermes_union.correlation_entity_stats_multigranularity"
+MULTIGRAN_TABLE = _dataset_table("correlation_culprits_multigranularity")
+ENTITY_STATS_TABLE = _dataset_table("correlation_entity_stats_multigranularity")
 _GRAN_RANK = {"edge": 0, "node": 1, "AS": 2, "metro": 2, "IXP": 2}  # 0/1 = fine, 2 = coarse
 
 
@@ -1163,23 +1234,38 @@ def run_mixed_granularity_cover(
     return culprits, entity_stats
 
 
-def upload_multigranularity(client: bigquery.Client, culprits: list[dict], day_str: str) -> None:
+def upload_multigranularity(
+    client: bigquery.Client,
+    culprits: list[dict],
+    day_str: str,
+    *,
+    project_id: str = PROJECT_ID,
+    dataset: str = DEFAULT_DATASET,
+) -> None:
     """Replace the day's rows in MULTIGRAN_TABLE with the mixed-granularity culprits."""
-    client.query(
-        f"DELETE FROM `{MULTIGRAN_TABLE}` WHERE DATE(partition_date) = '{day_str}'"
-    ).result()
+    table = _dataset_table(
+        "correlation_culprits_multigranularity", project_id=project_id, dataset=dataset
+    )
+    client.query(f"DELETE FROM `{table}` WHERE DATE(partition_date) = '{day_str}'").result()
     if not culprits:
         logger.info("  [multigran] no culprits to upload")
         return
     rows = [_sanitize_for_json(c) for c in culprits]
-    errors = client.insert_rows_json(MULTIGRAN_TABLE, rows)
+    errors = client.insert_rows_json(table, rows)
     if errors:
         logger.error(f"  [multigran] upload errors: {errors[:3]}")
         raise RuntimeError(f"multigran upload failed: {errors[:3]}")
     logger.info(f"  [multigran] uploaded {len(rows)} culprits")
 
 
-def upload_entity_stats(client: bigquery.Client, entity_stats: list[dict], day_str: str) -> None:
+def upload_entity_stats(
+    client: bigquery.Client,
+    entity_stats: list[dict],
+    day_str: str,
+    *,
+    project_id: str = PROJECT_ID,
+    dataset: str = DEFAULT_DATASET,
+) -> None:
     """Replace the day's partition in ENTITY_STATS_TABLE via a load job.
 
     Holds one row per (date, information_source, granularity, entity) for every
@@ -1200,13 +1286,14 @@ def upload_entity_stats(client: bigquery.Client, entity_stats: list[dict], day_s
         bigquery.SchemaField("odds_ratio", "FLOAT64"),
         bigquery.SchemaField("is_culprit", "BOOL"),
     ]
+    table = _dataset_table(
+        "correlation_entity_stats_multigranularity", project_id=project_id, dataset=dataset
+    )
     rows = [_sanitize_for_json(r) for r in entity_stats]
     if not rows:
-        client.query(
-            f"DELETE FROM `{ENTITY_STATS_TABLE}` WHERE DATE(partition_date) = '{day_str}'"
-        ).result()
+        client.query(f"DELETE FROM `{table}` WHERE DATE(partition_date) = '{day_str}'").result()
         return
-    dest = f"{ENTITY_STATS_TABLE}${day_str.replace('-', '')}"
+    dest = f"{table}${day_str.replace('-', '')}"
     job = client.load_table_from_json(
         rows,
         dest,
@@ -1229,6 +1316,7 @@ def run_correlation_tomography(
     max_iterations: int = 200,
     no_progress_limit: int = 5,
     write_multigranularity: bool = False,
+    dataset: str = DEFAULT_DATASET,
 ) -> None:
     """Run the full hybrid correlation tomography pipeline for one date.
 
@@ -1262,14 +1350,17 @@ def run_correlation_tomography(
     day_str = date.strftime("%Y-%m-%d")
     client = bigquery.Client(project=project_id)
 
-    if step_already_done(client, OUTPUT_TABLE, day_str):
+    output_table = _dataset_table(
+        "correlation_hyperedges_tomography_v2", project_id=project_id, dataset=dataset
+    )
+    if step_already_done(client, output_table, day_str):
         logger.info(f"[{day_str}] Skipping — already done")
         return
 
     logger.info(f"[{day_str}] Starting correlation tomography")
 
     # Phase 1: SQL → download edges
-    edges_df = download_edges(client, day_str)
+    edges_df = download_edges(client, day_str, project_id=project_id, dataset=dataset)
 
     # Phase 2: Python set-cover
     logger.info(f"[{day_str}] Phase 2: greedy set-cover...")
@@ -1285,7 +1376,14 @@ def run_correlation_tomography(
         edges_df.loc[edges_df["path_type"] == "anomalous", "src_dst_pair"].unique()
     )
     explained = {p for c in culprits for p in c.get("anomalous_src_dst_pairs_impacted", [])}
-    path_local = attribute_unexplained(client, day_str, explained, anomalous_pairs)
+    path_local = attribute_unexplained(
+        client,
+        day_str,
+        explained,
+        anomalous_pairs,
+        project_id=project_id,
+        dataset=dataset,
+    )
     logger.info(f"[{day_str}] Path-local attributions: {len(path_local)}")
     culprits = culprits + path_local
 
@@ -1295,23 +1393,42 @@ def run_correlation_tomography(
     logger.info(f"[{day_str}] Phase 3: downloading all_edges_per_node...")
     all_edges = _read_df(
         client.query(
-            loader.load_query("06_correlation_tomography_all_edges_union.sql", {"DAY": day_str})
+            _load_dataset_query(
+                "06_correlation_tomography_all_edges_union.sql",
+                {"DAY": day_str},
+                project_id=project_id,
+                dataset=dataset,
+            )
         )
     )
     logger.info(f"  Downloaded {len(all_edges):,} node-edge rows")
 
     logger.info(f"[{day_str}] Phase 3: hyperedge summary...")
-    compute_hyperedges(client, culprits, day_str, all_edges=all_edges)
+    compute_hyperedges(
+        client,
+        culprits,
+        day_str,
+        all_edges=all_edges,
+        project_id=project_id,
+        dataset=dataset,
+    )
 
     # Phase 4: multi-granularity cover (edge→node→AS→metro→IXP) + path-local tail.
     if write_multigranularity:
         logger.info(f"[{day_str}] Phase 4: multi-granularity cover...")
         multigran, entity_stats = run_mixed_granularity_cover(edges_df, all_edges, day_str)
-        upload_entity_stats(client, entity_stats, day_str)
+        upload_entity_stats(client, entity_stats, day_str, project_id=project_id, dataset=dataset)
         # Fold in path-local attribution for anomalies the correlation cover left
         # unexplained (singletons), so the table is the complete attribution.
         explained_mg = {p for c in multigran for p in c.get("anomalous_src_dst_pairs_impacted", [])}
-        pl_mg = attribute_unexplained(client, day_str, explained_mg, anomalous_pairs)
+        pl_mg = attribute_unexplained(
+            client,
+            day_str,
+            explained_mg,
+            anomalous_pairs,
+            project_id=project_id,
+            dataset=dataset,
+        )
         for r in pl_mg:
             impacted = r.get("anomalous_src_dst_pairs_impacted", [])
             multigran.append(
@@ -1344,7 +1461,7 @@ def run_correlation_tomography(
             f"[{day_str}] Phase 4: {len(multigran)} culprits "
             f"({len(pl_mg)} path-local), {cum}/{total} explained"
         )
-        upload_multigranularity(client, multigran, day_str)
+        upload_multigranularity(client, multigran, day_str, project_id=project_id, dataset=dataset)
 
     logger.info(f"[{day_str}] Done")
 
@@ -1367,6 +1484,11 @@ def main() -> None:
         help="Stop after N iterations with no new anomalies explained",
     )
     parser.add_argument("--project", default=PROJECT_ID)
+    parser.add_argument(
+        "--dataset",
+        default=DEFAULT_DATASET,
+        help="Pipeline dataset to read and write (default: hermes_union)",
+    )
     args = parser.parse_args()
 
     if args.date:
@@ -1386,6 +1508,7 @@ def main() -> None:
         run_correlation_tomography(
             date,
             project_id=args.project,
+            dataset=args.dataset,
             max_iterations=args.max_iterations,
             no_progress_limit=args.no_progress_limit,
         )

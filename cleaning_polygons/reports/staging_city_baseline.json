@@ -1,0 +1,11 @@
+{
+  "2026-08-07": {
+    "anomaly_rows": 198339,
+    "anomaly_src_labels": 30259,
+    "transient_rows": 30219270,
+    "explained_rows": 1890,
+    "explained_src_labels": 1195,
+    "hyperedges": 1162,
+    "verdicts": 3517
+  }
+}

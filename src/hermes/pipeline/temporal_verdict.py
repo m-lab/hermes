@@ -41,18 +41,35 @@ def classify(
 # Orchestration: per-group verdict computation + correlation-culprit coupling
 # ---------------------------------------------------------------------------
 
-from hermes.pipeline.correlation_tomography import _read_df  # noqa: E402
-from hermes.sql import loader  # noqa: E402
+from hermes.pipeline.correlation_tomography import (  # noqa: E402
+    DEFAULT_DATASET,
+    PROJECT_ID,
+    _dataset_table,
+    _load_dataset_query,
+    _read_df,
+)
 
 _PREV_SQL = "05_temporal_edge_prevalences_union.sql"
-_V2 = "mlab-collaboration.hermes_union.correlation_hyperedges_tomography_v2"
 
 
-def _read_prevalences(client, day_str: str):
-    return _read_df(client.query(loader.load_query(_PREV_SQL, {"DAY": day_str})))
+def _read_prevalences(
+    client,
+    day_str: str,
+    *,
+    project_id: str = PROJECT_ID,
+    dataset: str = DEFAULT_DATASET,
+):
+    sql = _load_dataset_query(_PREV_SQL, {"DAY": day_str}, project_id=project_id, dataset=dataset)
+    return _read_df(client.query(sql))
 
 
-def _culprit_edges(client, day_str: str) -> dict[str, set[str]]:
+def _culprit_edges(
+    client,
+    day_str: str,
+    *,
+    project_id: str = PROJECT_ID,
+    dataset: str = DEFAULT_DATASET,
+) -> dict[str, set[str]]:
     """Return src_dst_pair -> set of culprit edge strings, in the SAME
     `<full-node>-<full-node>` format the prevalence SQL emits.
 
@@ -63,9 +80,12 @@ def _culprit_edges(client, day_str: str) -> dict[str, set[str]]:
     contains the " - " node delimiter (rare region names) can't be split and are
     skipped.
     """
+    table = _dataset_table(
+        "correlation_hyperedges_tomography_v2", project_id=project_id, dataset=dataset
+    )
     sql = (
         f"SELECT anomalous_src_dst_pairs_impacted AS pairs, edge_asn_metro "
-        f"FROM `{_V2}` WHERE partition_date = '{day_str}'"
+        f"FROM `{table}` WHERE partition_date = '{day_str}'"
     )
     out: dict[str, set[str]] = {}
     for r in client.query(sql).result():
@@ -79,15 +99,22 @@ def _culprit_edges(client, day_str: str) -> dict[str, set[str]]:
 
 
 def compute_temporal_verdicts(
-    client, day_str: str, tau: float = 1.0, delta: float = 0.5, s_min: int = 5
+    client,
+    day_str: str,
+    tau: float = 1.0,
+    delta: float = 0.5,
+    s_min: int = 5,
+    *,
+    project_id: str = PROJECT_ID,
+    dataset: str = DEFAULT_DATASET,
 ) -> list[dict]:
     # tau=1.0 validated on staged days (2026-06-13..19): divergence is unbounded
     # "new-edge mass" (median ~0.6, p90 ~3.3), so tau=1.0 (~one full new edge) gives a
     # balanced reroute/congestion split; tau=0.3 over-calls reroute.
-    df = _read_prevalences(client, day_str)
+    df = _read_prevalences(client, day_str, project_id=project_id, dataset=dataset)
     if df is None or len(df) == 0:
         return []
-    culprits = _culprit_edges(client, day_str)
+    culprits = _culprit_edges(client, day_str, project_id=project_id, dataset=dataset)
     rows: list[dict] = []
     for (pair, ipv), g in df.groupby(["src_dst_pair", "ip_version"]):
         per_dir: dict[str, tuple] = {}
@@ -145,20 +172,31 @@ def compute_temporal_verdicts(
     return rows
 
 
-_VERDICTS = "mlab-collaboration.hermes_union.temporal_path_verdicts"
-
-
-def write_verdicts(client, rows: list[dict]) -> None:
+def write_verdicts(
+    client,
+    rows: list[dict],
+    *,
+    project_id: str = PROJECT_ID,
+    dataset: str = DEFAULT_DATASET,
+) -> None:
     """Stream per-pair verdicts to temporal_path_verdicts."""
     if not rows:
         return
-    errors = client.insert_rows_json(_VERDICTS, rows)
+    table = _dataset_table("temporal_path_verdicts", project_id=project_id, dataset=dataset)
+    errors = client.insert_rows_json(table, rows)
     if errors:
         raise RuntimeError(f"temporal_path_verdicts insert failed: {errors[:3]}")
 
 
-def verdicts_exist(client, day_str: str) -> bool:
+def verdicts_exist(
+    client,
+    day_str: str,
+    *,
+    project_id: str = PROJECT_ID,
+    dataset: str = DEFAULT_DATASET,
+) -> bool:
     """True if temporal_path_verdicts already has rows for day_str."""
     from hermes.pipeline.correlation_tomography import step_already_done
 
-    return step_already_done(client, _VERDICTS, day_str)
+    table = _dataset_table("temporal_path_verdicts", project_id=project_id, dataset=dataset)
+    return step_already_done(client, table, day_str)

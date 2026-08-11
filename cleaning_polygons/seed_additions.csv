@@ -1,0 +1,35 @@
+> Seeds for inhabited territories that Natural Earth 10m populated places omits
+> entirely (plan section 5): every entry here is a territory that has a boundary
+> and zero Natural Earth seeds, so it could not otherwise be tessellated.
+> Coordinates are the settlement's own published location, not a polygon centroid.
+> Population is the latest published resident figure, metadata only, never geometry.
+>
+> Note: the Alaskan North Slope needs no additions. Natural Earth carries
+> Utqiagvik (spelled with U+0121 'g with dot above'), Wainwright, Atqasuk,
+> Prudhoe Bay, Kaktovik and Point Hope. Those places are missing from the *old*
+> polygon table because its Voronoi was clipped, not because the seeds were absent.
+> Lines beginning with '>' are comments.
+city,state_resolved,state_iso2,country_code,seed_lat,seed_lon,population,source,reason
+Saint Helier,Jersey,,JE,49.1858,-2.1073,103267,jersey_census_2021,"JE has a boundary and no NE seed"
+Saint Peter Port,Guernsey,,GG,49.4555,-2.5359,63954,guernsey_census_2023,"GG has a boundary and no NE seed"
+Road Town,Tortola,,VG,18.4207,-64.6208,31538,vg_census_2010,"VG has a boundary and no NE seed"
+The Valley,Anguilla,,AI,18.2170,-63.0578,15753,ai_census_2011,"AI has a boundary and no NE seed"
+Philipsburg,Sint Maarten,,SX,18.0264,-63.0458,41486,sx_census_2011,"SX has a boundary and no NE seed"
+Marigot,Saint-Martin,,MF,18.0674,-63.0821,32358,insee_2019,"MF has a boundary and no NE seed"
+Gustavia,Saint-Barthelemy,,BL,17.8962,-62.8498,10585,insee_2019,"BL has a boundary and no NE seed"
+Brades,Montserrat,,MS,16.7928,-62.2104,4433,ms_census_2011,"MS has a boundary and no NE seed"
+Kralendijk,Bonaire,,BQ,12.1508,-68.2685,20104,cbs_nl_2019,"BQ has a boundary and no NE seed"
+Oranjestad,Sint Eustatius,,BQ,17.4833,-62.9833,3138,cbs_nl_2019,"second BQ island, distinct landmass"
+The Bottom,Saba,,BQ,17.6260,-63.2500,1933,cbs_nl_2019,"third BQ island, distinct landmass"
+Saint-Pierre,Saint-Pierre-et-Miquelon,,PM,46.7784,-56.1746,5394,insee_2019,"PM has a boundary and no NE seed"
+Jamestown,Saint Helena,,SH,-15.9251,-5.7168,629,sh_census_2021,"SH has a boundary and no NE seed"
+Georgetown,Ascension,,SH,-7.9264,-14.4111,806,sh_census_2021,"Ascension is a separate SH island"
+Edinburgh of the Seven Seas,Tristan da Cunha,,SH,-37.0676,-12.3116,238,sh_census_2021,"Tristan is a separate SH island"
+Mata-Utu,Wallis,,WF,-13.2825,-176.1745,11369,insee_2018,"WF has a boundary and no NE seed; also an antimeridian regression case"
+Yaren,Yaren,,NR,-0.5477,166.9209,12511,nr_census_2021,"NR has a boundary and no NE seed"
+Kingston,Norfolk Island,,NF,-29.0545,167.9547,2188,abs_2021,"NF has a boundary and no NE seed"
+Adamstown,Pitcairn,,PN,-25.0663,-130.1015,47,pn_2021,"PN has a boundary and no NE seed"
+Diego Garcia,Diego Garcia,,IO,-7.3133,72.4114,3000,uk_mod_estimate,"IO has a boundary and no NE seed"
+Wake Island,Wake Island,,UM,19.2823,166.6280,100,us_af_estimate,"UM has a boundary and no NE seed; antimeridian-adjacent"
+Midway Atoll,Midway Islands,,UM,28.2072,-177.3813,40,usfws_estimate,"second UM landmass, opposite side of the antimeridian"
+Port-aux-Francais,Kerguelen,,TF,-49.3500,70.2167,45,taaf_estimate,"TF has a boundary and no NE seed; overwintering staff only"

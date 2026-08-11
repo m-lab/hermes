@@ -73,9 +73,9 @@ def _prev_df():
 
 
 def test_compute_verdicts(monkeypatch):
-    monkeypatch.setattr(tv, "_read_prevalences", lambda c, d: _prev_df())
+    monkeypatch.setattr(tv, "_read_prevalences", lambda c, d, **kw: _prev_df())
     # culprit set: pretend G1's diverted edge b-x is a known culprit
-    monkeypatch.setattr(tv, "_culprit_edges", lambda c, d: {"G1": {"b-x"}})
+    monkeypatch.setattr(tv, "_culprit_edges", lambda c, d, **kw: {"G1": {"b-x"}})
     out = {r["src_dst_pair"]: r for r in tv.compute_temporal_verdicts("client", "2026-06-19")}
     assert out["G1"]["verdict"] == "reroute"
     assert out["G1"]["changed_segment"] == "b-x"

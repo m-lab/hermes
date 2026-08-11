@@ -1,18 +1,131 @@
 --------------------------------------------------------------------------------
 -- HERMES (union): anomaly detection only (no topology joins)
 --
--- Input:  `mlab-collaboration.hermes_union.merged_download_upload`
--- Output: `mlab-collaboration.hermes_union.anomaly_counts_union`
+-- Input:  `mlab-collaboration.${DS}.merged_download_upload`
+-- Output: `mlab-collaboration.${DS}.anomaly_counts_union`
 -- Partition: partition_date = 2026-04-08
 --
 -- Processes IPv4 and IPv6 independently via ip_version partitioning.
+-- DETECTION_GRANULARITY is validated by the runner and asserted here. Metro
+-- mode resolves the canonical source group before trimming or statistics, so
+-- it pools raw observations rather than relabelling city-level test results.
 --------------------------------------------------------------------------------
--- CREATE OR REPLACE TABLE `mlab-collaboration.hermes_union.anomaly_counts_union`
+-- CREATE OR REPLACE TABLE `mlab-collaboration.${DS}.anomaly_counts_union`
 -- PARTITION BY partition_date
 -- AS
-INSERT INTO `mlab-collaboration.hermes_union.anomaly_counts_union`
+DECLARE _detection_granularity STRING DEFAULT '${DETECTION_GRANULARITY}';
+ASSERT _detection_granularity IN ('maxmind_city', 'metro')
+  AS 'DETECTION_GRANULARITY must be maxmind_city or metro';
+
+-- Resolve distinct coordinates once. The WHERE predicate makes this table
+-- empty in city mode, avoiding the spatial join entirely. metro_polygons_v2
+-- uses ordinary positive geometry and a stable, country-constrained resolver.
+CREATE TEMP TABLE _source_metro_lookup AS
+WITH source_coordinates AS (
+  SELECT DISTINCT
+    client.Geo.Latitude AS lat,
+    client.Geo.Longitude AS lon,
+    client.Geo.CountryCode AS country_code
+  FROM `mlab-collaboration.${DS}.merged_download_upload`
+  WHERE _detection_granularity = 'metro'
+    AND partition_date BETWEEN '${ONE_WEEK_EARLIER}' AND '${DAY}'
+    AND client.Geo.Latitude IS NOT NULL
+    AND client.Geo.Longitude IS NOT NULL
+    AND client.Geo.CountryCode IS NOT NULL
+),
+covered AS (
+  SELECT
+    c.lat, c.lon, c.country_code,
+    ARRAY_AGG(
+      STRUCT(mp.metro, mp.state_resolved,
+             ST_DISTANCE(ST_GEOGPOINT(c.lon, c.lat),
+                         ST_GEOGPOINT(mp.seed_lon, mp.seed_lat)) AS distance_m)
+      ORDER BY ST_DISTANCE(ST_GEOGPOINT(c.lon, c.lat),
+                           ST_GEOGPOINT(mp.seed_lon, mp.seed_lat)),
+               mp.metro_id
+      LIMIT 1
+    )[OFFSET(0)] AS pick
+  FROM source_coordinates c
+  JOIN `${METRO_POLYGONS}` mp
+    ON mp.country_code = c.country_code
+   AND ST_COVERS(mp.polygon, ST_GEOGPOINT(c.lon, c.lat))
+  GROUP BY c.lat, c.lon, c.country_code
+),
+uncovered AS (
+  SELECT c.*
+  FROM source_coordinates c
+  LEFT JOIN covered v USING (lat, lon, country_code)
+  WHERE v.lat IS NULL
+),
+fallback AS (
+  SELECT
+    c.lat, c.lon, c.country_code,
+    ARRAY_AGG(
+      STRUCT(mp.metro, mp.state_resolved,
+             ST_DISTANCE(ST_GEOGPOINT(c.lon, c.lat),
+                         ST_GEOGPOINT(mp.seed_lon, mp.seed_lat)) AS distance_m)
+      ORDER BY ST_DISTANCE(ST_GEOGPOINT(c.lon, c.lat),
+                           ST_GEOGPOINT(mp.seed_lon, mp.seed_lat)),
+               mp.metro_id
+      LIMIT 1
+    )[OFFSET(0)] AS pick
+  FROM uncovered c
+  JOIN `${METRO_POLYGONS}` mp
+    ON mp.country_code = c.country_code
+  GROUP BY c.lat, c.lon, c.country_code
+)
+SELECT lat, lon, country_code, pick.metro AS metro,
+       pick.state_resolved AS metro_state
+FROM covered
+UNION ALL
+SELECT lat, lon, country_code, pick.metro AS metro,
+       pick.state_resolved AS metro_state
+FROM fallback;
+
+INSERT INTO `mlab-collaboration.${DS}.anomaly_counts_union`
+  (src_asn, src_country, src_asn_name, src_city, src_lat, src_lon, src_state,
+   dst_lat, dst_lon, dst_site, dst_city, dst_asn, dst_country, ip_version,
+   baseline_median_rtt, baseline_median_throughput,
+   baseline_median_upload_throughput, baseline_median_loss, baseline_p95_loss,
+   baseline_lossy_fraction, baseline_lossy_count, is_consistent,
+   unique_ip_count_per_site, measurement_count_per_site,
+   number_of_measurements_baseline, number_of_unique_src_ips_baseline,
+   total_group_rows, anomaly_ratio_throughput,
+   anomaly_ratio_upload_throughput, anomaly_ratio_rtt, anomaly_loss_ratio,
+   difference_latency, difference_throughput, difference_upload_throughput,
+   wasserstein_throughput_result, wasserstein_upload_throughput_result,
+   mann_whitney_latency, mann_whitney_throughput,
+   mann_whitney_upload_throughput, z_loss_occurrence,
+   mann_whitney_loss_severity, t_test_latency, client_name,
+   anomaly_rtt_count, anomaly_throughput_count,
+   anomaly_upload_throughput_count, anomaly_loss_rate_count, partition_date,
+   detection_granularity, src_group_label)
 
 WITH
+MeasurementsWithGroup AS (
+  SELECT
+    ndt.*,
+    IF(
+      _detection_granularity = 'metro',
+      sm.metro,
+      CONCAT(ndt.client.Geo.City, '-', ndt.client.Geo.Subdivision1ISOCode,
+             '-', ndt.client.Geo.CountryCode)
+    ) AS detection_src_city,
+    IF(
+      _detection_granularity = 'metro',
+      sm.metro_state,
+      ndt.client.Geo.Subdivision1ISOCode
+    ) AS detection_src_state
+  FROM `mlab-collaboration.${DS}.merged_download_upload` ndt
+  LEFT JOIN _source_metro_lookup sm
+    ON ndt.client.Geo.Latitude = sm.lat
+   AND ndt.client.Geo.Longitude = sm.lon
+   AND ndt.client.Geo.CountryCode = sm.country_code
+  WHERE ndt.partition_date BETWEEN '${ONE_WEEK_EARLIER}' AND '${DAY}'
+    -- An unresolved coordinate is not a metro. Do not silently mix a city
+    -- fallback into a partition labelled as metro-derived.
+    AND (_detection_granularity != 'metro' OR sm.metro IS NOT NULL)
+),
 --------------------------------------------------------------------------------
 -- A) Find consistent IP addresses (distance + "metro_rank"), then keep them.
 --------------------------------------------------------------------------------
@@ -22,7 +135,7 @@ All_Client_Locations AS (
     client.Geo.Latitude  AS client_lat,
     client.Geo.Longitude AS client_lon,
     ip_version
-  FROM `mlab-collaboration.hermes_union.merged_download_upload`
+  FROM MeasurementsWithGroup
   WHERE
     partition_date BETWEEN '${ONE_WEEK_EARLIER}' AND '${DAY}'
     AND client.Geo.Latitude IS NOT NULL
@@ -35,7 +148,7 @@ All_Server_Locations AS (
     server.Geo.Latitude    AS server_lat,
     server.Geo.Longitude   AS server_lon,
     ip_version
-  FROM `mlab-collaboration.hermes_union.merged_download_upload`
+  FROM MeasurementsWithGroup
   WHERE
     partition_date BETWEEN '${ONE_WEEK_EARLIER}' AND '${DAY}'
     AND server.Geo.Latitude IS NOT NULL
@@ -70,7 +183,7 @@ DistanceCalc AS (
     ) / 1000 AS gcd_km,
     metro_rank,
     client_name AS client_type
-  FROM `mlab-collaboration.hermes_union.merged_download_upload`
+  FROM MeasurementsWithGroup
   WHERE
     partition_date BETWEEN '${ONE_WEEK_EARLIER}' AND '${DAY}'
 ),
@@ -105,7 +218,7 @@ ConsistentSRCCounts AS (
     ndt.client_ip,
     ndt.ip_version,
     COUNT(*) AS cnt
-  FROM `mlab-collaboration.hermes_union.merged_download_upload` ndt
+  FROM MeasurementsWithGroup ndt
   JOIN ConsistentIPs cip
     ON ndt.client_ip = cip.client_ip
    AND ndt.ip_version = cip.ip_version
@@ -117,13 +230,13 @@ ConsistentSRCCounts AS (
 AllMeasurementsForTrimming AS (
   SELECT
     client.Network.ASNumber AS src_asn,
-    CONCAT(client.Geo.City, '-', client.Geo.Subdivision1ISOCode, '-', client.Geo.CountryCode) AS src_city,
+    ndt.detection_src_city AS src_city,
     client.Geo.CountryCode AS src_country,
     server.Site AS dst_site,
     ndt.client_ip,
     ndt.ip_version,
     id AS measurement_id
-  FROM `mlab-collaboration.hermes_union.merged_download_upload` ndt
+  FROM MeasurementsWithGroup ndt
   JOIN ConsistentSRCCounts csc
     ON ndt.client_ip = csc.client_ip
     AND ndt.ip_version = csc.ip_version
@@ -183,7 +296,7 @@ BaselineMetrics AS (
   SELECT
     ndt.date AS ndt_date,
     ndt.client.Network.ASNumber AS src_asn,
-    CONCAT(ndt.client.Geo.City, '-', ndt.client.Geo.Subdivision1ISOCode, '-', ndt.client.Geo.CountryCode) AS src_city,
+    ndt.detection_src_city AS src_city,
     ndt.client.Geo.CountryCode AS src_country,
     ndt.server.Site AS dst_site,
     ndt.server.Geo.city AS dst_city,
@@ -198,18 +311,18 @@ BaselineMetrics AS (
     COUNT(*) OVER (
       PARTITION BY
         ndt.client.Network.ASNumber,
-        CONCAT(ndt.client.Geo.city, '-', ndt.client.Geo.Subdivision1ISOCode, '-', ndt.client.Geo.CountryCode),
+        ndt.detection_src_city,
         ndt.server.Site,
         ndt.ip_version
     ) AS number_of_measurements_baseline,
     COUNT(DISTINCT ndt.client_ip) OVER (
       PARTITION BY
         ndt.client.Network.ASNumber,
-        CONCAT(ndt.client.Geo.city, '-', ndt.client.Geo.Subdivision1ISOCode, '-', ndt.client.Geo.CountryCode),
+        ndt.detection_src_city,
         ndt.server.Site,
         ndt.ip_version
     ) AS number_of_unique_src_ips_baseline
-  FROM `mlab-collaboration.hermes_union.merged_download_upload` ndt
+  FROM MeasurementsWithGroup ndt
   JOIN FilteredASCityPairs f
     ON ndt.id = f.measurement_id
   WHERE
@@ -307,14 +420,14 @@ BaselineMetricsAggregated AS (
 CurrentRTTsPerGroup AS (
   SELECT
     ndt.client.Network.ASNumber AS src_asn,
-    CONCAT(ndt.client.Geo.city, '-', ndt.client.Geo.Subdivision1ISOCode, '-', ndt.client.Geo.CountryCode) AS src_city,
+    ndt.detection_src_city AS src_city,
     ndt.server.Site AS dst_site,
     ndt.ip_version,
     ARRAY_AGG(ndt.download_min_rtt IGNORE NULLS) AS current_rtt_array,
     ARRAY_AGG(ndt.download_throughput_mbps IGNORE NULLS) AS current_throughput_array,
     ARRAY_AGG(ndt.upload_throughput_mbps IGNORE NULLS) AS current_upload_throughput_array,
     STDDEV(ndt.download_min_rtt) AS current_rtt_stddev
-  FROM `mlab-collaboration.hermes_union.merged_download_upload` ndt
+  FROM MeasurementsWithGroup ndt
   JOIN ConsistentSRCCounts c
     ON ndt.client_ip = c.client_ip
    AND ndt.ip_version = c.ip_version
@@ -328,9 +441,7 @@ CurrentRTTsPerGroup AS (
 CurrentLossPerGroup AS (
   SELECT
     ndt.client.Network.ASNumber AS src_asn,
-    CONCAT(
-      ndt.client.Geo.city, '-', ndt.client.Geo.Subdivision1ISOCode, '-', ndt.client.Geo.CountryCode
-    ) AS src_city,
+    ndt.detection_src_city AS src_city,
     ndt.server.Site AS dst_site,
     ndt.ip_version,
 
@@ -340,7 +451,7 @@ CurrentLossPerGroup AS (
 
     COUNTIF(ndt.download_loss_rate > 0.01) AS current_lossy_count,
     COUNT(ndt.download_loss_rate) AS current_loss_total
-  FROM `mlab-collaboration.hermes_union.merged_download_upload` ndt
+  FROM MeasurementsWithGroup ndt
   JOIN ConsistentSRCCounts c
     ON ndt.client_ip = c.client_ip
    AND ndt.ip_version = c.ip_version
@@ -658,10 +769,8 @@ CurrentDayAggregated AS (
     ndt.client.Network.ASName AS src_asn_name,
     AVG(ndt.client.Geo.Latitude) AS src_lat,
     AVG(ndt.client.Geo.Longitude) AS src_lon,
-    CONCAT(
-      ndt.client.Geo.city, '-', ndt.client.Geo.Subdivision1ISOCode, '-', ndt.client.Geo.CountryCode
-    ) AS src_city,
-    ndt.client.Geo.Subdivision1ISOCode AS src_state,
+    ndt.detection_src_city AS src_city,
+    ndt.detection_src_state AS src_state,
     ndt.server.Network.ASNumber AS dst_asn,
     ndt.server.Geo.CountryCode AS dst_country,
     ndt.server.Site AS dst_site,
@@ -688,7 +797,7 @@ CurrentDayAggregated AS (
     APPROX_QUANTILES(ndt.download_min_rtt, 100)[OFFSET(20)] AS current_20th_rtt,
 
     ANY_VALUE(ndt.client_name) AS client_name
-  FROM `mlab-collaboration.hermes_union.merged_download_upload` ndt
+  FROM MeasurementsWithGroup ndt
   JOIN ConsistentSRCCounts c
     ON ndt.client_ip = c.client_ip
    AND ndt.ip_version = c.ip_version
@@ -697,9 +806,7 @@ CurrentDayAggregated AS (
    AND ndt.ip_version = cip.ip_version
   JOIN BaselineMetricsAggregated b
     ON ndt.client.Network.ASNumber = b.src_asn
-   AND CONCAT(
-      ndt.client.Geo.city, '-', ndt.client.Geo.Subdivision1ISOCode, '-', ndt.client.Geo.CountryCode
-    ) = b.src_city
+   AND ndt.detection_src_city = b.src_city
    AND ndt.server.Site = b.dst_site
    AND ndt.ip_version = b.ip_version
   WHERE ndt.partition_date = '${DAY}'
@@ -904,7 +1011,14 @@ AnomalyCounts AS (
     SUM(anomaly_upload_throughput) AS anomaly_upload_throughput_count,
     SUM(anomaly_loss_ratio) AS anomaly_loss_rate_count,
 
-    CAST('${DAY}' AS DATE) AS partition_date
+    CAST('${DAY}' AS DATE) AS partition_date,
+
+    -- The granularity every number in this row is computed at, and the exact
+    -- key grouped on above. The explicit INSERT list makes schema evolution and
+    -- rollback safe; these fields remain last for compatibility with the ALTER.
+    -- See docs/proposals/2026-08-group-granularity.md.
+    _detection_granularity AS detection_granularity,
+    src_city AS src_group_label
   FROM DayLevelAnomaly
   GROUP BY
     src_asn,

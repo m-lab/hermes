@@ -19,6 +19,7 @@ import os
 import sys
 from datetime import datetime, timedelta
 from string import Template
+from typing import Literal
 
 from google.auth import default
 from google.cloud import bigquery
@@ -26,6 +27,9 @@ from google.cloud import bigquery
 # Set up logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
+
+DetectionGranularity = Literal["maxmind_city", "metro"]
+DETECTION_GRANULARITIES: tuple[DetectionGranularity, ...] = ("maxmind_city", "metro")
 
 
 def print_active_credentials() -> None:
@@ -167,7 +171,13 @@ def execute_query(query: str, project_id: str, description: str = "") -> bigquer
     return query_job
 
 
-def process_date_with_sql(date: _dt.date, project_id: str, sql_folder: str, sql_file: str) -> str:
+def process_date_with_sql(
+    date: _dt.date,
+    project_id: str,
+    sql_folder: str,
+    sql_file: str,
+    detection_granularity: DetectionGranularity = "maxmind_city",
+) -> str:
     """Process a single date with the specified SQL file.
 
     Parameters
@@ -180,6 +190,9 @@ def process_date_with_sql(date: _dt.date, project_id: str, sql_folder: str, sql_
         Directory containing the SQL file.
     sql_file
         SQL filename (relative to ``sql_folder``).
+    detection_granularity
+        Value substituted for ``${DETECTION_GRANULARITY}`` when the selected
+        SQL supports source-grouping modes.
 
     Returns
     -------
@@ -201,6 +214,7 @@ def process_date_with_sql(date: _dt.date, project_id: str, sql_folder: str, sql_
     params = {
         "ONE_WEEK_EARLIER": (date - timedelta(days=7)).strftime("%Y-%m-%d"),
         "DAY": date.strftime("%Y-%m-%d"),
+        "DETECTION_GRANULARITY": detection_granularity,
     }
 
     process_logger.info(f"Processing for date: {params['DAY']} with SQL file: {sql_file}")
@@ -217,9 +231,15 @@ def process_date_with_sql(date: _dt.date, project_id: str, sql_folder: str, sql_
 
 def process_date_worker(args: tuple) -> str:
     """Worker function for multiprocessing — processes a single date."""
-    date, project_id, sql_folder, sql_file = args
+    date, project_id, sql_folder, sql_file, detection_granularity = args
     try:
-        return process_date_with_sql(date, project_id, sql_folder, sql_file)
+        return process_date_with_sql(
+            date,
+            project_id,
+            sql_folder,
+            sql_file,
+            detection_granularity,
+        )
     except Exception as e:
         logger.error(f"Error processing date {date.strftime('%Y-%m-%d')}: {str(e)}")
         return f"Error: {date.strftime('%Y-%m-%d')} - {str(e)}"
@@ -306,6 +326,12 @@ def main() -> None:
         help="Path to SQL files folder (default: ../sql_queries/hermes_core)",
     )
     parser.add_argument(
+        "--detection-granularity",
+        choices=DETECTION_GRANULARITIES,
+        default="maxmind_city",
+        help="Value substituted for ${DETECTION_GRANULARITY} (default: maxmind_city).",
+    )
+    parser.add_argument(
         "--dry-run", action="store_true", help="Show what would be done without executing"
     )
     parser.add_argument(
@@ -351,6 +377,7 @@ def main() -> None:
     logger.info(f"SQL file: {args.sql_file}")
     logger.info(f"Dates to process: {[d.strftime('%Y-%m-%d') for d in dates_to_process]}")
     logger.info(f"Delete first: {args.delete_first}")
+    logger.info(f"Detection granularity: {args.detection_granularity}")
     logger.info(f"Dry run: {args.dry_run}")
 
     if args.dry_run:
@@ -387,7 +414,13 @@ def main() -> None:
     if len(dates_to_process) == 1:
         # Single date - process sequentially
         logger.info(f"Processing single date: {dates_to_process[0].strftime('%Y-%m-%d')}")
-        process_date_with_sql(dates_to_process[0], project_id, args.sql_folder, args.sql_file)
+        process_date_with_sql(
+            dates_to_process[0],
+            project_id,
+            args.sql_folder,
+            args.sql_file,
+            args.detection_granularity,
+        )
     else:
         # Multiple dates - process in parallel
         max_workers = args.max_workers or min(mp.cpu_count(), len(dates_to_process))
@@ -397,7 +430,14 @@ def main() -> None:
 
         # Prepare arguments for each worker
         worker_args = [
-            (date, project_id, args.sql_folder, args.sql_file) for date in dates_to_process
+            (
+                date,
+                project_id,
+                args.sql_folder,
+                args.sql_file,
+                args.detection_granularity,
+            )
+            for date in dates_to_process
         ]
 
         # Process in parallel (spawn: fork after BigQuery/gRPC threads deadlocks children)

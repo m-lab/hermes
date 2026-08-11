@@ -10,7 +10,7 @@
 -- culprit, so anomalies_explained sums to the total explained (no double counting).
 --
 -- Idempotent: safe to run repeatedly. Bills 0 bytes.
-CREATE TABLE IF NOT EXISTS `mlab-collaboration.hermes_union.correlation_culprits_multigranularity`
+CREATE TABLE IF NOT EXISTS `mlab-collaboration.${DS}.correlation_culprits_multigranularity`
 (
   day STRING,
   partition_date DATE,

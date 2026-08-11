@@ -12,7 +12,7 @@
 -- Written by correlation_tomography.upload_entity_stats (load job, per-partition replace).
 --
 -- Idempotent: safe to run repeatedly. Bills 0 bytes.
-CREATE TABLE IF NOT EXISTS `mlab-collaboration.hermes_union.correlation_entity_stats_multigranularity`
+CREATE TABLE IF NOT EXISTS `mlab-collaboration.${DS}.correlation_entity_stats_multigranularity`
 (
   partition_date DATE,
   information_source STRING,            -- 'forward' | 'reverse'
