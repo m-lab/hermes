@@ -605,7 +605,11 @@ def execute_query(query: str, project_id: str, description: str = "") -> bigquer
 
 
 def run_enrichment(
-    date_str: str, project_id: str, lookback_days: int = 30, source: str = "topology"
+    date_str: str,
+    project_id: str,
+    lookback_days: int = 30,
+    source: str = "topology",
+    dataset: str = DEFAULT_DATASET,
 ) -> None:
     """Geolocate new IPs with IPInfo.
 
@@ -632,8 +636,13 @@ def run_enrichment(
         ~20.5 GiB for 7 days and ~86.4 GiB for 30 — so a single-date nightly
         should not pay for 30. Defaults to 30 to preserve the old behaviour for
         any caller that does not size it.
+    source
+        ``"topology"`` (hop IPs, Phase B) or ``"clients"`` (client IPs, Phase A0).
+    dataset
+        Operational dataset the client-IP scan reads from, so a ``--target staging``
+        run collects its clients from staging rather than production.
     """
-    union_transient_table = "mlab-collaboration.hermes_union.transient_events_union"
+    union_transient_table = f"mlab-collaboration.{dataset}.transient_events_union"
 
     for ipv6 in (False, True):
         label = "IPv6" if ipv6 else "IPv4"
@@ -647,10 +656,26 @@ def run_enrichment(
 
         # 1. Geolocate new IPs (IPInfo + RIPE IPMap)
         #    topology -> unified_ip_to_geoloc, clients -> unified_src_ip_to_geoloc
-        enricher.process_geolocation(date_str, lookback_days=lookback_days, source=source)
+        enricher.process_geolocation(
+            date_str, lookback_days=lookback_days, source=source, dataset=dataset
+        )
 
-        # 2 & 3. rDNS + HOIHO — skip for dates >90 days in the past
-        # (lookups would not return the hostnames that were valid then)
+        # 2 & 3. rDNS + HOIHO — topology only.
+        #
+        # Both infer geolocation from *router* hostnames (rDNS naming conventions,
+        # then HOIHO's learned regexes). Client IPs are residential CPE, whose
+        # hostnames encode the access network rather than the subscriber's location,
+        # so there is nothing to learn from them. They are also the expensive part of
+        # enrichment -- HOIHO alone loads a 3.7M-entry rDNS cache -- and, decisively,
+        # they write to the *topology* tables: running them from Phase A0 duplicates
+        # Phase B's work and mutates topology state from a client-geolocation step.
+        if source == "clients":
+            logger.info(f"[enrichment] Skipping rDNS/HOIHO for {date_str} (client IPs)")
+            logger.info(f"[enrichment] Finished {label} enrichment for {date_str}")
+            continue
+
+        # Skip for dates >90 days in the past: lookups would not return the
+        # hostnames that were valid then.
         cutoff_str = (datetime.today() - timedelta(days=90)).strftime("%Y-%m-%d")
         if date_str >= cutoff_str:
             if ipv6:
@@ -1256,6 +1281,7 @@ def run_dates(
             project_id,
             lookback_days=src_lookback,
             source="clients",
+            dataset=dataset,
         )
 
     # ── Phase A2: steps 02-03 (detection) ─────────────────────────────────
@@ -1323,7 +1349,7 @@ def run_dates(
         f"═══ Phase B: Running enrichment once (date={enrichment_date}, "
         f"lookback={enrichment_lookback}d) ═══"
     )
-    run_enrichment(enrichment_date, project_id, lookback_days=enrichment_lookback)
+    run_enrichment(enrichment_date, project_id, lookback_days=enrichment_lookback, dataset=dataset)
 
     # ── Phase C: steps 04 + temporal tomography in parallel ─────────────
     logger.info(
