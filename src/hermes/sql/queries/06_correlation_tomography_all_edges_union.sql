@@ -1,8 +1,12 @@
 --------------------------------------------------------------------------------
 -- HERMES (union): Correlation tomography — all edges per node
 --
--- Returns all (forward + reverse) edges from events_with_as_and_geoloc
--- with the broad filter. Downloaded by Python for hyperedge computation.
+-- Returns the endpoint identities for all (forward + reverse) edges from
+-- events_with_as_and_geoloc with the broad filter. Downloaded by Python for
+-- hyperedge computation. Measurement IDs and canonical edge strings are
+-- deliberately omitted: neither downstream consumer reads them, and repeating
+-- those high-cardinality strings across millions of rows materially increases
+-- the Phase-D memory footprint.
 --
 -- Each node carries its ⟨AS,metro⟩ identity (asn_city, metro-first via
 -- COALESCE(metro, place)) and its IXP (ixp_arr, 'None' when the hop is not at an
@@ -13,7 +17,9 @@
 -- Parameters: ${DAY}
 --------------------------------------------------------------------------------
 WITH base_events AS (
-  SELECT *
+  SELECT
+    forward_updated_node_details,
+    reverse_updated_node_details
   FROM `mlab-collaboration.${DS}.events_with_as_and_geoloc`
   WHERE partition_date = '${DAY}'
     AND DATE(window_start) >= partition_date
@@ -28,12 +34,6 @@ WITH base_events AS (
 )
 -- Forward edges
 SELECT
-  fr.id,
-  CASE WHEN TRIM(SPLIT(fwd.asn_city[OFFSET(i)], '-')[SAFE_OFFSET(0)])
-            <= TRIM(SPLIT(fwd.asn_city[OFFSET(i+1)], '-')[SAFE_OFFSET(0)])
-    THEN CONCAT(fwd.asn_city[OFFSET(i)], ' - ', fwd.asn_city[OFFSET(i+1)])
-    ELSE CONCAT(fwd.asn_city[OFFSET(i+1)], ' - ', fwd.asn_city[OFFSET(i)])
-  END AS canonical_edge,
   TRIM(SPLIT(fwd.asn_city[OFFSET(i)], '-')[SAFE_OFFSET(0)]) AS from_asn,
   TRIM(SPLIT(fwd.asn_city[OFFSET(i)], '-')[SAFE_OFFSET(1)]) AS from_metro,
   CONCAT(TRIM(SPLIT(fwd.asn_city[OFFSET(i)], '-')[SAFE_OFFSET(0)]), '-',
@@ -58,12 +58,6 @@ UNION ALL
 
 -- Reverse edges
 SELECT
-  fr.id,
-  CASE WHEN TRIM(SPLIT(rev.asn_city[OFFSET(i)], '-')[SAFE_OFFSET(0)])
-            <= TRIM(SPLIT(rev.asn_city[OFFSET(i+1)], '-')[SAFE_OFFSET(0)])
-    THEN CONCAT(rev.asn_city[OFFSET(i)], ' - ', rev.asn_city[OFFSET(i+1)])
-    ELSE CONCAT(rev.asn_city[OFFSET(i+1)], ' - ', rev.asn_city[OFFSET(i)])
-  END AS canonical_edge,
   TRIM(SPLIT(rev.asn_city[OFFSET(i)], '-')[SAFE_OFFSET(0)]) AS from_asn,
   TRIM(SPLIT(rev.asn_city[OFFSET(i)], '-')[SAFE_OFFSET(1)]) AS from_metro,
   CONCAT(TRIM(SPLIT(rev.asn_city[OFFSET(i)], '-')[SAFE_OFFSET(0)]), '-',

@@ -38,3 +38,16 @@ def test_phase_d_query_can_be_retargeted_to_staging(monkeypatch):
 def test_phase_d_rejects_invalid_dataset_names():
     with pytest.raises(ValueError):
         correlation_tomography._dataset_table("events", dataset="bad.dataset")
+
+
+def test_all_edges_query_omits_unused_high_cardinality_strings():
+    """Phase D must not retain per-measurement strings its consumers never read."""
+    sql = correlation_tomography.loader.load_query(
+        "06_correlation_tomography_all_edges_union.sql", {"DAY": "2026-08-07"}
+    )
+
+    assert "fr.id" not in sql
+    assert "AS canonical_edge" not in sql
+    assert "SELECT *" not in sql
+    assert "AS from_asn_metro" in sql
+    assert "AS to_asn_metro" in sql
