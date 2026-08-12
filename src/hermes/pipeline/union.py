@@ -22,11 +22,22 @@ DETECTION_GRANULARITIES: tuple[DetectionGranularity, ...] = ("maxmind_city", "me
 # SQL files executed sequentially for each date.
 # 01-03 run first, then a Python enrichment step geolocates new topology IPs,
 # then 04 runs the hop-level mapping against the freshly-updated geo tables.
-SQL_FILES_PRE_ENRICHMENT = [
+# Step 01 alone. It produces merged_download_upload, which is where the client
+# IPs come from, so source-IP enrichment (Phase A0) runs between this and
+# detection. Collecting client IPs from the raw NDT tables instead would
+# duplicate step 01's 122.66 GiB scan.
+SQL_FILES_MERGE = [
     "01_merge_upload_download_union.sql",
+]
+
+# Detection and event construction. Both consume client geolocation, so both run
+# after Phase A0.
+SQL_FILES_DETECT = [
     "02_detect_anomalies_union.sql",
     "03_build_transient_events_union.sql",
 ]
+
+SQL_FILES_PRE_ENRICHMENT = SQL_FILES_MERGE + SQL_FILES_DETECT
 
 SQL_FILES_POST_ENRICHMENT = [
     "04_mapping_union.sql",
@@ -594,8 +605,15 @@ def execute_query(query: str, project_id: str, description: str = "") -> bigquer
     return query_job
 
 
-def run_enrichment(date_str: str, project_id: str, lookback_days: int = 30) -> None:
-    """Geolocate new topology IPs found in transient_events_union.
+def run_enrichment(
+    date_str: str, project_id: str, lookback_days: int = 30, source: str = "topology"
+) -> None:
+    """Geolocate new IPs with IPInfo.
+
+    ``source="topology"`` covers hop IPs from transient_events_union and runs
+    between steps 03 and 04 (Phase B). ``source="clients"`` covers client IPs from
+    merged_download_upload and runs between steps 01 and 02 (Phase A0), because
+    detection groups on client geography.
 
     Runs between SQL steps 03 and 04 so that step 04's hop-level mapping
     has fresh geolocation data.  Reuses :class:`HermesEnrichment` but overrides
@@ -628,8 +646,9 @@ def run_enrichment(date_str: str, project_id: str, lookback_days: int = 30) -> N
         enricher.tables["transient_events"] = union_transient_table
         enricher.zdns.tables["transient_events"] = union_transient_table
 
-        # 1. Geolocate new IPs (IPInfo + RIPE IPMap) → unified_ip_to_geoloc
-        enricher.process_geolocation(date_str, lookback_days=lookback_days)
+        # 1. Geolocate new IPs (IPInfo + RIPE IPMap)
+        #    topology -> unified_ip_to_geoloc, clients -> unified_src_ip_to_geoloc
+        enricher.process_geolocation(date_str, lookback_days=lookback_days, source=source)
 
         # 2 & 3. rDNS + HOIHO — skip for dates >90 days in the past
         # (lookups would not return the hostnames that were valid then)

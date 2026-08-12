@@ -7,8 +7,6 @@ mutates production. These tests are the guard on that.
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
 from hermes.pipeline import init_staging, union

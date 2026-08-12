@@ -5,6 +5,7 @@ import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
+from string import Template
 from typing import Any
 
 from google.cloud import bigquery
@@ -26,8 +27,7 @@ from hermes.enrichment.routeviews.enricher_ipv6 import RouteViewsEnricherIPv6
 from hermes.enrichment.utils.common import logger
 from hermes.enrichment.zdns.enricher import ZDNSEnricher
 from hermes.enrichment.zdns.enricher_ipv6 import ZDNSEnricherIPv6
-from hermes.sql import paths
-from hermes.sql import loader
+from hermes.sql import loader, paths
 
 
 class HermesEnrichment:
