@@ -17,7 +17,7 @@ description = "HERMES network monitoring and anomaly detection pipeline"
 # `pip install` with a version gate rather than anything real.
 requires-python = ">=3.11"
 dependencies = [
-    "google-cloud-bigquery>=3.42.3",
+    "google-cloud-bigquery>=3.43.0",
     # Arrow-based download path for tomography. WITHOUT this, the client logs
     # "Storage Read API unavailable ... using REST download" and builds result
     # frames from JSON rows instead of Arrow buffers. That is both far slower
@@ -26,10 +26,10 @@ dependencies = [
     # inside a 28 GB cgroup, failing the whole 2025-08 backfill chunk.
     # pyarrow is the wire format for that path — pin it here rather than relying
     # on it arriving transitively via pandas/db-dtypes.
-    "google-cloud-bigquery-storage>=2.28.0",
+    "google-cloud-bigquery-storage>=2.40.0",
     "pyarrow>=25.0.0",
     "db-dtypes>=1.7.1",  # required by bigquery .to_dataframe() for DATE/TIME columns (download_edges)
-    "google-auth>=2.56.2",
+    "google-auth>=2.56.3",
     "pandas>=3.0.5",
     "requests>=2.34.2",
     "geopy>=2.5.0",
@@ -42,7 +42,7 @@ dependencies = [
 
 [project.optional-dependencies]
 plot = ["matplotlib>=3.11.1", "geopandas>=1.1.4", "folium>=0.20.0"]
-dev = ["ruff>=0.16.1", "mypy>=2.3.0", "pytest>=9.1.1", "pre-commit>=4.6.1", "pandas-stubs", "types-requests", "pyarrow>=25.0.0"]
+dev = ["ruff>=0.16.2", "mypy>=2.3.0", "pytest>=9.1.1", "pre-commit>=4.6.1", "pandas-stubs", "types-requests", "pyarrow>=25.0.0"]
 
 [project.scripts]
 hermes-pipeline = "hermes.pipeline.union:main"
