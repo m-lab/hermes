@@ -119,11 +119,45 @@ def test_02_declares_granularity_and_the_grouping_key(step02):
 
 
 def test_02_resolves_metro_before_statistical_grouping(step02):
-    assert "CREATE TEMP TABLE _source_metro_lookup" in step02
-    assert "ST_COVERS(mp.polygon" in step02
+    """The metro must be settled before any statistic is computed.
+
+    It used to be resolved inside 02 by a spatial join (_source_metro_lookup +
+    ST_COVERS). Phase A0 now resolves every client IP to a metro in
+    unified_src_ip_to_geoloc, so 02 reads it rather than computing it and does no
+    spatial join at all. The invariant is unchanged; only where it is satisfied
+    moved. Asserting on the *outcome* rather than the mechanism.
+    """
+    assert "unified_src_ip_to_geoloc" in step02, "metro must come from Phase A0"
+    # Check the DDL, not the bare name -- a comment explaining the removal is fine.
+    assert "CREATE TEMP TABLE _source_metro_lookup" not in step02, (
+        "02 must no longer resolve metro itself"
+    )
+    assert "ST_COVERS(mp.polygon" not in step02, "02 must no longer do a spatial join"
     assert "MeasurementsWithGroup AS" in step02
     assert "ndt.detection_src_city AS src_city" in step02
     assert "PARTITION BY src_asn, src_city, dst_site, ip_version" in step02
+
+
+def test_02_client_geography_comes_from_ipinfo_not_maxmind(step02):
+    """MaxMind's client.Geo is replaced wholesale, not blended.
+
+    The struct is rewritten in place so every downstream reference reads IPInfo;
+    the guard is that no MaxMind value can survive into a group label. A blended
+    COALESCE would silently reintroduce MaxMind's country-centroid fallback,
+    which is what made Tokyo 53.3% and Paris 55.9% synthetic under metro grouping.
+    """
+    for field in (
+        "city_ip_info",
+        "region_ip_info",
+        "country_ip_info",
+        "lat_ip_info",
+        "lon_ip_info",
+    ):
+        assert f"g.{field}" in step02, f"{field} must feed the rewritten client.Geo"
+    assert "AS Geo" in step02 and "AS client" in step02, "client.Geo must be replaced in place"
+    assert "COALESCE(g.city_ip_info, ndt.client.Geo.City)" not in step02, (
+        "must not fall back to MaxMind"
+    )
 
 
 def test_03_reattaches_raw_measurements_with_the_selected_group(step03):

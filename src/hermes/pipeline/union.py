@@ -1152,7 +1152,10 @@ def run_dates(
 
     Executes four phases:
 
-    - **Phase A** — SQL steps 01-03 for all dates in parallel.
+    - **Phase A1** — SQL step 01 for all dates in parallel.
+    - **Phase A0** — source-IP geolocation (IPInfo) for the batch, so
+      detection groups on IPInfo geography rather than MaxMind's.
+    - **Phase A2** — SQL steps 02-03 for the dates that merged.
     - **Phase B** — Enrichment once (geolocation + rDNS for topology IPs,
       covering all dates via the 30-day lookback window).
     - **Phase C** — SQL steps 04 + temporal tomography for all dates in parallel.
@@ -1212,17 +1215,63 @@ def run_dates(
     else:
         warn_thin_baselines(project_id, dates)
 
-    # ── Phase A: steps 01-03 in parallel ──────────────────────────────────
-    logger.info(f"═══ Phase A: Running steps 01-03 for {len(dates)} date(s) ═══")
-    results_a = _run_parallel_sql(
+    # ── Phase A1: step 01 (merge) ─────────────────────────────────────────
+    # Split from detection so source-IP geolocation can run in between. Step 01
+    # produces merged_download_upload, which is where the client IPs come from,
+    # and steps 02/03 group on client geography -- so the order is forced.
+    logger.info(f"═══ Phase A1: Running step 01 for {len(dates)} date(s) ═══")
+    results_a1 = _run_parallel_sql(
         dates,
         project_id,
-        SQL_FILES_PRE_ENRICHMENT,
+        SQL_FILES_MERGE,
         max_workers,
         skip_data_check,
         detection_granularity,
         dataset=dataset,
     )
+    merged_dates = [d for d, r in zip(dates, results_a1, strict=True) if r.startswith("Success:")]
+
+    # ── Phase A0: source-IP geolocation ───────────────────────────────────
+    # Resolve client IPs with IPInfo into unified_src_ip_to_geoloc before
+    # detection groups on them. MaxMind emits a single designated point per
+    # country when it cannot place a client below country level -- on 2026-08-07
+    # that was 547,105 measurements on 864 coordinates across 185 countries,
+    # which metro grouping would otherwise pile into whichever metro contains
+    # that point (Tokyo 53.3% synthetic, Paris 55.9%).
+    if merged_dates:
+        src_lookback = (max(merged_dates) - min(merged_dates)).days
+        logger.info(
+            f"═══ Phase A0: Source-IP geolocation "
+            f"(date={max(merged_dates)}, lookback={src_lookback}d) ═══"
+        )
+        try:
+            run_enrichment(
+                max(merged_dates).strftime("%Y-%m-%d"),
+                project_id,
+                lookback_days=src_lookback,
+                source="clients",
+            )
+        except Exception as e:
+            # Detection can still run on MaxMind geography, so a failure here
+            # degrades quality rather than blocking the batch. Loud, not fatal.
+            logger.error(f"[Phase A0] source-IP geolocation failed: {e}")
+
+    # ── Phase A2: steps 02-03 (detection) ─────────────────────────────────
+    logger.info(f"═══ Phase A2: Running steps 02-03 for {len(merged_dates)} date(s) ═══")
+    results_a2 = _run_parallel_sql(
+        merged_dates,
+        project_id,
+        SQL_FILES_DETECT,
+        max_workers,
+        skip_data_check,
+        detection_granularity,
+        dataset=dataset,
+    )
+
+    # Recombine so the per-date reporting below still lines up with `dates`:
+    # a date that failed 01 keeps that error, otherwise it carries its 02/03 result.
+    a2_by_date = dict(zip(merged_dates, results_a2, strict=True))
+    results_a = [a2_by_date.get(d, r) for d, r in zip(dates, results_a1, strict=True)]
 
     # Determine which dates succeeded phase A (eligible for enrichment + phase C)
     successful_dates = []
