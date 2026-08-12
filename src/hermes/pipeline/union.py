@@ -1244,17 +1244,19 @@ def run_dates(
             f"═══ Phase A0: Source-IP geolocation "
             f"(date={max(merged_dates)}, lookback={src_lookback}d) ═══"
         )
-        try:
-            run_enrichment(
-                max(merged_dates).strftime("%Y-%m-%d"),
-                project_id,
-                lookback_days=src_lookback,
-                source="clients",
-            )
-        except Exception as e:
-            # Detection can still run on MaxMind geography, so a failure here
-            # degrades quality rather than blocking the batch. Loud, not fatal.
-            logger.error(f"[Phase A0] source-IP geolocation failed: {e}")
+        # Fatal, deliberately. This was non-fatal while steps 02/03 still read
+        # `client.Geo.*`, because detection could fall back to MaxMind geography and
+        # a failure here only cost quality. Those steps now take client geography
+        # solely from unified_src_ip_to_geoloc, so a failed A0 does not degrade the
+        # batch -- it produces a batch in which every measurement is grouped under
+        # NULL, which looks like "no anomalies" rather than like a failure. Better
+        # to stop and leave the partition absent.
+        run_enrichment(
+            max(merged_dates).strftime("%Y-%m-%d"),
+            project_id,
+            lookback_days=src_lookback,
+            source="clients",
+        )
 
     # ── Phase A2: steps 02-03 (detection) ─────────────────────────────────
     logger.info(f"═══ Phase A2: Running steps 02-03 for {len(merged_dates)} date(s) ═══")

@@ -10,6 +10,21 @@ import requests
 from hermes.enrichment.utils.common import BaseEnrichment, logger
 
 
+def latest_snapshot(cache_dir: str) -> str | None:
+    """Newest ``ipinfo_YYYY-MM-DD.snapshot`` present in ``cache_dir``, or None.
+
+    Ordered by the date **in the filename**, not ``getctime``: ctime reflects
+    when the inode was last changed on this host, so a restored backup, a
+    ``docker cp`` or a touch reorders the snapshots and can select a months-old
+    database while a current one sits next to it. The filename is the only
+    record of which day the data describes.
+    """
+    snapshots = sorted(
+        f for f in os.listdir(cache_dir) if f.startswith("ipinfo_") and f.endswith(".snapshot")
+    )
+    return os.path.join(cache_dir, snapshots[-1]) if snapshots else None
+
+
 class IPInfoEnricher(BaseEnrichment):
     def __init__(self, project_id: str = "mlab-collaboration"):
         """Initialize IPInfo enricher."""
@@ -58,12 +73,25 @@ class IPInfoEnricher(BaseEnrichment):
                     json.dump(new_checksums, f)
         except Exception as e:
             logger.error(f"Error downloading IPInfo database: {e}")
-            # Find latest snapshot if download fails
-            latest_snapshot = max(
-                [f for f in os.listdir(self.cache_dir) if f.startswith("ipinfo_")],
-                key=lambda x: os.path.getctime(os.path.join(self.cache_dir, x)),
-            )
-            geolocation_ofile = os.path.join(self.cache_dir, latest_snapshot)
+
+        # The download above is conditional on the checksum having changed, but
+        # `geolocation_ofile` is named for *today* unconditionally. When IPInfo has
+        # not republished since the last local download, nothing is written and this
+        # path names a file that does not exist -- `open_database` then fails and
+        # every lookup silently returns empty. That is why this check is on the
+        # normal path and not only in the `except` branch above: the failure mode is
+        # a no-op download, not an error. Hit on 2026-08-12 at 04:26 UTC, before the
+        # daily 08:18 refresh; production never saw it only because the nightly runs
+        # at 15:00 UTC, after the refresh.
+        if not os.path.exists(geolocation_ofile):
+            fallback = latest_snapshot(self.cache_dir)
+            if fallback:
+                logger.warning(
+                    "IPInfo snapshot %s absent (no new publication today); falling back to %s",
+                    os.path.basename(geolocation_ofile),
+                    os.path.basename(fallback),
+                )
+                geolocation_ofile = fallback
 
         return geolocation_ofile
 

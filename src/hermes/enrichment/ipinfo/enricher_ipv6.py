@@ -8,6 +8,7 @@ from typing import Any
 import maxminddb
 import requests
 
+from hermes.enrichment.ipinfo.enricher import latest_snapshot
 from hermes.enrichment.utils.common import BaseEnrichment, logger
 
 
@@ -33,20 +34,10 @@ class IPInfoEnricherIPv6(BaseEnrichment):
     def _download_ipinfo_database(self) -> str:
         """Use existing IPInfo database (same for IPv4 and IPv6)."""
         # Look for existing IPInfo database file
-        existing_files = [
-            f
-            for f in os.listdir(self.cache_dir)
-            if f.startswith("ipinfo_") and f.endswith(".snapshot")
-        ]
-
-        if existing_files:
-            # Use the most recent existing file
-            latest_file = max(
-                existing_files, key=lambda x: os.path.getctime(os.path.join(self.cache_dir, x))
-            )
-            geolocation_ofile = os.path.join(self.cache_dir, latest_file)
-            logger.info(f"Using existing IPInfo database for IPv6: {geolocation_ofile}")
-            return geolocation_ofile
+        existing = latest_snapshot(self.cache_dir)
+        if existing:
+            logger.info(f"Using existing IPInfo database for IPv6: {existing}")
+            return existing
 
         # If no existing file, download one (same as IPv4)
         checksum_file = f"{self.cache_dir}/ip_info.checksums"
@@ -76,12 +67,12 @@ class IPInfoEnricherIPv6(BaseEnrichment):
                     json.dump(new_checksums, f)
         except Exception as e:
             logger.error(f"Error downloading IPInfo database: {e}")
-            # Find latest snapshot if download fails
-            latest_snapshot = max(
-                [f for f in os.listdir(self.cache_dir) if f.startswith("ipinfo_")],
-                key=lambda x: os.path.getctime(os.path.join(self.cache_dir, x)),
-            )
-            geolocation_ofile = os.path.join(self.cache_dir, latest_snapshot)
+
+        # Same conditional-download hazard as the IPv4 enricher; see the comment there.
+        if not os.path.exists(geolocation_ofile):
+            fallback = latest_snapshot(self.cache_dir)
+            if fallback:
+                geolocation_ofile = fallback
 
         return geolocation_ofile
 

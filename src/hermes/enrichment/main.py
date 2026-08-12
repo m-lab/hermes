@@ -121,6 +121,19 @@ class HermesEnrichment:
         """
         logger.info(f"Processing {'IPv6' if self.ipv6 else 'IPv4'} geolocation for date: {date}")
 
+        # For topology IPs a missing IPInfo reader degrades the run: the hop keeps
+        # whatever geolocation the other enrichers supply. For client IPs it does
+        # not degrade, it silently empties the pipeline -- steps 02/03 take client
+        # geography *only* from this table, so every measurement would be grouped
+        # under NULL and detection would compare nothing against nothing. A run that
+        # cannot geolocate clients must stop, not produce an empty answer.
+        if source == "clients" and getattr(self.ipinfo, "reader", None) is None:
+            raise RuntimeError(
+                "IPInfo reader unavailable "
+                f"(db path: {getattr(self.ipinfo, 'ipinfo_db_path', None)}) — refusing to "
+                "run client geolocation, which would leave every measurement ungrouped."
+            )
+
         current_date = datetime.strptime(date, "%Y-%m-%d")
         # Staleness threshold: stored geolocation older than this is refetched.
         month_ago_str = (current_date - timedelta(days=30)).strftime("%Y-%m-%d")
