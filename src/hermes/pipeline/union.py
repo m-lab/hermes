@@ -39,6 +39,13 @@ SQL_FILES_DETECT = [
 
 SQL_FILES_PRE_ENRICHMENT = SQL_FILES_MERGE + SQL_FILES_DETECT
 
+#: Length of step 02's baseline window, in days: it compares ``${DAY}`` against
+#: ``${ONE_WEEK_EARLIER}``..``${DAY}``. Phase A0 must geolocate client IPs across
+#: this whole window, not just the batch, or the baseline is grouped on a fraction
+#: of its traffic while the target day uses all of it. Shared so the two cannot
+#: drift apart -- they were separate literals, and only the SQL side was obvious.
+BASELINE_DAYS = 7
+
 SQL_FILES_POST_ENRICHMENT = [
     "04_mapping_union.sql",
     # correlation tomography now runs as a Python v2 step (Phase D)
@@ -702,7 +709,7 @@ def _run_sql_steps(
     """Run a list of SQL steps for a single date, skipping steps already done."""
     day_str = date.strftime("%Y-%m-%d")
     params = {
-        "ONE_WEEK_EARLIER": (date - timedelta(days=7)).strftime("%Y-%m-%d"),
+        "ONE_WEEK_EARLIER": (date - timedelta(days=BASELINE_DAYS)).strftime("%Y-%m-%d"),
         "DAY": day_str,
         "DETECTION_GRANULARITY": detection_granularity,
         "DS": dataset,
@@ -1264,7 +1271,20 @@ def run_dates(
     # which metro grouping would otherwise pile into whichever metro contains
     # that point (Tokyo 53.3% synthetic, Paris 55.9%).
     if merged_dates:
-        src_lookback = (max(merged_dates) - min(merged_dates)).days
+        # The window must cover step 02's BASELINE, not just the batch. 02 compares
+        # the target day against `${ONE_WEEK_EARLIER}`..`${DAY}` of
+        # merged_download_upload, and it groups every one of those days by client
+        # geography. Sizing this to the batch span alone left the baseline days
+        # geolocated at 17-24% of measurements, so each group's history was computed
+        # from a fifth of its traffic while the target day used all of it -- not a
+        # like-for-like comparison, and the dominant cause of the first staging run's
+        # 70% drop in transient events.
+        #
+        # In steady state this costs little: the staleness join only re-enriches IPs
+        # absent from the table or older than 30 days, so a nightly still enriches
+        # roughly one day of new client IPs. The wider window is what makes a cold
+        # start, or a gap after a failed run, self-healing.
+        src_lookback = (max(merged_dates) - min(merged_dates)).days + BASELINE_DAYS
         logger.info(
             f"═══ Phase A0: Source-IP geolocation "
             f"(date={max(merged_dates)}, lookback={src_lookback}d) ═══"

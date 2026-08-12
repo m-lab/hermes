@@ -101,7 +101,27 @@ MeasurementsWithGroup AS (
                ORDER BY ABS(DATE_DIFF(partition_date, DATE '${DAY}', DAY)) ASC,
                         partition_date DESC
              ) AS rn
-      FROM `mlab-collaboration.hermes.unified_src_ip_to_geoloc`
+      -- BOTH address families. The enrichment writes IPv4 and IPv6 client
+      -- geolocation to separate tables (the enricher is instantiated once per
+      -- family, each with its own `tables` dict), so reading only the IPv4 table
+      -- silently drops every IPv6 client: 1,169,928 of 2,564,893 distinct client
+      -- IPs on 2026-08-07 (45.6%), carrying 1,786,805 of 4,855,404 measurements
+      -- (36.8%). Those measurements got a NULL group label and left detection
+      -- entirely -- which is why the first staging run showed transient events
+      -- down 70% rather than the expected small change.
+      --
+      -- UNION ALL, not a join: an address belongs to exactly one family, so the
+      -- two tables are disjoint on ip_address and the ROW_NUMBER below still
+      -- yields one row per IP.
+      FROM (
+        SELECT ip_address, partition_date, city_ip_info, region_ip_info,
+               country_ip_info, lat_ip_info, lon_ip_info, metro
+        FROM `mlab-collaboration.hermes.unified_src_ip_to_geoloc`
+        UNION ALL
+        SELECT ip_address, partition_date, city_ip_info, region_ip_info,
+               country_ip_info, lat_ip_info, lon_ip_info, metro
+        FROM `mlab-collaboration.hermes.unified_src_ip_to_geoloc_ipv6`
+      )
     ) WHERE rn = 1
   ) g
     ON ndt.client_ip = g.ip_address
