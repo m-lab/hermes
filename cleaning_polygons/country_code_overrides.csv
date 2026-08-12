@@ -1,0 +1,4 @@
+> Explicit Natural Earth -> HERMES/IPInfo country-code corrections (plan section 2.2).
+> Applied to both boundary features and seed features. Lines beginning with '>' are comments.
+from_code,to_code,reason
+XD,SY,"NE codes the UN-administered Golan buffer zone as XD; IPInfo reports SY"

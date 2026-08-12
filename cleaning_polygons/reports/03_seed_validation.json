@@ -1,0 +1,410 @@
+{
+  "invalid_coordinates": [],
+  "seed_country_consistency": {
+    "inside": 7336,
+    "near_border_count": 27,
+    "near_border": [
+      {
+        "metro": "Tasiusaq-NA-GL",
+        "km_outside": 18.009
+      },
+      {
+        "metro": "Savissivik-NA-GL",
+        "km_outside": 12.673
+      },
+      {
+        "metro": "Daru-NA-PG",
+        "km_outside": 7.82
+      },
+      {
+        "metro": "Uummannaq-NA-GL",
+        "km_outside": 7.735
+      },
+      {
+        "metro": "Kullorsuaq-NA-GL",
+        "km_outside": 6.762
+      },
+      {
+        "metro": "Kangersuatsiaq-NA-GL",
+        "km_outside": 2.62
+      },
+      {
+        "metro": "Gibraltar-Gibraltar-GI",
+        "km_outside": 1.991
+      },
+      {
+        "metro": "Mucusso-Cuando Cubango-AO",
+        "km_outside": 1.609
+      },
+      {
+        "metro": "Bar Harbor-Maine-US",
+        "km_outside": 1.115
+      },
+      {
+        "metro": "Colonia del Sacramento-Colonia-UY",
+        "km_outside": 0.781
+      },
+      {
+        "metro": "Edinburgh of the Seven Seas-Tristan da Cunha-SH",
+        "km_outside": 0.475
+      },
+      {
+        "metro": "El Porvenir-Kuna Yala-PA",
+        "km_outside": 0.432
+      },
+      {
+        "metro": "Saint Helier-Jersey-JE",
+        "km_outside": 0.398
+      },
+      {
+        "metro": "Salaverry-La Libertad-PE",
+        "km_outside": 0.37
+      },
+      {
+        "metro": "Jabal Ali-Dubay-AE",
+        "km_outside": 0.35
+      },
+      {
+        "metro": "Georgetown-Ascension-SH",
+        "km_outside": 0.249
+      },
+      {
+        "metro": "Huacho-Lima-PE",
+        "km_outside": 0.189
+      },
+      {
+        "metro": "San Andr\u00e9s-NA-CO",
+        "km_outside": 0.044
+      },
+      {
+        "metro": "Rio Grande-Tierra del Fuego-AR",
+        "km_outside": 0.04
+      },
+      {
+        "metro": "Diego Garcia-Diego Garcia-IO",
+        "km_outside": 0.037
+      },
+      {
+        "metro": "Trepassey-Newfoundland and Labrador-CA",
+        "km_outside": 0.026
+      },
+      {
+        "metro": "Tasiilaq-NA-GL",
+        "km_outside": 0.019
+      },
+      {
+        "metro": "Viana Do Castelo-Viana do Castelo-PT",
+        "km_outside": 0.014
+      },
+      {
+        "metro": "Puerto Deseado-Santa Cruz-AR",
+        "km_outside": 0.014
+      },
+      {
+        "metro": "La Romana-La Romana-DO",
+        "km_outside": 0.007
+      },
+      {
+        "metro": "Wake Island-Wake Island-UM",
+        "km_outside": 0.001
+      },
+      {
+        "metro": "Amundsen\u2013Scott South Pole Station-NA-AQ",
+        "km_outside": 0.0
+      }
+    ],
+    "clearly_outside_count": 0,
+    "clearly_outside": [],
+    "reassigned_count": 2,
+    "reassigned": [
+      {
+        "metro": "Atafu-Tokelau aggregation-NZ",
+        "from": "NZ",
+        "to": "TK",
+        "km_outside_declared": 2367.8,
+        "ne_adm0name_hint": "TKL"
+      },
+      {
+        "metro": "Alofi-Niue aggregation-NZ",
+        "from": "NZ",
+        "to": "NU",
+        "km_outside_declared": 1389.2,
+        "ne_adm0name_hint": "NIU"
+      }
+    ]
+  },
+  "duplicate_coordinates": {
+    "groups": 0,
+    "rows_involved": 0,
+    "detail": [],
+    "rows_dropped": 0
+  },
+  "near_duplicates": {
+    "under_100m": [],
+    "under_1km": [],
+    "count_under_100m": 0,
+    "count_under_1km": 0
+  },
+  "country_seed_coverage": {
+    "countries_with_boundary": 248,
+    "countries_needing_seed": [],
+    "countries_excluded": [
+      "BV",
+      "HM"
+    ],
+    "seeds_without_boundary": []
+  },
+  "final_seed_count": 7365,
+  "state_assignment": {
+    "seeds": 7365,
+    "assigned_to_state": 7309,
+    "unassigned_compete_at_country_tier": 56,
+    "ne_adm1name_agrees_with_containing_state": 6365,
+    "state_resolved_taken_from_admin1": 944,
+    "ne_adm1name_differs_examples": [
+      {
+        "metro": "Medenine-MUdenine-TN",
+        "ne_adm1name": "MUdenine",
+        "containing_state": "M\u00e9denine",
+        "state_code": "TN-82"
+      },
+      {
+        "metro": "Kasserine-Kasssrine-TN",
+        "ne_adm1name": "Kasssrine",
+        "containing_state": "Kass\u00e9rine",
+        "state_code": "TN-42"
+      },
+      {
+        "metro": "Luan Chau-Vi?n Bi-VN",
+        "ne_adm1name": "Vi?n Bi",
+        "containing_state": "\u0110i\u1ec7n Bi\u00ean",
+        "state_code": "VN-71"
+      },
+      {
+        "metro": "B\u1eafc K\u1ea1n-\u00d0\u00f4ng B?c-VN",
+        "ne_adm1name": "\u00d0\u00f4ng B?c",
+        "containing_state": "\u0110\u00f4ng B\u1eafc",
+        "state_code": "VN-53"
+      },
+      {
+        "metro": "L\u1ea1ng S\u01a1n-L?ng Son-VN",
+        "ne_adm1name": "L?ng Son",
+        "containing_state": "L\u1ea1ng S\u01a1n",
+        "state_code": "VN-09"
+      },
+      {
+        "metro": "Hai Duong-H?i Duong-VN",
+        "ne_adm1name": "H?i Duong",
+        "containing_state": "H\u1ea3i D\u01b0\u01a1ng",
+        "state_code": "VN-61"
+      },
+      {
+        "metro": "Th\u00e1i B\u00ecnh-ThMi Bmnh-VN",
+        "ne_adm1name": "ThMi Bmnh",
+        "containing_state": "Th\u00e1i B\u00ecnh",
+        "state_code": "VN-20"
+      },
+      {
+        "metro": "Thu Dau Mot-B\u00ecnh Duong-VN",
+        "ne_adm1name": "B\u00ecnh Duong",
+        "containing_state": "B\u00ecnh D\u01b0\u01a1ng",
+        "state_code": "VN-57"
+      },
+      {
+        "metro": "\u0110\u00f4ng H\u00e0-Qu?ng Tr?-VN",
+        "ne_adm1name": "Qu?ng Tr?",
+        "containing_state": "Qu\u1ea3ng Tr\u1ecb",
+        "state_code": "VN-25"
+      },
+      {
+        "metro": "Cao L\u00e3nh-\u00d0?ng Th\u00e1p-VN",
+        "ne_adm1name": "\u00d0?ng Th\u00e1p",
+        "containing_state": "\u00d0ong Th\u00e1p",
+        "state_code": "VN-45"
+      },
+      {
+        "metro": "Truc Giang-B?n Tre-VN",
+        "ne_adm1name": "B?n Tre",
+        "containing_state": "B\u1ebfn Tre",
+        "state_code": "VN-50"
+      },
+      {
+        "metro": "Tra Vinh-TrM Vinh-VN",
+        "ne_adm1name": "TrM Vinh",
+        "containing_state": "Tr\u00e0 Vinh",
+        "state_code": "VN-51"
+      },
+      {
+        "metro": "V\u0129nh Long-Vinh Long-VN",
+        "ne_adm1name": "Vinh Long",
+        "containing_state": "V\u0129nh Long",
+        "state_code": "VN-49"
+      },
+      {
+        "metro": "Cao B\u1eb1ng-Cao B?ng-VN",
+        "ne_adm1name": "Cao B?ng",
+        "containing_state": "Cao B\u1eb1ng",
+        "state_code": "VN-04"
+      },
+      {
+        "metro": "Iganga-Iganga-UG",
+        "ne_adm1name": "Iganga",
+        "containing_state": "Luuka",
+        "state_code": "UG-229"
+      },
+      {
+        "metro": "Bombo-Bamunanika-UG",
+        "ne_adm1name": "Bamunanika",
+        "containing_state": "Luweero",
+        "state_code": "UG-104"
+      },
+      {
+        "metro": "Sironko-Budadiri-UG",
+        "ne_adm1name": "Budadiri",
+        "containing_state": "Bulambuli",
+        "state_code": "UG-225"
+      },
+      {
+        "metro": "Katakwi-Usuk-UG",
+        "ne_adm1name": "Usuk",
+        "containing_state": "Katakwi",
+        "state_code": "UG-207"
+      },
+      {
+        "metro": "Zalaegerszeg-Zala-HU",
+        "ne_adm1name": "Zala",
+        "containing_state": "Zalaegerszeg",
+        "state_code": "HU-ZE"
+      },
+      {
+        "metro": "Tatab\u00e1nya-Kom\u00e1rom-Esztergom-HU",
+        "ne_adm1name": "Kom\u00e1rom-Esztergom",
+        "containing_state": "Tatab\u00e1nya",
+        "state_code": "HU-TB"
+      },
+      {
+        "metro": "Szeksz\u00e1rd-Tolna-HU",
+        "ne_adm1name": "Tolna",
+        "containing_state": "Szeksz\u00e1rd",
+        "state_code": "HU-SS"
+      },
+      {
+        "metro": "Salg\u00f3tarj\u00e1n-N\u00f3gr\u00e1d-HU",
+        "ne_adm1name": "N\u00f3gr\u00e1d",
+        "containing_state": "Salg\u00f3tarj\u00e1n",
+        "state_code": "HU-ST"
+      },
+      {
+        "metro": "B\u00e9k\u00e9scsaba-B\u00e9k\u00e9s-HU",
+        "ne_adm1name": "B\u00e9k\u00e9s",
+        "containing_state": "B\u00e9k\u00e9scsaba",
+        "state_code": "HU-BC"
+      },
+      {
+        "metro": "Eger-Heves-HU",
+        "ne_adm1name": "Heves",
+        "containing_state": "Eger",
+        "state_code": "HU-EG"
+      },
+      {
+        "metro": "M\u00e9rida-Extremadura-ES",
+        "ne_adm1name": "Extremadura",
+        "containing_state": "Badajoz",
+        "state_code": "ES-BA"
+      },
+      {
+        "metro": "Dhangarhi-Achham-NP",
+        "ne_adm1name": "Achham",
+        "containing_state": "Seti",
+        "state_code": "NP-SE"
+      },
+      {
+        "metro": "Dub\u0103sari-Transnistria-MD",
+        "ne_adm1name": "Transnistria",
+        "containing_state": "St\u00eeng\u0103 Nistrului",
+        "state_code": "MD-SN"
+      },
+      {
+        "metro": "Trincomalee-Trincomalee-LK",
+        "ne_adm1name": "Trincomalee",
+        "containing_state": "Triku\u1e47\u0101malaya",
+        "state_code": "LK-53"
+      },
+      {
+        "metro": "Puttalan-Puttalam-LK",
+        "ne_adm1name": "Puttalam",
+        "containing_state": "Puttalama",
+        "state_code": "LK-62"
+      },
+      {
+        "metro": "Sin-Ni-P'yongan-namdo-KP",
+        "ne_adm1name": "P'yongan-namdo",
+        "containing_state": "P'y\u014fngan-namdo",
+        "state_code": "KP-02"
+      },
+      {
+        "metro": "Barclayville-GrandKru-LR",
+        "ne_adm1name": "GrandKru",
+        "containing_state": "Grand Kru",
+        "state_code": "LR-GK"
+      },
+      {
+        "metro": "Potenza-Basilicata-IT",
+        "ne_adm1name": "Basilicata",
+        "containing_state": "Potenza",
+        "state_code": "IT-PZ"
+      },
+      {
+        "metro": "Campobasso-Molise-IT",
+        "ne_adm1name": "Molise",
+        "containing_state": "Campobasso",
+        "state_code": "IT-CB"
+      },
+      {
+        "metro": "Aosta-Valle d'Aosta-IT",
+        "ne_adm1name": "Valle d'Aosta",
+        "containing_state": "Aoste",
+        "state_code": "IT-AO"
+      },
+      {
+        "metro": "Comendador-Elias Pina-DO",
+        "ne_adm1name": "Elias Pina",
+        "containing_state": "La Estrelleta",
+        "state_code": "DO-07"
+      },
+      {
+        "metro": "Georgetown-Maccarthy Island-GM",
+        "ne_adm1name": "Maccarthy Island",
+        "containing_state": "Central River",
+        "state_code": "GM-M"
+      },
+      {
+        "metro": "Kerewan-Lower River-GM",
+        "ne_adm1name": "Lower River",
+        "containing_state": "North Bank",
+        "state_code": "GM-N"
+      },
+      {
+        "metro": "Mariehamn-Finstr\u00f6m-AX",
+        "ne_adm1name": "Finstr\u00f6m",
+        "containing_state": "Mariehamn",
+        "state_code": "AX-X09~"
+      },
+      {
+        "metro": "Kouvola-Southern Finland-FI",
+        "ne_adm1name": "Southern Finland",
+        "containing_state": "Kymenlaakso",
+        "state_code": "FI-09"
+      },
+      {
+        "metro": "Mali-Labe-GN",
+        "ne_adm1name": "Labe",
+        "containing_state": "Mali",
+        "state_code": "GN-ML"
+      }
+    ],
+    "states_total": 4483,
+    "states_with_seeds": 2758,
+    "metro_id_collisions_after_rename": 1
+  }
+}

@@ -2,18 +2,19 @@
 -- HERMES (union): Temporal correlation — compare edge frequency before vs
 -- during anomalies
 --
--- Input:  `mlab-collaboration.hermes_union.events_with_as_and_geoloc`
--- Output: `mlab-collaboration.hermes_union.temporal_correlations`
+-- Input:  `mlab-collaboration.${DS}.events_with_as_and_geoloc`
+-- Output: `mlab-collaboration.${DS}.temporal_correlations`
 -- Partition: partition_date
 --
 -- Adapted from hermes_core/temporal_tomography_upd.sql for the union pipeline.
+-- Group identity follows docs/proposals/2026-08-group-granularity.md.
 --------------------------------------------------------------------------------
 
-INSERT INTO `mlab-collaboration.hermes_union.temporal_correlations`
+INSERT INTO `mlab-collaboration.${DS}.temporal_correlations`
 WITH
   final_results AS (
     SELECT *
-    FROM `mlab-collaboration.hermes_union.events_with_as_and_geoloc`
+    FROM `mlab-collaboration.${DS}.events_with_as_and_geoloc`
     WHERE partition_date = '${DAY}'
       AND NOT EXISTS (
         SELECT 1
@@ -49,7 +50,9 @@ WITH
             WHERE CAST(ud.associated_asn AS INT64) = CAST(src_asn AS INT64)
           ),
           [],
-          ['*' || CAST(CONCAT(src_asn, '-', src_city) AS STRING)]
+          -- This is a topological endpoint, so retain the canonical metro here;
+          -- src_group_label is the population identity, not a hop location.
+          ['*' || CAST(CONCAT(src_asn, '-', src_metro) AS STRING)]
         )
       ) AS cleaned_forward_as_path,
       ARRAY_CONCAT(
@@ -79,7 +82,7 @@ WITH
   baseline_stats AS (
     SELECT
       src_asn,
-      src_city,
+      src_group_label,
       dst_site,
       AVG(baseline_median_rtt) AS baseline_rtt,
       STDDEV(ndt_rtt) AS stddev_rtt,
@@ -87,13 +90,13 @@ WITH
       AVG(anomaly_ratio_throughput) AS anomaly_ratio_throughput,
       AVG(anomaly_ratio_rtt) AS anomaly_ratio_rtt
     FROM final_results
-    GROUP BY src_asn, src_city, dst_site
+    GROUP BY src_asn, src_group_label, dst_site
   ),
   path_changes AS (
     SELECT
       fr.id,
       fr.src_asn,
-      fr.src_city,
+      fr.src_group_label,
       fr.src_country,
       fr.dst_site,
       fr.dst_asn,
@@ -170,14 +173,14 @@ WITH
     FROM final_results fr
     JOIN baseline_stats bs
       ON fr.src_asn = bs.src_asn
-      AND fr.src_city = bs.src_city
+      AND fr.src_group_label = bs.src_group_label
       AND fr.dst_site = bs.dst_site
     JOIN augmented_as_path ap
       ON fr.id = ap.id
   ),
   grouped_path_changes AS (
     SELECT
-      CONCAT(src_asn, ' - ', src_city, ' - ', dst_site) AS src_dst_pair,
+      CONCAT(src_asn, ' - ', src_group_label, ' - ', dst_site) AS src_dst_pair,
       date,
       ARRAY_AGG(STRUCT(
         start_timestamp,
@@ -194,7 +197,7 @@ WITH
         is_anomaly
       )) AS paths
     FROM path_changes
-    GROUP BY src_asn, src_city, dst_site, date
+    GROUP BY src_asn, src_group_label, dst_site, date
   ),
   anomalies AS (
     SELECT

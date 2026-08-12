@@ -2,10 +2,11 @@
 -- Per (group, direction, edge): prevalence in the usual (healthy) route U vs the
 -- day-of anomalous route D, with per-hop RTT for congestion localization.
 -- Parameters: ${DAY}
+-- Group identity follows docs/proposals/2026-08-group-granularity.md.
 WITH meas AS (
   SELECT
     id,
-    CONCAT(src_asn, ' - ', src_city, ' - ', dst_site) AS src_dst_pair,
+    CONCAT(src_asn, ' - ', src_group_label, ' - ', dst_site) AS src_dst_pair,
     ip_version,
     DATE(window_start) >= '${DAY}' AS is_day,
     (
@@ -14,7 +15,7 @@ WITH meas AS (
     ) AS is_anomaly,
     forward_updated_node_details AS fwd,
     reverse_updated_node_details AS rev
-  FROM `mlab-collaboration.hermes_union.events_with_as_and_geoloc`
+  FROM `mlab-collaboration.${DS}.events_with_as_and_geoloc`
   WHERE partition_date = '${DAY}' AND DATE(window_start) >= partition_date - 7
 ),
 -- one ordered node list + per-node rtt per (measurement, direction)
@@ -24,12 +25,12 @@ hops AS (
   SELECT id, src_dst_pair, ip_version, is_day, is_anomaly, 'forward' AS direction,
     n.ttl, IFNULL(CONCAT(n.associated_asn, '-', COALESCE(al.canon_metro, n.place)), '*') AS node, n.rtts
   FROM meas, UNNEST(fwd) AS n
-  LEFT JOIN `mlab-collaboration.hermes_union.place_canonical_metro` al ON al.place = n.place
+  LEFT JOIN `mlab-collaboration.${DS}.place_canonical_metro` al ON al.place = n.place
   UNION ALL
   SELECT id, src_dst_pair, ip_version, is_day, is_anomaly, 'reverse' AS direction,
     n.ttl, IFNULL(CONCAT(n.associated_asn, '-', COALESCE(al.canon_metro, n.place)), '*') AS node, n.rtts
   FROM meas, UNNEST(rev) AS n
-  LEFT JOIN `mlab-collaboration.hermes_union.place_canonical_metro` al ON al.place = n.place
+  LEFT JOIN `mlab-collaboration.${DS}.place_canonical_metro` al ON al.place = n.place
 ),
 ordered AS (
   SELECT id, src_dst_pair, ip_version, is_day, is_anomaly, direction, node, rtts,

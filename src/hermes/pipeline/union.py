@@ -3,6 +3,7 @@ import concurrent.futures as cf
 import logging
 import multiprocessing as mp
 from datetime import date, datetime, timedelta
+from typing import Literal, cast
 
 from google.auth import default
 from google.cloud import bigquery
@@ -14,6 +15,9 @@ from hermes.sql import loader
 # Set up logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
+
+DetectionGranularity = Literal["maxmind_city", "metro"]
+DETECTION_GRANULARITIES: tuple[DetectionGranularity, ...] = ("maxmind_city", "metro")
 
 # SQL files executed sequentially for each date.
 # 01-03 run first, then a Python enrichment step geolocates new topology IPs,
@@ -38,6 +42,24 @@ SQL_FILES_PUBLIC = [
 
 SQL_FILES = SQL_FILES_PRE_ENRICHMENT + SQL_FILES_POST_ENRICHMENT + SQL_FILES_PUBLIC
 
+# These tables expose the analytical regime directly. Resume checks use the
+# column so a city partition can never make a metro run silently skip a step (or
+# cause the metro rows to be appended beside city-derived rows for the same day).
+GRANULARITY_AWARE_SQL_FILES = {
+    "02_detect_anomalies_union.sql",
+    "03_build_transient_events_union.sql",
+    "04_mapping_union.sql",
+    "07_translating_to_public_format_union.sql",
+}
+
+
+def parse_detection_granularity(value: str) -> DetectionGranularity:
+    """Validate and narrow a source-grouping granularity value."""
+    if value not in DETECTION_GRANULARITIES:
+        choices = ", ".join(DETECTION_GRANULARITIES)
+        raise ValueError(f"Unsupported detection granularity {value!r}; choose one of: {choices}")
+    return cast(DetectionGranularity, value)
+
 # Maps each SQL file to the output table whose presence means "this step already
 # ran for this date". Used for per-step resume only.
 #
@@ -46,6 +68,79 @@ SQL_FILES = SQL_FILES_PRE_ENRICHMENT + SQL_FILES_POST_ENRICHMENT + SQL_FILES_PUB
 # capped the delete list at "one table per SQL file" — so tables written by
 # Phase D (Python) or written as a *second* output of a SQL step could never be
 # added without raising. See DERIVED_OUTPUT_TABLES / DELETE_TABLES below.
+PROJECT = "mlab-collaboration"
+
+#: The production pipeline dataset, and the staging twin used by --target staging.
+#: Only these operational tables move. Reference datasets (``hermes``,
+#: ``measurement-lab``) are shared read-only inputs, so a staging run resolves
+#: geolocation, AS metadata and IXP data exactly as production does.
+DEFAULT_DATASET = "hermes_union"
+STAGING_DATASET = "hermes_staging"
+TARGETS = {"prod": DEFAULT_DATASET, "staging": STAGING_DATASET}
+
+
+def dataset_for_target(target: str) -> str:
+    """Map a ``--target`` value to its BigQuery dataset."""
+    try:
+        return TARGETS[target]
+    except KeyError:
+        raise ValueError(
+            f"Unsupported target {target!r}; choose one of: {', '.join(sorted(TARGETS))}"
+        ) from None
+
+
+def metro_polygons_for(dataset: str) -> str:
+    """Polygon table matching the dataset, so staging never reads prod geometry."""
+    return f"{PROJECT}.{'hermes_staging' if dataset == STAGING_DATASET else 'hermes'}.metro_polygons_v2"
+
+
+def _t(table: str, dataset: str = DEFAULT_DATASET) -> str:
+    return f"{PROJECT}.{dataset}.{table}"
+
+
+def sql_file_to_output_table(dataset: str = DEFAULT_DATASET) -> dict[str, str]:
+    """Resume target per SQL file, in ``dataset``."""
+    return {k: _t(v.rsplit(".", 1)[1], dataset) for k, v in SQL_FILE_TO_OUTPUT_TABLE.items()}
+
+
+def derived_output_tables(dataset: str = DEFAULT_DATASET) -> list[str]:
+    return [_t(t.rsplit(".", 1)[1], dataset) for t in DERIVED_OUTPUT_TABLES]
+
+
+def giga_output_table(dataset: str = DEFAULT_DATASET) -> str:
+    return _t("giga_meter_measurements", dataset)
+
+
+def final_output_table(dataset: str = DEFAULT_DATASET) -> str:
+    return _t("events_explained_daily", dataset)
+
+
+def _assert_dataset_isolated(query: str, name: str, dataset: str) -> None:
+    """Fail loudly if a non-production run still names a production table.
+
+    The whole point of --target staging is that nothing touches hermes_union. A
+    surviving reference means a hard-coded table escaped ${DS}, so refuse rather
+    than write one row into production.
+    """
+    if dataset == DEFAULT_DATASET:
+        return
+    leaked = f"{PROJECT}.{DEFAULT_DATASET}."
+    if leaked in query:
+        idx = query.index(leaked)
+        raise ValueError(
+            f"production table reference survived while rendering {name} for "
+            f"dataset {dataset}: ...{query[idx : idx + 80]}..."
+        )
+
+
+def delete_tables(dataset: str = DEFAULT_DATASET, include_giga: bool = False) -> list[str]:
+    """Everything --delete-first clears, resolved in ``dataset``."""
+    tables = list(sql_file_to_output_table(dataset).values()) + derived_output_tables(dataset)
+    if include_giga:
+        tables.append(giga_output_table(dataset))
+    return tables
+
+
 SQL_FILE_TO_OUTPUT_TABLE = {
     "01_merge_upload_download_union.sql": "mlab-collaboration.hermes_union.merged_download_upload",
     "02_detect_anomalies_union.sql": "mlab-collaboration.hermes_union.anomaly_counts_union",
@@ -69,14 +164,17 @@ if _missing_resume_targets:
 OUTPUT_TABLES = list(SQL_FILE_TO_OUTPUT_TABLE.values())
 
 # Tables the pipeline writes that are NOT the resume target of any SQL file, and
-# so cannot live in SQL_FILE_TO_OUTPUT_TABLE. All three are Phase-D (Python)
+# so cannot live in SQL_FILE_TO_OUTPUT_TABLE. All four are Phase-D (Python)
 # outputs written with insert_rows_json (append-only, no self-delete), so a
 # re-run without deleting them first APPENDS a second copy for that date.
 DERIVED_OUTPUT_TABLES = [
     "mlab-collaboration.hermes_union.correlation_hyperedges_tomography_v2",
     "mlab-collaboration.hermes_union.correlation_culprits_multigranularity",
     "mlab-collaboration.hermes_union.correlation_entity_stats_multigranularity",
+    "mlab-collaboration.hermes_union.temporal_path_verdicts",
 ]
+
+GIGA_OUTPUT_TABLE = "mlab-collaboration.hermes_union.giga_meter_measurements"
 
 # What --delete-first clears.
 #
@@ -85,7 +183,8 @@ DERIVED_OUTPUT_TABLES = [
 # (04 inserts only rows absent from the trailing 8 partitions), and a chunk of
 # its history was recovered by hand. A delete that is not followed by a
 # successful 04 would lose traces permanently, so clearing it stays a deliberate
-# manual act (`hermes-table-rerun --table giga_meter_measurements --delete-first`).
+# manual act for ordinary runs. Metro-mode --delete-first opts into clearing it
+# because retaining a city-keyed copy would mix regimes in the same partition.
 DELETE_TABLES = OUTPUT_TABLES + DERIVED_OUTPUT_TABLES
 
 # The pipeline's true final output. main() uses this for the "already processed"
@@ -256,19 +355,26 @@ def baseline_fill_dates(
     return sorted(needed - present_in_source)
 
 
-def _present_in_merged(project_id: str, lo: date, hi: date) -> set[date]:
+def _present_in_merged(
+    project_id: str, lo: date, hi: date, dataset: str = DEFAULT_DATASET
+) -> set[date]:
     """Return distinct dates present in ``merged_download_upload`` in ``[lo, hi]``."""
     client = bigquery.Client(project=project_id)
     query = f"""
         SELECT DISTINCT DATE(partition_date) AS date
-        FROM `mlab-collaboration.hermes_union.merged_download_upload`
+        FROM `{_t("merged_download_upload", dataset)}`
         WHERE partition_date BETWEEN '{lo.strftime("%Y-%m-%d")}' AND '{hi.strftime("%Y-%m-%d")}'
     """
     return {row.date for row in client.query(query).result()}
 
 
 def ensure_baseline(
-    project_id: str, dates: list[date], max_workers: int | None, window_days: int = 7
+    project_id: str,
+    dates: list[date],
+    max_workers: int | None,
+    window_days: int = 7,
+    detection_granularity: DetectionGranularity = "maxmind_city",
+    dataset: str = DEFAULT_DATASET,
 ) -> None:
     """Auto-fill missing baseline days by running step 01 for them.
 
@@ -280,7 +386,9 @@ def ensure_baseline(
     """
     if not dates:
         return
-    present = _present_in_merged(project_id, min(dates) - timedelta(days=window_days), max(dates))
+    present = _present_in_merged(
+        project_id, min(dates) - timedelta(days=window_days), max(dates), dataset
+    )
     to_fill = baseline_fill_dates(dates, present, window_days)
     if not to_fill:
         return
@@ -289,7 +397,15 @@ def ensure_baseline(
         f"merged_download_upload: {', '.join(d.strftime('%Y-%m-%d') for d in to_fill)}"
     )
     merge_step = [SQL_FILES_PRE_ENRICHMENT[0]]  # 01_merge_upload_download_union.sql only
-    results = _run_parallel_sql(to_fill, project_id, merge_step, max_workers, skip_data_check=True)
+    results = _run_parallel_sql(
+        to_fill,
+        project_id,
+        merge_step,
+        max_workers,
+        skip_data_check=True,
+        detection_granularity=detection_granularity,
+        dataset=dataset
+    )
     for r in results:
         if not r.startswith("Success:"):
             logger.warning(f"Auto-baseline: {r}")
@@ -321,7 +437,12 @@ def warn_thin_baselines(project_id: str, dates: list[date], window_days: int = 7
             )
 
 
-def delete_dates(project_id: str, dates: list[date]) -> None:
+def delete_dates(
+    project_id: str,
+    dates: list[date],
+    include_giga: bool = False,
+    dataset: str = DEFAULT_DATASET,
+) -> None:
     """Delete rows for specific dates from all union pipeline output tables.
 
     Parameters
@@ -332,14 +453,20 @@ def delete_dates(project_id: str, dates: list[date]) -> None:
         Dates to delete from every table in :data:`DELETE_TABLES` — the per-step
         resume targets *plus* the Phase-D correlation tables, which are
         append-only and would otherwise accumulate a second copy on re-run.
-        ``giga_meter_measurements`` is excluded by design; see DELETE_TABLES.
+        ``giga_meter_measurements`` is excluded by default; metro conversions
+        pass ``include_giga=True`` because keeping its city-keyed rows would mix
+        analytical regimes in the same partition.
+    include_giga
+        Also clear ``giga_meter_measurements``. Use only for a complete
+        granularity-changing rerun whose step 04 will rebuild the date.
     """
     client = bigquery.Client(project=project_id)
 
     date_strings = [f"'{date.strftime('%Y-%m-%d')}'" for date in dates]
     date_list = ", ".join(date_strings)
 
-    for table in DELETE_TABLES:
+    tables = delete_tables(dataset, include_giga=include_giga)
+    for table in tables:
         logger.info(
             f"Deleting entries for dates: {', '.join(d.strftime('%Y-%m-%d') for d in dates)} from table: {table}"
         )
@@ -357,7 +484,12 @@ def delete_dates(project_id: str, dates: list[date]) -> None:
     logger.info("Deletion completed for all tables")
 
 
-def step_already_done(project_id: str, table_name: str, day_str: str) -> bool:
+def step_already_done(
+    project_id: str,
+    table_name: str,
+    day_str: str,
+    detection_granularity: DetectionGranularity | None = None,
+) -> bool:
     """Return ``True`` if *table_name* already contains rows for *day_str*.
 
     Parameters
@@ -368,6 +500,22 @@ def step_already_done(project_id: str, table_name: str, day_str: str) -> bool:
         Fully-qualified BigQuery table name.
     day_str
         Date string in ``YYYY-MM-DD`` format.
+    detection_granularity
+        When provided, require the date's *labelled* rows to all carry this
+        value. A conflicting label, or a partition with no label at all, raises
+        instead of being appended to.
+
+        NULL is deliberately not treated as a conflicting regime on its own.
+        Step 03 leaves ``detection_granularity`` NULL for giga traces whose group
+        is absent from ``anomaly_counts_union`` -- an unmatched trace was never in
+        a tested group, so labelling it would assert a test that never ran, and
+        ``test_03_carries_identity_without_synthesising_it`` enforces that. Those
+        benign NULLs sit alongside correctly labelled rows (measured 2026-08-07 in
+        staging: 2,147 of 32,650,613, 0.0066%, all client_name='giga-meter'), so
+        counting them as a second regime made a completed metro partition
+        permanently un-rerunnable. A partition that is *entirely* NULL is
+        different -- that is pre-migration data written before the column existed
+        -- and still raises.
 
     Returns
     -------
@@ -376,13 +524,47 @@ def step_already_done(project_id: str, table_name: str, day_str: str) -> bool:
         ``day_str`` exists; ``False`` otherwise.
     """
     client = bigquery.Client(project=project_id)
+    if detection_granularity is None:
+        query = f"""
+            SELECT 1
+            FROM `{table_name}`
+            WHERE DATE(partition_date) = '{day_str}'
+            LIMIT 1
+        """
+        return client.query(query).result().total_rows > 0
+
     query = f"""
-        SELECT 1
+        SELECT DISTINCT COALESCE(detection_granularity, '<NULL>') AS granularity
         FROM `{table_name}`
-        WHERE DATE(partition_date) = '{day_str}'
-        LIMIT 1
+        WHERE DATE(partition_date) = @day
     """
-    return client.query(query).result().total_rows > 0
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[
+            bigquery.ScalarQueryParameter("day", "DATE", date.fromisoformat(day_str))
+        ]
+    )
+    present = {row.granularity for row in client.query(query, job_config=job_config).result()}
+    if not present:
+        return False
+
+    labelled = present - {"<NULL>"}
+    if labelled == {detection_granularity}:
+        # Any '<NULL>' alongside it is the unmatched-giga passthrough, not a
+        # second regime. See the parameter docs above.
+        return True
+
+    found = ", ".join(sorted(present))
+    if not labelled:
+        raise RuntimeError(
+            f"{table_name} already contains {day_str} with no detection_granularity "
+            f"at all (pre-migration data); refusing to append {detection_granularity}. "
+            "Delete the date's complete pipeline outputs first."
+        )
+    raise RuntimeError(
+        f"{table_name} already contains {day_str} at granularity {found}; "
+        f"refusing to append {detection_granularity}. Delete the date's complete "
+        "pipeline outputs first."
+    )
 
 
 def execute_query(query: str, project_id: str, description: str = "") -> bigquery.QueryJob:
@@ -466,13 +648,24 @@ def run_enrichment(date_str: str, project_id: str, lookback_days: int = 30) -> N
         logger.info(f"[enrichment] Finished {label} enrichment for {date_str}")
 
 
-def _run_sql_steps(date, project_id, sql_files, skip_data_check=False):
+def _run_sql_steps(
+    date,
+    project_id,
+    sql_files,
+    skip_data_check=False,
+    detection_granularity: DetectionGranularity = "maxmind_city",
+    dataset: str = DEFAULT_DATASET,
+):
     """Run a list of SQL steps for a single date, skipping steps already done."""
     day_str = date.strftime("%Y-%m-%d")
     params = {
         "ONE_WEEK_EARLIER": (date - timedelta(days=7)).strftime("%Y-%m-%d"),
         "DAY": day_str,
+        "DETECTION_GRANULARITY": detection_granularity,
+        "DS": dataset,
+        "METRO_POLYGONS": metro_polygons_for(dataset),
     }
+    step_output_tables = sql_file_to_output_table(dataset)
 
     # Input data availability check (only needed for pre-enrichment steps)
     if not skip_data_check and sql_files is SQL_FILES_PRE_ENRICHMENT:
@@ -483,12 +676,16 @@ def _run_sql_steps(date, project_id, sql_files, skip_data_check=False):
             return f"Skipped: {day_str} (missing input data: {missing_str})"
 
     for sql_file in sql_files:
-        output_table = SQL_FILE_TO_OUTPUT_TABLE[sql_file]
-        if step_already_done(project_id, output_table, day_str):
+        output_table = step_output_tables[sql_file]
+        step_granularity = (
+            detection_granularity if sql_file in GRANULARITY_AWARE_SQL_FILES else None
+        )
+        if step_already_done(project_id, output_table, day_str, step_granularity):
             logger.info(f"[{day_str}] Skipping {sql_file} — {output_table} already has data")
             continue
         logger.info(f"[{day_str}] Executing {sql_file}...")
         query = loader.load_query(sql_file, params)
+        _assert_dataset_isolated(query, sql_file, dataset)
         execute_query(query, project_id, f"{sql_file} for {day_str}")
 
     return f"Success: {day_str}"
@@ -496,9 +693,16 @@ def _run_sql_steps(date, project_id, sql_files, skip_data_check=False):
 
 def _run_sql_steps_worker(args):
     """Worker function for parallel SQL step execution."""
-    date, project_id, sql_files, skip_data_check = args
+    date, project_id, sql_files, skip_data_check, detection_granularity, dataset = args
     try:
-        return _run_sql_steps(date, project_id, sql_files, skip_data_check)
+        return _run_sql_steps(
+            date,
+            project_id,
+            sql_files,
+            skip_data_check,
+            detection_granularity,
+            dataset,
+        )
     except Exception as e:
         day_str = date.strftime("%Y-%m-%d")
         logger.error(f"Error processing {day_str}: {str(e)}")
@@ -766,7 +970,7 @@ def find_unattributed_partitions(project_id: str, dates: list[date]) -> list[dat
 
 def _run_tomography_worker(args):
     """Worker: correlation v2 then temporal v2 for one date (parallel-safe)."""
-    date, project_id, backend = args
+    date, project_id, backend, dataset = args
     day_str = date.strftime("%Y-%m-%d")
     try:
         # write_multigranularity=True matches deployed behaviour on hermes-ec2,
@@ -780,13 +984,14 @@ def _run_tomography_worker(args):
             backend=backend,
             project_id=project_id,
             write_multigranularity=True,
+            dataset=dataset,
         )  # → correlation_hyperedges_tomography_v2
         from hermes.pipeline import temporal_verdict
 
         client = bigquery.Client(project=project_id)
-        if not temporal_verdict.verdicts_exist(client, day_str):
-            rows = temporal_verdict.compute_temporal_verdicts(client, day_str)
-            temporal_verdict.write_verdicts(client, rows)
+        if not temporal_verdict.verdicts_exist(client, day_str, dataset=dataset):
+            rows = temporal_verdict.compute_temporal_verdicts(client, day_str, dataset=dataset)
+            temporal_verdict.write_verdicts(client, rows, dataset=dataset)
         return f"Success: {day_str}"
     except Exception as e:
         logger.error(f"Error in Phase D (correlation+temporal) for {day_str}: {e}")
@@ -861,13 +1066,24 @@ def _run_phase_d_tomography(worker_args, tomo_workers):
     return [results_by_date[wa[0]] for wa in worker_args]
 
 
-def _run_parallel_sql(dates, project_id, sql_files, max_workers, skip_data_check):
+def _run_parallel_sql(
+    dates,
+    project_id,
+    sql_files,
+    max_workers,
+    skip_data_check,
+    detection_granularity: DetectionGranularity = "maxmind_city",
+    dataset: str = DEFAULT_DATASET,
+):
     """Run SQL steps for multiple dates in parallel. Returns list of result strings."""
     if not dates:
         return []
 
     effective_workers = max_workers or min(mp.cpu_count(), len(dates))
-    worker_args = [(date, project_id, sql_files, skip_data_check) for date in dates]
+    worker_args = [
+        (date, project_id, sql_files, skip_data_check, detection_granularity, dataset)
+        for date in dates
+    ]
 
     if len(dates) == 1:
         return [_run_sql_steps_worker(worker_args[0])]
@@ -911,6 +1127,8 @@ def run_dates(
     tomography_backend: str = "python",
     auto_baseline: bool = True,
     tomography_workers: int | None = None,
+    detection_granularity: DetectionGranularity = "maxmind_city",
+    dataset: str = DEFAULT_DATASET,
 ) -> None:
     """Run the full union pipeline for a batch of dates.
 
@@ -937,16 +1155,25 @@ def run_dates(
         When ``True``, log what would run without executing any queries.
     tomography_backend
         Correlation tomography backend (python v2 hybrid).
+    detection_granularity
+        Source-location key used before anomaly aggregation. ``maxmind_city``
+        preserves the historical algorithm; ``metro`` pools measurements by
+        the canonical metro resolver.
     """
     if not dates:
         logger.info("No dates to process.")
         return
 
+    detection_granularity = parse_detection_granularity(detection_granularity)
+
     if dry_run:
         for date in dates:
             day_str = date.strftime("%Y-%m-%d")
             for sql_file in SQL_FILES:
-                logger.info(f"[DRY RUN] Would execute: {sql_file} with DAY={day_str}")
+                logger.info(
+                    f"[DRY RUN] Would execute: {sql_file} with DAY={day_str}, "
+                    f"DETECTION_GRANULARITY={detection_granularity}"
+                )
             logger.info(f"[DRY RUN] Would run enrichment for DAY={day_str}")
             logger.info(
                 f"[DRY RUN] Would run correlation + temporal tomography (python v2) for DAY={day_str}"
@@ -957,14 +1184,26 @@ def run_dates(
     # Pre-flight: ensure every date's anomaly-detection baseline window exists.
     # By default, auto-fill missing baseline days (step 01 only); otherwise just warn.
     if auto_baseline:
-        ensure_baseline(project_id, dates, max_workers)
+        ensure_baseline(
+            project_id,
+            dates,
+            max_workers,
+            detection_granularity=detection_granularity,
+            dataset=dataset,
+        )
     else:
         warn_thin_baselines(project_id, dates)
 
     # ── Phase A: steps 01-03 in parallel ──────────────────────────────────
     logger.info(f"═══ Phase A: Running steps 01-03 for {len(dates)} date(s) ═══")
     results_a = _run_parallel_sql(
-        dates, project_id, SQL_FILES_PRE_ENRICHMENT, max_workers, skip_data_check
+        dates,
+        project_id,
+        SQL_FILES_PRE_ENRICHMENT,
+        max_workers,
+        skip_data_check,
+        detection_granularity,
+        dataset=dataset
     )
 
     # Determine which dates succeeded phase A (eligible for enrichment + phase C)
@@ -1027,6 +1266,8 @@ def run_dates(
         SQL_FILES_POST_ENRICHMENT,
         max_workers,
         skip_data_check=True,  # no data check needed for step 04
+        detection_granularity=detection_granularity,
+        dataset=dataset
     )
 
     # ── Phase D: Python v2 correlation + temporal tomography (parallel across dates) ──
@@ -1041,7 +1282,9 @@ def run_dates(
     # deadlocking — see _run_phase_d_tomography.
     tomo_workers = tomography_workers or 1
     logger.info(f"  Phase D parallelism: {tomo_workers} worker(s)")
-    worker_args = [(date, project_id, tomography_backend) for date in successful_dates]
+    worker_args = [
+        (date, project_id, tomography_backend, dataset) for date in successful_dates
+    ]
 
     if len(successful_dates) == 1:
         results_d = [_run_tomography_worker(worker_args[0])]
@@ -1083,6 +1326,8 @@ def run_dates(
         SQL_FILES_PUBLIC,
         max_workers,
         skip_data_check=True,
+        detection_granularity=detection_granularity,
+        dataset=dataset
     )
     results_e += [f"Error: {day} - Phase D failed, Phase E skipped" for day in tomography_failed]
 
@@ -1148,6 +1393,22 @@ def main() -> None:
     )
     parser.add_argument(
         "--dry-run", action="store_true", help="Show what would run without executing queries"
+    )
+    parser.add_argument(
+        "--detection-granularity",
+        choices=DETECTION_GRANULARITIES,
+        default="maxmind_city",
+        help="Source geography used by anomaly detection and every downstream "
+        "grouping step (default: maxmind_city).",
+    )
+    parser.add_argument(
+        "--target",
+        choices=sorted(TARGETS),
+        default="prod",
+        help="Which dataset the whole end-to-end flow reads and writes: 'prod' "
+        f"({DEFAULT_DATASET}) or 'staging' ({STAGING_DATASET}). Staging also "
+        "switches the metro polygon table to hermes_staging. Reference data "
+        "(hermes, measurement-lab) is shared by both (default: prod).",
     )
     parser.add_argument(
         "--tomography-backend",
@@ -1217,11 +1478,28 @@ def main() -> None:
     else:
         end_date = (datetime.today() - timedelta(days=1)).date()
 
+    # Resolve the target dataset once. Everything below derives its tables from
+    # this, so a staging run cannot touch hermes_union: _run_sql_steps also asserts
+    # no production reference survived rendering.
+    dataset = dataset_for_target(args.target)
+    final_table = final_output_table(dataset)
+    if dataset != DEFAULT_DATASET:
+        logger.warning(
+            "TARGET=%s — reading and writing %s, metro polygons from %s. "
+            "Production tables are untouched.",
+            args.target, dataset, metro_polygons_for(dataset),
+        )
+
     # Handle specific dates to rerun
     if args.rerun_dates:
         rerun_dates = sorted(datetime.strptime(d, "%Y-%m-%d").date() for d in args.rerun_dates)
         if args.delete_first:
-            delete_dates(project_id, rerun_dates)
+            delete_dates(
+                project_id,
+                rerun_dates,
+                include_giga=args.detection_granularity == "metro",
+                dataset=dataset,
+            )
         run_dates(
             rerun_dates,
             project_id,
@@ -1231,14 +1509,16 @@ def main() -> None:
             tomography_backend=args.tomography_backend,
             tomography_workers=args.tomography_workers,
             auto_baseline=not args.no_auto_baseline,
+            detection_granularity=args.detection_granularity,
+            dataset=dataset,
         )
         return
 
     # Get existing dates from the final output table
     if not args.force_rerun and not args.dry_run:
         try:
-            existing_dates = get_existing_dates(project_id, FINAL_OUTPUT_TABLE)
-            logger.info(f"Found {len(existing_dates)} existing dates in {FINAL_OUTPUT_TABLE}")
+            existing_dates = get_existing_dates(project_id, final_table)
+            logger.info(f"Found {len(existing_dates)} existing dates in {final_table}")
         except Exception as e:
             logger.warning(f"Could not check existing dates ({e}). Proceeding with all dates.")
             existing_dates = set()
@@ -1277,17 +1557,35 @@ def main() -> None:
             tomography_backend=args.tomography_backend,
             tomography_workers=args.tomography_workers,
             auto_baseline=not args.no_auto_baseline,
+            detection_granularity=args.detection_granularity,
+            dataset=dataset,
         )
         return
 
-    # Delete existing entries if requested
-    # if args.delete_first:
-    #     delete_dates(project_id, dates_to_process)
+    # Delete complete pipeline outputs before changing a date's analytical
+    # regime. This is intentionally explicit and opt-in.
+    if args.delete_first:
+        delete_dates(
+            project_id,
+            dates_to_process,
+            include_giga=args.detection_granularity == "metro",
+            dataset=dataset,
+        )
+        existing_dates.difference_update(dates_to_process)
 
     # Filter out already-processed dates
     dates_to_actually_process = []
     for current_date in dates_to_process:
         if current_date in existing_dates and not args.force_rerun:
+            # Existing data is skippable only when it was produced by the mode
+            # the operator requested. A city partition must never make a metro
+            # invocation look successfully complete.
+            step_already_done(
+                project_id,
+                final_table,
+                current_date.strftime("%Y-%m-%d"),
+                parse_detection_granularity(args.detection_granularity),
+            )
             logger.info(f"Skipping date {current_date.strftime('%Y-%m-%d')} (already processed).")
         else:
             dates_to_actually_process.append(current_date)
@@ -1305,6 +1603,8 @@ def main() -> None:
         tomography_backend=args.tomography_backend,
         tomography_workers=args.tomography_workers,
         auto_baseline=not args.no_auto_baseline,
+        detection_granularity=args.detection_granularity,
+        dataset=dataset,
     )
 
 

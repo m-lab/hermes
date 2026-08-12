@@ -1,0 +1,8 @@
+> Territories deliberately left untessellated because they have no resident
+> population and HERMES is never expected to resolve an IP to them (plan section 5:
+> "Uninhabited territories may be excluded ... but this decision must be explicit").
+> A coordinate landing here resolves via the country_nearest_fallback path instead.
+> Lines beginning with '>' are comments.
+country_code,name,reason
+HM,Heard Island and McDonald Islands,"no resident or transient population; no network infrastructure"
+BV,Bouvet Island,"uninhabited nature reserve; no network infrastructure"

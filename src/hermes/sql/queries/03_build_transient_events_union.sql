@@ -2,26 +2,138 @@
 -- HERMES (union): attach topology (scamper + revtr) to anomalies
 --
 -- Input:
--- - `mlab-collaboration.hermes_union.anomaly_counts_union` (partition_date = 2026-04-08)
+-- - `mlab-collaboration.${DS}.anomaly_counts_union` (partition_date = 2026-04-08)
 -- - `measurement-lab.ndt.scamper1`            (MDA / multipath traceroutes)
 -- - `measurement-lab.autojoin_autoload_v2_ndt.scamper2_union` (BYOS standard traceroutes)
 -- - `measurement-lab.revtr_raw.revtr1`
--- - `mlab-collaboration.hermes_union.merged_download_upload` (for ndt_rtt/throughput + city percentiles)
+-- - `mlab-collaboration.${DS}.merged_download_upload` (for ndt_rtt/throughput + city percentiles)
 --
--- Output: `mlab-collaboration.hermes_union.transient_events_union`
+-- Output: `mlab-collaboration.${DS}.transient_events_union`
 --
 -- Processes IPv4 and IPv6 via ip_version column.
 --------------------------------------------------------------------------------
--- CREATE OR REPLACE TABLE `mlab-collaboration.hermes_union.transient_events_union`
+-- CREATE OR REPLACE TABLE `mlab-collaboration.${DS}.transient_events_union`
 -- PARTITION BY partition_date
 -- AS
-INSERT INTO `mlab-collaboration.hermes_union.transient_events_union`
+DECLARE _detection_granularity STRING DEFAULT '${DETECTION_GRANULARITY}';
+ASSERT _detection_granularity IN ('maxmind_city', 'metro')
+  AS 'DETECTION_GRANULARITY must be maxmind_city or metro';
+
+-- This resolver intentionally mirrors step 02. Traceroutes and day-of
+-- percentiles must attach to the exact population whose anomaly was tested.
+CREATE TEMP TABLE _source_metro_lookup AS
+WITH source_coordinates AS (
+  SELECT DISTINCT
+    client.Geo.Latitude AS lat,
+    client.Geo.Longitude AS lon,
+    client.Geo.CountryCode AS country_code
+  FROM `mlab-collaboration.${DS}.merged_download_upload`
+  WHERE _detection_granularity = 'metro'
+    AND partition_date BETWEEN '${ONE_WEEK_EARLIER}' AND '${DAY}'
+    AND client.Geo.Latitude IS NOT NULL
+    AND client.Geo.Longitude IS NOT NULL
+    AND client.Geo.CountryCode IS NOT NULL
+),
+covered AS (
+  SELECT
+    c.lat, c.lon, c.country_code,
+    ARRAY_AGG(
+      STRUCT(mp.metro, mp.state_resolved,
+             ST_DISTANCE(ST_GEOGPOINT(c.lon, c.lat),
+                         ST_GEOGPOINT(mp.seed_lon, mp.seed_lat)) AS distance_m)
+      ORDER BY ST_DISTANCE(ST_GEOGPOINT(c.lon, c.lat),
+                           ST_GEOGPOINT(mp.seed_lon, mp.seed_lat)),
+               mp.metro_id
+      LIMIT 1
+    )[OFFSET(0)] AS pick
+  FROM source_coordinates c
+  JOIN `${METRO_POLYGONS}` mp
+    ON mp.country_code = c.country_code
+   AND ST_COVERS(mp.polygon, ST_GEOGPOINT(c.lon, c.lat))
+  GROUP BY c.lat, c.lon, c.country_code
+),
+uncovered AS (
+  SELECT c.*
+  FROM source_coordinates c
+  LEFT JOIN covered v USING (lat, lon, country_code)
+  WHERE v.lat IS NULL
+),
+fallback AS (
+  SELECT
+    c.lat, c.lon, c.country_code,
+    ARRAY_AGG(
+      STRUCT(mp.metro, mp.state_resolved,
+             ST_DISTANCE(ST_GEOGPOINT(c.lon, c.lat),
+                         ST_GEOGPOINT(mp.seed_lon, mp.seed_lat)) AS distance_m)
+      ORDER BY ST_DISTANCE(ST_GEOGPOINT(c.lon, c.lat),
+                           ST_GEOGPOINT(mp.seed_lon, mp.seed_lat)),
+               mp.metro_id
+      LIMIT 1
+    )[OFFSET(0)] AS pick
+  FROM uncovered c
+  JOIN `${METRO_POLYGONS}` mp
+    ON mp.country_code = c.country_code
+  GROUP BY c.lat, c.lon, c.country_code
+)
+SELECT lat, lon, country_code, pick.metro AS metro,
+       pick.state_resolved AS metro_state
+FROM covered
+UNION ALL
+SELECT lat, lon, country_code, pick.metro AS metro,
+       pick.state_resolved AS metro_state
+FROM fallback;
+
+INSERT INTO `mlab-collaboration.${DS}.transient_events_union`
+  (id, dst, src, ndt_rtt, ndt_throughput, ndt_loss_rate, traceroute_rtt,
+   total_windows, is_consistent, src_city, src_lat, src_state, src_lon,
+   dst_lat, dst_lon, src_asn, dst_site, dst_city, dst_asn, dst_country,
+   src_country, src_asn_name, client_name, start, window_start, reach_dest,
+   node_details, number_of_measurements_baseline,
+   number_of_unique_src_ips_baseline, unique_ip_count_per_site,
+   measurement_count_per_site, baseline_median_rtt,
+   baseline_median_throughput, baseline_median_upload_throughput,
+   baseline_median_loss, ip_version, reverse_node_details,
+   revtr_system_label, revtr_stop_reason, revtr_fail_reason,
+   is_try_from_destination_AS, revtr_id, city_median_rtt,
+   city_ninetyth_percentile_rtt, city_oneth_percentile_rtt,
+   city_tenth_percentile_rtt, city_median_throughput,
+   city_ninetyth_percentile_throughput, partition_date, anomaly_ratio_rtt,
+   anomaly_rtt_count, anomaly_ratio_throughput, anomaly_throughput_count,
+   anomaly_ratio_upload_throughput, anomaly_upload_throughput_count,
+   anomaly_loss_ratio, difference_latency, difference_throughput,
+   difference_upload_throughput, wasserstein_throughput_result,
+   wasserstein_upload_throughput_result, mann_whitney_latency,
+   mann_whitney_throughput, mann_whitney_upload_throughput, t_test_latency,
+   median_upload_throughput, detection_granularity, src_group_label)
 
 WITH
+MeasurementsWithGroup AS (
+  SELECT
+    ndt.*,
+    IF(
+      _detection_granularity = 'metro',
+      sm.metro,
+      CONCAT(ndt.client.Geo.City, '-', ndt.client.Geo.Subdivision1ISOCode,
+             '-', ndt.client.Geo.CountryCode)
+    ) AS detection_src_city,
+    IF(
+      _detection_granularity = 'metro',
+      sm.metro_state,
+      ndt.client.Geo.Subdivision1ISOCode
+    ) AS detection_src_state
+  FROM `mlab-collaboration.${DS}.merged_download_upload` ndt
+  LEFT JOIN _source_metro_lookup sm
+    ON ndt.client.Geo.Latitude = sm.lat
+   AND ndt.client.Geo.Longitude = sm.lon
+   AND ndt.client.Geo.CountryCode = sm.country_code
+  WHERE ndt.partition_date BETWEEN '${ONE_WEEK_EARLIER}' AND '${DAY}'
+    AND (_detection_granularity != 'metro' OR sm.metro IS NOT NULL)
+),
 AnomalyCounts AS (
   SELECT *
-  FROM `mlab-collaboration.hermes_union.anomaly_counts_union`
+  FROM `mlab-collaboration.${DS}.anomaly_counts_union`
   WHERE partition_date = '${DAY}'
+    AND detection_granularity = _detection_granularity
 ),
 
 --------------------------------------------------------------------------------
@@ -31,6 +143,12 @@ ScamperDataIntermediary AS (
   SELECT
     scamper.id,
     ANY_VALUE(a.total_group_rows) AS total_windows,
+
+    -- Granularity src_city is grouped at; NULL when the join misses (an
+    -- unmatched giga trace was never in a tested group).
+    -- See docs/proposals/2026-08-group-granularity.md.
+    ANY_VALUE(a.detection_granularity) AS detection_granularity,
+    ANY_VALUE(a.src_group_label)       AS src_group_label,
     ANY_VALUE(a.anomaly_ratio_rtt)        AS anomaly_ratio_rtt,
     ANY_VALUE(a.anomaly_ratio_throughput) AS anomaly_ratio_throughput,
     ANY_VALUE(a.anomaly_ratio_upload_throughput) AS anomaly_ratio_upload_throughput,
@@ -56,15 +174,11 @@ ScamperDataIntermediary AS (
     -- Keyed on a.src_asn IS NULL (did the join match at all?) and NOT on each
     -- column being NULL: COALESCE(a.src_lat, ...) would also fire for a MATCHED
     -- row whose src_lat happens to be NULL, silently changing existing output.
-    IF(a.src_asn IS NULL,
-       CONCAT(scamper.client.Geo.city, '-',
-              scamper.client.Geo.Subdivision1ISOCode, '-',
-              scamper.client.Geo.CountryCode),
-       a.src_city) AS src_city,
+    IF(a.src_asn IS NULL, ndt.detection_src_city, a.src_city) AS src_city,
     IF(a.src_asn IS NULL, scamper.client.Network.ASNumber, a.src_asn) AS src_asn,
-    AVG(IF(a.src_asn IS NULL, scamper.client.Geo.Latitude, a.src_lat)) AS src_lat,
-    ANY_VALUE(IF(a.src_asn IS NULL, scamper.client.Geo.Subdivision1ISOCode, a.src_state)) AS src_state,
-    AVG(IF(a.src_asn IS NULL, scamper.client.Geo.Longitude, a.src_lon)) AS src_lon,
+    AVG(IF(a.src_asn IS NULL, ndt.client.Geo.Latitude, a.src_lat)) AS src_lat,
+    ANY_VALUE(IF(a.src_asn IS NULL, ndt.detection_src_state, a.src_state)) AS src_state,
+    AVG(IF(a.src_asn IS NULL, ndt.client.Geo.Longitude, a.src_lon)) AS src_lon,
     AVG(IF(a.src_asn IS NULL, scamper.server.Geo.Latitude, a.dst_lat)) AS dst_lat,
     AVG(IF(a.src_asn IS NULL, scamper.server.Geo.Longitude, a.dst_lon)) AS dst_lon,
     IF(a.src_asn IS NULL, scamper.server.Site, a.dst_site) AS dst_site,
@@ -88,15 +202,11 @@ ScamperDataIntermediary AS (
   -- Needed only to identify giga clients (and supply client_name) when the
   -- AnomalyCounts join does not match. LEFT so it can never drop a row that
   -- reaches this CTE today.
-  LEFT JOIN `mlab-collaboration.hermes_union.merged_download_upload` ndt
+  LEFT JOIN MeasurementsWithGroup ndt
     ON ndt.id = scamper.id
     AND ndt.partition_date BETWEEN '${ONE_WEEK_EARLIER}' AND '${DAY}'
   LEFT JOIN AnomalyCounts a
-    ON CONCAT(
-         scamper.client.Geo.city, '-',
-         scamper.client.Geo.Subdivision1ISOCode, '-',
-         scamper.client.Geo.CountryCode
-       ) = a.src_city
+    ON ndt.detection_src_city = a.src_group_label
     AND scamper.client.Network.ASNumber = a.src_asn
     AND scamper.server.Site = a.dst_site
     AND a.ip_version = IF(REGEXP_CONTAINS(scamper.raw.Tracelb.src, ':'), 'v6', 'v4')
@@ -133,7 +243,7 @@ FilteredData AS (
     ndt.download_throughput_mbps     AS ndt_throughput,
     ndt.download_loss_rate           AS ndt_loss_rate
   FROM ScamperData sd
-  JOIN `mlab-collaboration.hermes_union.merged_download_upload` ndt
+  JOIN MeasurementsWithGroup ndt
     ON ndt.id = sd.id
   WHERE
     ndt.partition_date BETWEEN '${ONE_WEEK_EARLIER}' AND '${DAY}'
@@ -148,6 +258,12 @@ Scamper2DataIntermediary AS (
   SELECT
     scamper.raw.Metadata.UUID AS id,
     ANY_VALUE(a.total_group_rows) AS total_windows,
+
+    -- Granularity src_city is grouped at; NULL when the join misses (an
+    -- unmatched giga trace was never in a tested group).
+    -- See docs/proposals/2026-08-group-granularity.md.
+    ANY_VALUE(a.detection_granularity) AS detection_granularity,
+    ANY_VALUE(a.src_group_label)       AS src_group_label,
     ANY_VALUE(a.anomaly_ratio_rtt)        AS anomaly_ratio_rtt,
     ANY_VALUE(a.anomaly_ratio_throughput) AS anomaly_ratio_throughput,
     ANY_VALUE(a.anomaly_ratio_upload_throughput) AS anomaly_ratio_upload_throughput,
@@ -172,14 +288,10 @@ Scamper2DataIntermediary AS (
     -- Same fallback rule as the scamper1 branch above; see the note there on
     -- why this is IF(a.src_asn IS NULL, ...) and not COALESCE. Fallback values
     -- come from ndt, which this branch already joins.
-    IF(a.src_asn IS NULL,
-       CONCAT(ndt.client.Geo.city, '-',
-              ndt.client.Geo.Subdivision1ISOCode, '-',
-              ndt.client.Geo.CountryCode),
-       a.src_city) AS src_city,
+    IF(a.src_asn IS NULL, ndt.detection_src_city, a.src_city) AS src_city,
     IF(a.src_asn IS NULL, ndt.client.Network.ASNumber, a.src_asn) AS src_asn,
     AVG(IF(a.src_asn IS NULL, ndt.client.Geo.Latitude, a.src_lat)) AS src_lat,
-    ANY_VALUE(IF(a.src_asn IS NULL, ndt.client.Geo.Subdivision1ISOCode, a.src_state)) AS src_state,
+    ANY_VALUE(IF(a.src_asn IS NULL, ndt.detection_src_state, a.src_state)) AS src_state,
     AVG(IF(a.src_asn IS NULL, ndt.client.Geo.Longitude, a.src_lon)) AS src_lon,
     AVG(IF(a.src_asn IS NULL, ndt.server.Geo.Latitude, a.dst_lat)) AS dst_lat,
     AVG(IF(a.src_asn IS NULL, ndt.server.Geo.Longitude, a.dst_lon)) AS dst_lon,
@@ -201,7 +313,7 @@ Scamper2DataIntermediary AS (
     AVG(a.unique_ip_count_per_site) AS unique_ip_count_per_site,
     AVG(a.measurement_count_per_site) AS measurement_count_per_site
   FROM `measurement-lab.autojoin_autoload_v2_ndt.scamper2_union` scamper
-  JOIN `mlab-collaboration.hermes_union.merged_download_upload` ndt
+  JOIN MeasurementsWithGroup ndt
     ON ndt.id = scamper.raw.Metadata.UUID
     AND ndt.client_ip = scamper.raw.Trace.dst
     AND ndt.partition_date = CAST(scamper.date AS DATE)
@@ -209,11 +321,7 @@ Scamper2DataIntermediary AS (
   LEFT JOIN AnomalyCounts a
     ON ndt.client.Network.ASNumber = a.src_asn
     AND ndt.server.Site = a.dst_site
-    AND CONCAT(
-         ndt.client.Geo.city, '-',
-         ndt.client.Geo.Subdivision1ISOCode, '-',
-         ndt.client.Geo.CountryCode
-       ) = a.src_city
+    AND ndt.detection_src_city = a.src_group_label
     AND a.ip_version = IF(REGEXP_CONTAINS(scamper.raw.Trace.src, ':'), 'v6', 'v4')
   WHERE scamper.date BETWEEN '${ONE_WEEK_EARLIER}' AND '${DAY}'
     -- Same rule as the scamper1 branch. BYOS is where most of the loss sits:
@@ -246,7 +354,7 @@ Scamper2FilteredData AS (
     ndt.download_throughput_mbps     AS ndt_throughput,
     ndt.download_loss_rate           AS ndt_loss_rate
   FROM Scamper2Data sd
-  JOIN `mlab-collaboration.hermes_union.merged_download_upload` ndt
+  JOIN MeasurementsWithGroup ndt
     ON ndt.id = sd.id
     AND ndt.client_ip = sd.dst
   WHERE
@@ -416,6 +524,7 @@ NodeExtraction AS (
     id, src, dst, src_city, src_asn, dst_site, dst_city, dst_asn, dst_country,
     src_country, src_asn_name, client_name, src_lat, src_state, src_lon, dst_lat, dst_lon,
     is_consistent, window_start, total_windows, ndt_rtt, ndt_throughput, ndt_loss_rate, traceroute_rtt,
+    detection_granularity, src_group_label,
     start_sec, addr, rdns_name, rtts, probe_ttl,
     number_of_measurements_baseline, number_of_unique_src_ips_baseline,
     unique_ip_count_per_site, measurement_count_per_site,
@@ -448,6 +557,7 @@ NodeExtraction AS (
     src, dst, src_city, src_asn, dst_site, dst_city, dst_asn, dst_country,
     src_country, src_asn_name, client_name, src_lat, src_state, src_lon, dst_lat, dst_lon,
     is_consistent, window_start, total_windows, ndt_rtt, ndt_throughput, ndt_loss_rate, traceroute_rtt,
+    detection_granularity, src_group_label,
     start_sec,
     CAST(dst AS STRING)          AS addr,
     CAST(NULL AS STRING)         AS rdns_name,
@@ -497,6 +607,8 @@ SequenceGenerator AS (
     ANY_VALUE(ne.client_name) AS client_name,
     ANY_VALUE(ne.start_sec) AS start_sec,
     ne.ip_version AS ip_version,
+    ANY_VALUE(ne.detection_granularity) AS detection_granularity,
+    ANY_VALUE(ne.src_group_label)       AS src_group_label,
     GENERATE_ARRAY(1, MAX(ne.probe_ttl)) AS ttl_sequence,
     ANY_VALUE(ne.number_of_measurements_baseline)   AS number_of_measurements_baseline,
     ANY_VALUE(ne.number_of_unique_src_ips_baseline) AS number_of_unique_src_ips_baseline,
@@ -608,6 +720,8 @@ ExpandedNodeDetails AS (
     ANY_VALUE(er.ndt_loss_rate)  AS ndt_loss_rate,
     ANY_VALUE(er.traceroute_rtt)  AS traceroute_rtt,
     ANY_VALUE(er.total_windows)   AS total_windows,
+    ANY_VALUE(er.detection_granularity) AS detection_granularity,
+    ANY_VALUE(er.src_group_label)       AS src_group_label,
     ANY_VALUE(er.is_consistent)   AS is_consistent,
 
     ANY_VALUE(er.src_city)        AS src_city,
@@ -682,6 +796,8 @@ AggregatedData AS (
     ndt_loss_rate,
     traceroute_rtt,
     total_windows,
+    detection_granularity,
+    src_group_label,
     is_consistent,
     src_city,
     src_lat,
@@ -771,9 +887,7 @@ WithReversePathData AS (
 --------------------------------------------------------------------------------
 CityServerLatencyThroughputSummary AS (
   SELECT
-    CONCAT(
-      ndt.client.Geo.city, '-', ndt.client.Geo.Subdivision1ISOCode, '-', ndt.client.Geo.CountryCode
-    ) AS src_city,
+    ndt.detection_src_city AS src_city,
     ndt.client.Network.ASNumber AS src_asn,
     ndt.server.Site AS dst_site,
     ndt.ip_version,
@@ -784,12 +898,9 @@ CityServerLatencyThroughputSummary AS (
 
     APPROX_QUANTILES(ndt.download_throughput_mbps, 100)[OFFSET(50)] AS median_throughput,
     APPROX_QUANTILES(ndt.download_throughput_mbps, 100)[OFFSET(90)] AS ninetyth_percentile_throughput
-  FROM `mlab-collaboration.hermes_union.merged_download_upload` ndt
+  FROM MeasurementsWithGroup ndt
   WHERE ndt.partition_date = '${DAY}'
-  GROUP BY
-    ndt.client.Geo.City, ndt.client.Network.ASNumber,
-    ndt.server.Site, ndt.client.Geo.Subdivision1ISOCode, ndt.client.Geo.CountryCode,
-    ndt.ip_version
+  GROUP BY src_city, ndt.client.Network.ASNumber, ndt.server.Site, ndt.ip_version
 ),
 
 with_median_lat_throughput AS (
@@ -803,7 +914,10 @@ with_median_lat_throughput AS (
       wasserstein_throughput_result, wasserstein_upload_throughput_result,
       mann_whitney_latency, mann_whitney_throughput, mann_whitney_upload_throughput,
       t_test_latency,
-      median_upload_throughput
+      median_upload_throughput,
+      -- re-emitted last to keep the final projection easy to compare with the
+      -- explicit INSERT list and the appended ALTER TABLE positions
+      detection_granularity, src_group_label
     ),
 
     cslts.median_rtt                       AS city_median_rtt,
@@ -832,7 +946,11 @@ with_median_lat_throughput AS (
     aga.mann_whitney_throughput,
     aga.mann_whitney_upload_throughput,
     aga.t_test_latency,
-    aga.median_upload_throughput
+    aga.median_upload_throughput,
+
+    -- Detection-group identity, last (appended columns)
+    aga.detection_granularity,
+    aga.src_group_label
   FROM WithReversePathData aga
   INNER JOIN CityServerLatencyThroughputSummary cslts
     ON cslts.src_city = aga.src_city

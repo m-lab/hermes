@@ -27,6 +27,7 @@ from hermes.enrichment.utils.common import logger
 from hermes.enrichment.zdns.enricher import ZDNSEnricher
 from hermes.enrichment.zdns.enricher_ipv6 import ZDNSEnricherIPv6
 from hermes.sql import paths
+from hermes.sql import loader
 
 
 class HermesEnrichment:
@@ -42,6 +43,11 @@ class HermesEnrichment:
                 "rdns": "mlab-collaboration.hermes.unified_ip_to_rdns_ipv6",
                 "geolocation": "mlab-collaboration.hermes.geolocation",
                 "ip_to_geoloc": "mlab-collaboration.hermes.unified_ip_to_geoloc_ipv6",
+                # Source/client IPs live in their own table. They churn hard
+                # (86% of client IPs are new each day) while topology IPs are
+                # stable, so keeping them apart lets retention, access control
+                # and the nightly metro MERGE stay independent.
+                "src_ip_to_geoloc": "mlab-collaboration.hermes.unified_src_ip_to_geoloc_ipv6",
                 "ixp": "mlab-collaboration.hermes.ixp_data_ipv6",
                 "transient_events": "mlab-collaboration.hermes.transient_events_ipv6",
             }
@@ -50,6 +56,11 @@ class HermesEnrichment:
                 "rdns": "mlab-collaboration.hermes.unified_ip_to_rdns",
                 "geolocation": "mlab-collaboration.hermes.geolocation",
                 "ip_to_geoloc": "mlab-collaboration.hermes.unified_ip_to_geoloc",
+                # Source/client IPs live in their own table. They churn hard
+                # (86% of client IPs are new each day) while topology IPs are
+                # stable, so keeping them apart lets retention, access control
+                # and the nightly metro MERGE stay independent.
+                "src_ip_to_geoloc": "mlab-collaboration.hermes.unified_src_ip_to_geoloc",
                 "ixp": "mlab-collaboration.hermes.ixp_data",
                 "transient_events": "mlab-collaboration.hermes.transient_events",
             }
@@ -71,7 +82,18 @@ class HermesEnrichment:
             self.ripe_ipmap = RIPEIPMapEnricher(project_id)
             self.routeviews = RouteViewsEnricher(project_id)
 
-    def process_geolocation(self, date: str, lookback_days: int = 30) -> None:
+    #: Which candidate-IP population a geolocation run covers.
+    SOURCES = ("topology", "clients")
+
+    def _geoloc_table(self, source: str) -> str:
+        """Destination/staleness table for a candidate population."""
+        if source not in self.SOURCES:
+            raise ValueError(f"Unknown source {source!r}; choose one of: {', '.join(self.SOURCES)}")
+        return self.tables["src_ip_to_geoloc" if source == "clients" else "ip_to_geoloc"]
+
+    def process_geolocation(
+        self, date: str, lookback_days: int = 30, source: str = "topology"
+    ) -> None:
         """Process geolocation data for IPs from transient events that need updates.
 
         Parameters
@@ -105,13 +127,48 @@ class HermesEnrichment:
         # Candidate-collection window: only needs to cover the batch being processed.
         start_date = (current_date - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
 
-        # Get IPs that need updates using a single SQL query
-        if self.ipv6:
+        geoloc_table = self._geoloc_table(source)
+
+        # The candidate query has one source-specific part -- `unique_ips`. The
+        # staleness join, the RFC1918 filter and the final SELECT are shared.
+        if source == "clients":
+            # Client IPs come from merged_download_upload, which step 01 writes, so
+            # this must run after 01 and before 02/03 -- collecting them from the
+            # raw NDT tables instead would duplicate step 01's 122.66 GiB scan.
+            ipv6_pred = "" if self.ipv6 else "NOT "
+            query = rf"""
+            WITH latest_geoloc AS (
+              SELECT ip_address, MAX(partition_date) AS partition_date
+              FROM `{geoloc_table}`
+              GROUP BY ip_address
+            ),
+            unique_ips AS (
+              SELECT DISTINCT client_ip AS addr
+              FROM `mlab-collaboration.hermes_union.merged_download_upload`
+              WHERE partition_date BETWEEN '{start_date}' AND '{date}'
+                AND client_ip IS NOT NULL
+                AND {ipv6_pred}REGEXP_CONTAINS(client_ip, ':')
+            ),
+            public_ips AS (
+              SELECT *
+              FROM unique_ips
+              WHERE NOT REGEXP_CONTAINS(addr, r'^10\..*')
+                AND NOT REGEXP_CONTAINS(addr, r'^192\.168\..*')
+                AND NOT REGEXP_CONTAINS(addr, r'^172\.(1[6-9]|2[0-9]|3[0-1])\..*')
+            )
+            SELECT DISTINCT i.addr AS ip_address
+            FROM public_ips i
+            LEFT JOIN latest_geoloc g
+              ON i.addr = g.ip_address
+            WHERE g.ip_address IS NULL
+               OR g.partition_date < '{month_ago_str}'
+            """
+        elif self.ipv6:
             # IPv6 query - look for addresses with colons
             query = f"""
             WITH latest_geoloc AS (
                   SELECT ip_address, MAX(partition_date) AS partition_date
-                  FROM `{self.tables["ip_to_geoloc"]}`
+                  FROM `{geoloc_table}`
                   GROUP BY ip_address
                 ),
             unique_ips AS (
@@ -141,7 +198,7 @@ class HermesEnrichment:
             query = rf"""
             WITH latest_geoloc AS (
               SELECT ip_address, MAX(partition_date) AS partition_date
-              FROM `{self.tables["ip_to_geoloc"]}`
+              FROM `{geoloc_table}`
               GROUP BY ip_address
             ),
             unique_ips AS (
@@ -219,8 +276,8 @@ class HermesEnrichment:
 
         # Upload results
         if new_geo:
-            self._upload_geolocation_data(new_geo, date)
-            self._update_metro_for_geolocation_table()
+            self._upload_geolocation_data(new_geo, date, source)
+            self._update_metro_for_geolocation_table(date, source)
 
     def process_hoiho_geolocation(self, date) -> None:
         """Process HOIHO geolocation data based on rDNS hostnames."""
@@ -332,11 +389,10 @@ class HermesEnrichment:
             "`mlab-collaboration.hermes.geolocation`", f"`{self.project_id}.{table_name}`"
         )
 
-        # Also update the project reference if needed
-        query = query.replace(
-            "mlab-collaboration.hermes.metro_polygons_with_population",
-            f"{self.project_id}.hermes.metro_polygons_with_population",
-        )
+        # The metro polygon table is named once, in hermes.sql.loader.DEFAULT_PARAMS.
+        # These files are read directly rather than through loader.load_query, so
+        # substitute the placeholder here and keep the two paths in agreement.
+        query = Template(query).safe_substitute(loader.DEFAULT_PARAMS)
 
         try:
             logger.info("Executing metro computation query...")
@@ -349,10 +405,22 @@ class HermesEnrichment:
             logger.error(f"Error computing metro: {e}")
             raise
 
-    def _update_metro_for_geolocation_table(self) -> None:
-        """Update metro field for all entries in unified_ip_to_geoloc table using spatial join."""
+    def _update_metro_for_geolocation_table(self, date: str, source: str = "topology") -> None:
+        """Resolve ``metro`` for the rows just inserted, scoped to one partition.
+
+        Parameters
+        ----------
+        date
+            The partition enrichment just wrote, ``YYYY-MM-DD``. Required: the SQL
+            is a partition-scoped MERGE, not a whole-table rebuild. It used to be
+            ``CREATE OR REPLACE TABLE ... AS SELECT ... FROM itself``, rewriting all
+            99.5M rows through a spatial join on every run -- which does not
+            survive adding ~2.2M client IPs/day.
+        """
+        target = self._geoloc_table(source)
         logger.info(
-            f"Computing metro for {'IPv6' if self.ipv6 else 'IPv4'} unified_ip_to_geoloc table"
+            f"Computing metro for {'IPv6' if self.ipv6 else 'IPv4'} "
+            f"{target.rsplit('.', 1)[1]} partition {date} (source={source})"
         )
 
         # Resolve the metro SQL from packaged data (hermes.sql.paths).
@@ -364,29 +432,23 @@ class HermesEnrichment:
         # Read the SQL query
         query = sql_file.read_text()
 
-        # Replace table name for IPv6 if needed
-        table_suffix = "_ipv6" if self.ipv6 else ""
-        table_name = f"hermes.unified_ip_to_geoloc{table_suffix}"
-        query = query.replace(
-            "`mlab-collaboration.hermes.unified_ip_to_geoloc`", f"`{self.project_id}.{table_name}`"
-        )
-        query = query.replace("`hermes.unified_ip_to_geoloc`", f"`{self.project_id}.{table_name}`")
+        # Retarget the MERGE. The file names the IPv4 topology table; the same
+        # statement serves IPv6 and the source-IP tables because all four share a
+        # schema, so only the name changes.
+        retargeted = f"`{self.project_id}.{target.split('.', 1)[1]}`"
+        query = query.replace("`mlab-collaboration.hermes.unified_ip_to_geoloc`", retargeted)
+        query = query.replace("`hermes.unified_ip_to_geoloc`", retargeted)
 
-        # Also update the project reference if needed
-        query = query.replace(
-            "mlab-collaboration.hermes.metro_polygons_with_population",
-            f"{self.project_id}.hermes.metro_polygons_with_population",
-        )
+        # The metro polygon table is named once, in hermes.sql.loader.DEFAULT_PARAMS.
+        # These files are read directly rather than through loader.load_query, so
+        # substitute the placeholder here and keep the two paths in agreement.
+        query = Template(query).safe_substitute({**loader.DEFAULT_PARAMS, "DAY": date})
 
-        # For IPv6, add PARTITION BY partition_date clause
-        if self.ipv6:
-            # Replace "CREATE OR REPLACE TABLE ... AS" with "CREATE OR REPLACE TABLE ... PARTITION BY partition_date AS"
-            query = query.replace(
-                f"CREATE OR REPLACE TABLE `{self.project_id}.{table_name}` AS",
-                f"CREATE OR REPLACE TABLE `{self.project_id}.{table_name}`\nPARTITION BY partition_date AS",
-            )
-            print("-----IPv6 query-----")
-            print(query)
+        # No IPv6 special-casing any more. This used to inject
+        # "PARTITION BY partition_date" into the CREATE OR REPLACE, because the v6
+        # table was partitioned and the v4 one was not. Both are now partitioned at
+        # creation and the statement is a partition-scoped MERGE, so there is
+        # nothing to rewrite.
 
         try:
             logger.info("Executing metro computation query...")
@@ -488,7 +550,9 @@ class HermesEnrichment:
 
         return data
 
-    def _upload_geolocation_data(self, geo_data: dict[str, dict[str, Any]], date: str) -> None:
+    def _upload_geolocation_data(
+        self, geo_data: dict[str, dict[str, Any]], date: str, source: str = "topology"
+    ) -> None:
         """Upload geolocation data to BigQuery."""
         rows = [
             {
@@ -532,9 +596,7 @@ class HermesEnrichment:
             write_disposition=bigquery.WriteDisposition.WRITE_APPEND,
         )
 
-        table_ref = self.client.dataset("hermes").table(
-            "unified_ip_to_geoloc" + ("_ipv6" if self.ipv6 else "")
-        )
+        table_ref = self._geoloc_table(source).split(".", 1)[1]
         job = self.client.load_table_from_json(rows, table_ref, job_config=job_config)
         job.result()
         logger.info(

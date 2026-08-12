@@ -7,6 +7,9 @@ Phase-D correlation tables are. Every re-run therefore needed a manual
 pre-delete or it appended a second copy of that date's rows.
 """
 
+from datetime import date
+from types import SimpleNamespace
+
 from hermes.pipeline import union
 
 
@@ -23,7 +26,7 @@ def test_resume_map_has_no_extra_entries():
     assert set(union.SQL_FILE_TO_OUTPUT_TABLE) == set(union.SQL_FILES)
 
 
-def test_delete_covers_the_phase_d_correlation_tables():
+def test_delete_covers_all_append_only_phase_d_tables():
     """The regression: these are append-only, so a re-run without deleting duplicates.
 
     correlation_tomography writes them with insert_rows_json, which has no
@@ -34,6 +37,7 @@ def test_delete_covers_the_phase_d_correlation_tables():
         "correlation_hyperedges_tomography_v2",
         "correlation_culprits_multigranularity",
         "correlation_entity_stats_multigranularity",
+        "temporal_path_verdicts",
     ):
         assert any(t.endswith(table) for t in union.DELETE_TABLES), (
             f"{table} is written by Phase D but --delete-first would not clear it"
@@ -53,6 +57,21 @@ def test_giga_is_excluded_from_delete_by_design():
     act. This test exists so adding it becomes a conscious decision.
     """
     assert not any("giga_meter_measurements" in t for t in union.DELETE_TABLES)
+
+
+def test_metro_conversion_can_explicitly_clear_giga(monkeypatch):
+    queries = []
+    query_job = SimpleNamespace(result=lambda: None)
+    client = SimpleNamespace(query=lambda query: queries.append(query) or query_job)
+    monkeypatch.setattr(union.bigquery, "Client", lambda **kwargs: client)
+
+    union.delete_dates(
+        "billing-project",
+        [date(2026, 8, 7)],
+        include_giga=True,
+    )
+
+    assert any(union.GIGA_OUTPUT_TABLE in query for query in queries)
 
 
 def test_delete_tables_are_unique():

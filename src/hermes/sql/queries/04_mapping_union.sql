@@ -2,12 +2,12 @@
 -- HERMES (union) mapping: lookup tables + hop enrichment + final output
 --
 -- Inputs:
--- - `mlab-collaboration.hermes_union.transient_events_union` (partition_date = ${DAY})
+-- - `mlab-collaboration.${DS}.transient_events_union` (partition_date = ${DAY})
 -- - `measurement-lab.ndt_raw.hopannotation2`
 -- - Various hermes lookup tables (as_metadata, rdns, geoloc, ip_to_as, ixp_members)
 --
 -- Output:
--- - `mlab-collaboration.hermes_union.events_with_as_and_geoloc`
+-- - `mlab-collaboration.${DS}.events_with_as_and_geoloc`
 --
 -- This is a multi-statement BigQuery script. Temp tables created early on
 -- remain visible to the final INSERT statement.
@@ -91,36 +91,54 @@ WHERE rn = 1;
 -- 3b) Destination metro — derive a canonical `city-region-cc` metro string for
 --     each distinct destination coordinate. M-Lab servers are not present in the
 --     per-IP geoloc cache, so the destination hop (ttl = 1) would otherwise have
---     no `metro`. Polygons in metro_polygons_with_population are stored INVERTED
---     (each polygon is the complement of its metro area), so the single
---     NON-containing polygon is the match — same semantics as _src_metro /
---     adding_metro_into_ip_database.sql. `state_resolved` is the full region name.
+--     no `metro`.
+--
+--     Uses ${METRO_POLYGONS} (metro_polygons_v2): ordinary positive geometry, so
+--     the match is ST_COVERS, NOT the old `NOT ST_CONTAINS` against inverted
+--     polygons. ST_COVERS rather than ST_CONTAINS because cells share boundaries
+--     and a point exactly on one must still match.
+--
+--     No country constraint is needed. v2 cells are clipped to their own country
+--     and tile each country's land disjointly, so a land coordinate is covered by
+--     exactly one cell globally. Verified on 60,142 real source coordinates
+--     (2026-08-08): 59,218 matched exactly one cell, 0 matched more than one, and
+--     0 spanned two countries.
+--
+--     `metro` is taken straight from the table -- one naming authority, no
+--     consumer re-CONCATs it.
 CREATE TEMP TABLE _dst_metro AS
 WITH dst_coords AS (
   SELECT DISTINCT dst_lat, dst_lon
-  FROM `mlab-collaboration.hermes_union.transient_events_union`
+  FROM `mlab-collaboration.${DS}.transient_events_union`
   WHERE partition_date = '${DAY}'
     AND dst_lat IS NOT NULL AND dst_lon IS NOT NULL
-),
-matched AS (
-  SELECT
-    d.dst_lat,
-    d.dst_lon,
-    CONCAT(
-      COALESCE(mp.city, 'Unknown'), '-',
-      COALESCE(mp.state_resolved, mp.state_iso2, 'NA'), '-',
-      COALESCE(mp.country_code, 'Unknown')
-    ) AS metro
-  FROM dst_coords d
-  LEFT JOIN `mlab-collaboration.hermes.metro_polygons_with_population` mp
-    ON NOT(ST_CONTAINS(mp.polygon, ST_GEOGPOINT(d.dst_lon, d.dst_lat)))
 )
+-- Single pass: join every cell within the coastal tolerance, then let the ORDER BY
+-- express the preference. ST_COVERS first, so a containing cell always wins; the
+-- seed distance only decides among non-containing cells. Deliberately ONE CTE and
+-- ONE spatial join: the earlier covered/nearby/join formulation added CTEs and a
+-- second join to a statement that already had 67, and BigQuery rejected the whole
+-- script with "Not enough resources for query planning - too many subqueries".
+--
+-- ST_DWITHIN(...,100000) is a superset of ST_COVERS (a containing cell is at
+-- distance 0), so one join covers both cases. Beyond 100 km the point gets no cell
+-- rather than a metro thousands of km away, which is what the old table did.
 SELECT
-  dst_lat,
-  dst_lon,
-  ARRAY_AGG(metro ORDER BY metro ASC LIMIT 1)[OFFSET(0)] AS dst_metro
-FROM matched
-GROUP BY dst_lat, dst_lon;
+  d.dst_lat,
+  d.dst_lon,
+  COALESCE(
+    ARRAY_AGG(mp.metro ORDER BY
+      ST_COVERS(mp.polygon, ST_GEOGPOINT(d.dst_lon, d.dst_lat)) DESC,
+      ST_DISTANCE(ST_GEOGPOINT(d.dst_lon, d.dst_lat),
+                  ST_GEOGPOINT(mp.seed_lon, mp.seed_lat)),
+      mp.metro_id
+      LIMIT 1)[SAFE_OFFSET(0)],
+    'Unknown-NA-Unknown'
+  ) AS dst_metro
+FROM dst_coords d
+LEFT JOIN `${METRO_POLYGONS}` mp
+  ON ST_DWITHIN(mp.polygon, ST_GEOGPOINT(d.dst_lon, d.dst_lat), 100000)
+GROUP BY 1, 2;
 
 -- 4) Extracted prefixes — IPv4 + IPv6 combined (stateless, no accumulation)
 CREATE TEMP TABLE _extracted_prefixes AS
@@ -227,12 +245,12 @@ CREATE TEMP TABLE _rdns_geo AS
 WITH distinct_rdns AS (
   SELECT DISTINCT rdns_name FROM (
     SELECT node.rdns_name AS rdns_name
-    FROM `mlab-collaboration.hermes_union.transient_events_union` t,
+    FROM `mlab-collaboration.${DS}.transient_events_union` t,
          UNNEST(t.node_details) AS node
     WHERE t.partition_date = '${DAY}'
     UNION ALL
     SELECT rdns.hostname AS rdns_name
-    FROM `mlab-collaboration.hermes_union.transient_events_union` t,
+    FROM `mlab-collaboration.${DS}.transient_events_union` t,
          UNNEST(t.reverse_node_details) AS reverse_node
     LEFT JOIN _closest_rdns rdns
       ON rdns.ip_address = reverse_node.hop_ip
@@ -319,7 +337,7 @@ flattened_node_details AS (
     node.addr,
     node.rdns_name,
     node.rtts
-  FROM `mlab-collaboration.hermes_union.transient_events_union` t,
+  FROM `mlab-collaboration.${DS}.transient_events_union` t,
        UNNEST(t.node_details) AS node
   LEFT JOIN `hermes.site_to_state` s2s
     ON t.dst_site = s2s.dst_site
@@ -328,7 +346,7 @@ flattened_node_details AS (
 
 source_ip_address AS (
   SELECT DISTINCT node.addr AS ip, t.ip_version
-  FROM `mlab-collaboration.hermes_union.transient_events_union` t,
+  FROM `mlab-collaboration.${DS}.transient_events_union` t,
        UNNEST(t.node_details) AS node
   WHERE t.partition_date = '${DAY}'
 ),
@@ -549,7 +567,7 @@ reverse_flattened_node_details AS (
     rdns.hostname AS rdns_name,
     reverse_node.rtt AS rtts,
     reverse_node.hop_type AS hop_type
-  FROM `mlab-collaboration.hermes_union.transient_events_union` t,
+  FROM `mlab-collaboration.${DS}.transient_events_union` t,
        UNNEST(t.reverse_node_details) AS reverse_node
   LEFT JOIN closest_rdns_entry rdns
     ON rdns.ip_address = reverse_node.hop_ip
@@ -558,7 +576,7 @@ reverse_flattened_node_details AS (
 
 reverse_source_ip_address AS (
   SELECT DISTINCT node.hop_ip AS ip, t.ip_version
-  FROM `mlab-collaboration.hermes_union.transient_events_union` t,
+  FROM `mlab-collaboration.${DS}.transient_events_union` t,
        UNNEST(t.reverse_node_details) AS node
   WHERE t.partition_date = '${DAY}'
 ),
@@ -742,21 +760,24 @@ hop_coords AS (
   )
   WHERE lat IS NOT NULL AND lon IS NOT NULL
 ),
+-- Single pass, same shape as _dst_metro; see its header for why this is one CTE
+-- and one join rather than covered/nearby/join. This statement already carries
+-- ~67 CTEs, and the three-CTE form tipped the script past BigQuery's query
+-- planning limit.
 hop_coord_metro AS (
-  SELECT lat, lon, ARRAY_AGG(metro ORDER BY metro ASC LIMIT 1)[OFFSET(0)] AS metro
-  FROM (
-    SELECT
-      c.lat, c.lon,
-      CONCAT(
-        COALESCE(mp.city, 'Unknown'), '-',
-        COALESCE(mp.state_resolved, mp.state_iso2, 'NA'), '-',
-        COALESCE(mp.country_code, 'Unknown')
-      ) AS metro
-    FROM hop_coords c
-    LEFT JOIN `mlab-collaboration.hermes.metro_polygons_with_population` mp
-      ON NOT(ST_CONTAINS(mp.polygon, ST_GEOGPOINT(c.lon, c.lat)))
-  )
-  GROUP BY lat, lon
+  SELECT
+    c.lat,
+    c.lon,
+    ARRAY_AGG(mp.metro ORDER BY
+      ST_COVERS(mp.polygon, ST_GEOGPOINT(c.lon, c.lat)) DESC,
+      ST_DISTANCE(ST_GEOGPOINT(c.lon, c.lat),
+                  ST_GEOGPOINT(mp.seed_lon, mp.seed_lat)),
+      mp.metro_id
+      LIMIT 1)[SAFE_OFFSET(0)] AS metro
+  FROM hop_coords c
+  JOIN `${METRO_POLYGONS}` mp
+    ON ST_DWITHIN(mp.polygon, ST_GEOGPOINT(c.lon, c.lat), 100000)
+  GROUP BY 1, 2
 ),
 
 node_with_geo_info_normalized AS (
@@ -1372,7 +1393,7 @@ final_results AS (
       WHERE CAST(ud.associated_asn AS INT64) = CAST(t.src_asn AS INT64)
     ) AS is_reaching_dst_asn,
     CAST('${DAY}' AS DATE) AS partition_date
-  FROM `mlab-collaboration.hermes_union.transient_events_union` t
+  FROM `mlab-collaboration.${DS}.transient_events_union` t
   LEFT JOIN forward_reconstructed_node_details_with_latency f
     ON t.id = f.id AND t.ip_version = f.ip_version
   LEFT JOIN reverse_reconstructed_node_details r
@@ -1514,27 +1535,91 @@ LEFT JOIN reverse_as_loop_detection ral
   ON fr.id = ral.id;
 
 -- ============================================================================
--- Normalize the SRC node to the metro polygon (same canonical naming as the hops):
--- snap each measurement's client lat/lon to the metro polygon and replace the MaxMind
--- src_city (e.g. Auckland-AUK-NZ -> Auckland-Auckland-NZ). Falls back to the original
--- src_city when no polygon matches. Inverted polygons => NOT(ST_CONTAINS) = "inside".
+-- Annotate the SRC node with its metro polygon (same canonical naming as the hops).
+-- Inverted polygons => NOT(ST_CONTAINS) = "inside".
+--
+-- This used to OVERWRITE src_city with the metro, so every stage after this point
+-- silently re-grouped at a coarser granularity than 02 tested at: 22.78% of keys
+-- covered several tested populations, 06 built hyperedge pair strings on the
+-- collapsed label, and 07's >=10 day-of gate counted whole metros. src_city now
+-- keeps the detection label and the metro is an annotation.
+-- See docs/proposals/2026-08-group-granularity.md.
 -- ============================================================================
+-- Positive geometry via ST_COVERS against ${METRO_POLYGONS}; see the _dst_metro
+-- header for why no country constraint is needed. Measured on this exact
+-- coordinate set for 2026-08-08 (29,698,426 rows / 60,142 distinct coordinates),
+-- against the old inverted lookup this replaces:
+--   unassigned          36  ->  0
+--   ambiguous       49,641  ->  0
+--   cross-country  184,105  ->  0
+--   metro region agreeing with MaxMind's own src_state: 62.83% -> 78.60%
 CREATE TEMP TABLE _src_metro AS
-SELECT lat, lon, ARRAY_AGG(metro ORDER BY metro ASC LIMIT 1)[OFFSET(0)] AS metro
-FROM (
-  SELECT u.lat, u.lon,
-    CONCAT(COALESCE(mp.city, 'Unknown'), '-',
-           COALESCE(mp.state_resolved, mp.state_iso2, 'NA'), '-',
-           COALESCE(mp.country_code, 'Unknown')) AS metro
-  FROM (SELECT DISTINCT src_lat AS lat, src_lon AS lon FROM _mapping_result
-        WHERE src_lat IS NOT NULL AND src_lon IS NOT NULL) u
-  LEFT JOIN `mlab-collaboration.hermes.metro_polygons_with_population` mp
-    ON NOT(ST_CONTAINS(mp.polygon, ST_GEOGPOINT(u.lon, u.lat)))
+WITH src_coords AS (
+  SELECT DISTINCT src_lat AS lat, src_lon AS lon
+  FROM _mapping_result
+  WHERE src_lat IS NOT NULL AND src_lon IS NOT NULL
+    AND COALESCE(detection_granularity, 'maxmind_city') != 'metro'
 )
-GROUP BY lat, lon;
+-- Single pass; see the _dst_metro header. Measured on this exact coordinate set
+-- for 2026-08-08 (29,698,426 rows / 60,142 distinct coordinates) against the old
+-- inverted lookup: unassigned 36 -> 0, ambiguous 49,641 -> 0, cross-country
+-- 184,105 -> 0, and metro region agreement with MaxMind's own src_state
+-- 62.83% -> 78.60%. 924 of those coordinates (1.5%) sit offshore of the boundary
+-- coastline and reach their cell through the 100 km tolerance.
+SELECT
+  u.lat,
+  u.lon,
+  ARRAY_AGG(mp.metro ORDER BY
+    ST_COVERS(mp.polygon, ST_GEOGPOINT(u.lon, u.lat)) DESC,
+    ST_DISTANCE(ST_GEOGPOINT(u.lon, u.lat),
+                ST_GEOGPOINT(mp.seed_lon, mp.seed_lat)),
+    mp.metro_id
+    LIMIT 1)[SAFE_OFFSET(0)] AS metro,
+  ARRAY_AGG(mp.state_resolved ORDER BY
+    ST_COVERS(mp.polygon, ST_GEOGPOINT(u.lon, u.lat)) DESC,
+    ST_DISTANCE(ST_GEOGPOINT(u.lon, u.lat),
+                ST_GEOGPOINT(mp.seed_lon, mp.seed_lat)),
+    mp.metro_id
+    LIMIT 1)[SAFE_OFFSET(0)] AS metro_state
+FROM src_coords u
+JOIN `${METRO_POLYGONS}` mp
+  ON ST_DWITHIN(mp.polygon, ST_GEOGPOINT(u.lon, u.lat), 100000)
+GROUP BY 1, 2;
 
 CREATE OR REPLACE TEMP TABLE _mapping_result AS
-SELECT m.* REPLACE (COALESCE(sm.metro, m.src_city) AS src_city)
+SELECT
+  m.* REPLACE (
+    -- Readable label: MaxMind city NAME + the metro's FULL state name + country
+    -- (Castello de la Plana-VC-ES -> Castello de la Plana-Comunidad Valenciana-ES).
+    -- Parsed from the RIGHT: subdivision ISO codes never contain '-', but city and
+    -- state names do (Saint-Agapit-QC-CA, Ile-de-France).
+    -- NOTE: this is a LABEL, not the grouping key. Substituting the metro's state
+    -- merges 45 of 30,222 labels (0.15%) where a city's polygon sits in another
+    -- state (Kansas City-KS/MO, Chester-NY). src_group_label keeps the exact key
+    -- 02 grouped on, and every count is computed against that.
+    IF(
+      m.detection_granularity = 'metro',
+      m.src_group_label,
+      IF(sm.metro_state IS NULL, m.src_city,
+         CONCAT(
+           ARRAY_TO_STRING(ARRAY(
+             SELECT p FROM UNNEST(SPLIT(m.src_city, '-')) p WITH OFFSET o
+             WHERE o <= ARRAY_LENGTH(SPLIT(m.src_city, '-')) - 3 ORDER BY o), '-'),
+           '-', sm.metro_state,
+           '-', ARRAY_REVERSE(SPLIT(m.src_city, '-'))[SAFE_OFFSET(0)]
+         ))
+    ) AS src_city,
+    -- Keep src_state on the same authority as the label above, so the row does
+    -- not carry the full name in src_city and MaxMind's ISO code in src_state.
+    -- 07 passes src_state through untouched, so this is what reaches the
+    -- public table.
+    IF(m.detection_granularity = 'metro', m.src_state,
+       COALESCE(sm.metro_state, m.src_state)) AS src_state
+  ),
+  -- In metro mode the authoritative metro came from the raw-measurement
+  -- resolver before aggregation. Never re-resolve it from the group centroid.
+  IF(m.detection_granularity = 'metro', m.src_group_label,
+     COALESCE(sm.metro, m.src_city)) AS src_metro
 FROM _mapping_result m
 LEFT JOIN _src_metro sm ON m.src_lat = sm.lat AND m.src_lon = sm.lon;
 
@@ -1542,7 +1627,7 @@ LEFT JOIN _src_metro sm ON m.src_lat = sm.lat AND m.src_lon = sm.lon;
 -- Write to both output tables from the temp table (no re-scan).
 -- Explicit column names so INSERT is immune to column ordering differences.
 -- ============================================================================
-INSERT INTO `mlab-collaboration.hermes_union.events_with_as_and_geoloc`
+INSERT INTO `mlab-collaboration.${DS}.events_with_as_and_geoloc`
   (id, dst, src, ndt_rtt, ndt_throughput, ndt_loss_rate, traceroute_rtt,
    total_windows, is_consistent, src_city, src_lat, src_state, src_lon,
    dst_lat, dst_lon, src_asn, dst_site, dst_city, dst_asn, dst_country,
@@ -1569,7 +1654,9 @@ INSERT INTO `mlab-collaboration.hermes_union.events_with_as_and_geoloc`
    median_upload_throughput,
    wasserstein_throughput_result, wasserstein_upload_throughput_result,
    mann_whitney_latency, mann_whitney_throughput, mann_whitney_upload_throughput,
-   t_test_latency)
+   t_test_latency,
+   -- Detection identity (from 02) + geo annotations (set here)
+   detection_granularity, src_group_label, src_metro)
 SELECT
   id, dst, src, ndt_rtt, ndt_throughput, ndt_loss_rate, traceroute_rtt,
   total_windows, is_consistent, src_city, src_lat, src_state, src_lon,
@@ -1597,10 +1684,11 @@ SELECT
   median_upload_throughput,
   wasserstein_throughput_result, wasserstein_upload_throughput_result,
   mann_whitney_latency, mann_whitney_throughput, mann_whitney_upload_throughput,
-  t_test_latency
+  t_test_latency,
+  detection_granularity, src_group_label, src_metro
 FROM _mapping_result;
 
-INSERT INTO `mlab-collaboration.hermes_union.giga_meter_measurements`
+INSERT INTO `mlab-collaboration.${DS}.giga_meter_measurements`
   (id, dst, src, ndt_rtt, ndt_throughput, ndt_loss_rate, traceroute_rtt,
    total_windows, is_consistent, src_city, src_lat, src_state, src_lon,
    dst_lat, dst_lon, src_asn, dst_site, dst_city, dst_asn, dst_country,
@@ -1627,7 +1715,9 @@ INSERT INTO `mlab-collaboration.hermes_union.giga_meter_measurements`
    median_upload_throughput,
    wasserstein_throughput_result, wasserstein_upload_throughput_result,
    mann_whitney_latency, mann_whitney_throughput, mann_whitney_upload_throughput,
-   t_test_latency)
+   t_test_latency,
+   -- Detection identity (from 02) + geo annotations (set here)
+   detection_granularity, src_group_label, src_metro)
 SELECT
   id, dst, src, ndt_rtt, ndt_throughput, ndt_loss_rate, traceroute_rtt,
   total_windows, is_consistent, src_city, src_lat, src_state, src_lon,
@@ -1655,13 +1745,14 @@ SELECT
   median_upload_throughput,
   wasserstein_throughput_result, wasserstein_upload_throughput_result,
   mann_whitney_latency, mann_whitney_throughput, mann_whitney_upload_throughput,
-  t_test_latency
+  t_test_latency,
+  detection_granularity, src_group_label, src_metro
 FROM _mapping_result
 WHERE (
         client_name = 'giga-meter'
      OR src IN (
           SELECT ip_address
-          FROM `mlab-collaboration.hermes_union.giga_school_ips`
+          FROM `mlab-collaboration.${DS}.giga_school_ips`
           WHERE month_start = DATE_TRUNC(CAST('${DAY}' AS DATE), MONTH)
         )
       )
@@ -1671,7 +1762,7 @@ WHERE (
   -- Step 03 pulls scamper traces over a 7-day lookback
   -- (s.date BETWEEN ${ONE_WEEK_EARLIER} AND ${DAY}) and attaches them to that
   -- day's groups, so one trace is written once per analysis date that pulls it
-  -- in — ~8x duplication on (id, src_asn, src_city, dst_site).
+  -- in — ~8x duplication on (id, src_asn, src_group_label, dst_site).
   --
   -- DO NOT dedup with "DATE(window_start) = ${DAY}". It looks equivalent and is
   -- not: a trace only gets an offset-0 row if its group also appears in
@@ -1705,11 +1796,17 @@ WHERE (
   -- client_name = 'giga-meter' row.
   AND NOT EXISTS (
         SELECT 1
-        FROM `mlab-collaboration.hermes_union.giga_meter_measurements` g
+        FROM `mlab-collaboration.${DS}.giga_meter_measurements` g
         WHERE g.partition_date BETWEEN DATE_SUB(DATE('${DAY}'), INTERVAL 7 DAY)
                                    AND DATE('${DAY}')
           AND g.id       = _mapping_result.id
           AND g.src_asn  = _mapping_result.src_asn
-          AND g.src_city = _mapping_result.src_city
+          -- Exact identity for new rows. The NULL arm is a cutover bridge for
+          -- historical rows written before src_group_label existed; id + ASN +
+          -- site already identify the same traceroute in that legacy schema.
+          AND (
+                g.src_group_label = _mapping_result.src_group_label
+                OR g.src_group_label IS NULL
+              )
           AND g.dst_site = _mapping_result.dst_site
       );

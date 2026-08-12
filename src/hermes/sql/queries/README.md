@@ -22,6 +22,11 @@ hermes-pipeline --start-date 2026-05-17 --end-date 2026-05-23 --dry-run
 # Re-run specific dates, clearing their rows first (see "Resume and idempotency")
 hermes-pipeline --rerun-dates 2026-05-20 2026-05-21 --delete-first
 
+# Run true metro-keyed detection. Existing dates require a complete delete so
+# city- and metro-derived outputs can never coexist for one partition.
+hermes-pipeline --rerun-dates 2026-05-20 --delete-first \
+    --detection-granularity metro
+
 # Fill only the gaps in a range — dates absent, empty, or fully unattributed
 hermes-pipeline --start-date 2026-05-01 --end-date 2026-05-23 --fill-missing
 
@@ -120,11 +125,15 @@ Joins each NDT download test with its corresponding upload test via `access_toke
 **Reads:** `hermes_union.merged_download_upload`
 **Writes:** `hermes_union.anomaly_counts_union`
 
-For each (ASN, city, server-site, ip_version) group:
+For each `(ASN, source-group, server-site, ip_version)` group. The source group
+is selected by `--detection-granularity`: `maxmind_city` (the default) uses the
+MaxMind City-Subdivision-Country label; `metro` resolves `metro_polygons_v2`
+before any aggregation and pools every accepted measurement assigned to that
+canonical metro.
 
 1. Filters to consistent client IPs (geographic proximity + metro_rank checks).
 2. Caps each IP at 40% of the group's measurements to prevent single-IP dominance.
-3. Builds a 7-day baseline and a current-day sample.
+3. Builds a 7-day baseline and a current-day sample at the selected granularity.
 4. Runs three statistical tests (Mann-Whitney, Welch's t, Wasserstein) on RTT, download throughput, and upload throughput.
 5. Flags anomalies when tests are significant AND the effect size exceeds a threshold (+5ms RTT, -20% throughput).
 
@@ -259,21 +268,22 @@ DELETE+INSERT per day: first deletes existing rows for the partition date, then 
 - The pipeline checks each output table for existing data before running each step. If a date already has rows, that step is skipped.
 - The `FINAL_OUTPUT_TABLE` (`events_explained_daily`) is checked at startup to skip fully-processed dates entirely.
 
-### `--delete-first` only applies to `--rerun-dates`
+### `--delete-first` clears the complete selected pipeline range
 
 This is the single easiest way to get a wrong result, so it is worth stating
 plainly:
 
 | Invocation | Effect of `--delete-first` |
 |---|---|
-| `hermes-pipeline --rerun-dates D1 D2 …` | **Clears** all six `OUTPUT_TABLES` for those dates |
-| `hermes-pipeline --start-date/--end-date` | **Silently does nothing** — accepted by the parser, never applied |
+| `hermes-pipeline --rerun-dates D1 D2 …` | Clears every resumable and Phase-D output for those dates |
+| `hermes-pipeline --start-date/--end-date --delete-first` | Clears every selected date before processing; use this when changing granularity |
 | `hermes-table-rerun --table T --sql-file F` | Clears that one table for the given dates |
 
-So **a clean whole-pipeline re-run must use `--rerun-dates`.** With
-`--start-date/--end-date`, nothing is deleted, the per-step guard sees existing
-rows, and every step is skipped — the symptom is
-`Skipping 01_merge_upload_download_union.sql — … already has data` in the log.
+Both `--rerun-dates` and a `--start-date`/`--end-date` range support a clean
+whole-pipeline re-run when paired with `--delete-first`.
+For `--detection-granularity metro`, the delete also includes the normally
+preserved `giga_meter_measurements` table so city- and metro-keyed rows cannot
+coexist; step 04 must complete to restore that date's giga rows.
 Confirm a real delete happened by looking for `Deleting entries for dates: …` /
 `Successfully deleted from …`.
 

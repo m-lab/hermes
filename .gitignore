@@ -230,3 +230,6 @@ wrapper_automation/rDNS_processing/zdns
 
 # SDD scratch (subagent-driven-development workspace)
 .superpowers/
+
+# Local enrichment cache. On the VM this is the mounted volume (~/hermes-docker-cache).
+src/hermes/enrichment/cache/

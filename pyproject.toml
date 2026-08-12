@@ -6,7 +6,16 @@ build-backend = "hatchling.build"
 name = "hermes"
 version = "0.1.0"
 description = "HERMES network monitoring and anomaly detection pipeline"
-requires-python = ">=3.14"
+# Minimum the source actually needs, not the deployment target. The floor is 3.11
+# because `datetime.UTC` (pipeline/budget.py, enrichment/ipinfo/enricher*.py) was
+# added in 3.11; every module compiles and the full suite passes on 3.11.14, and
+# .github/workflows/sql-lint.yml already runs on 3.11.
+#
+# The deployment target is still 3.14 and is pinned where it belongs: Dockerfile
+# (`python:3.14-slim-bookworm`) and .github/workflows/ci.yml. Declaring >=3.14 here
+# additionally blocked contributors on 3.11-3.13 and made a stale 3.11 venv fail
+# `pip install` with a version gate rather than anything real.
+requires-python = ">=3.11"
 dependencies = [
     "google-cloud-bigquery>=3.42.3",
     # Arrow-based download path for tomography. WITHOUT this, the client logs

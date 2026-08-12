@@ -19,56 +19,63 @@ unique_lat_lon AS (
 
 latlon_translation_to_metro AS (
   SELECT
-    ul.lat_key,
-    ul.lon_key,
-    CONCAT(
-      COALESCE(mp.city, 'Unknown'), '-',
-      COALESCE(mp.state_iso2, 'NA'), '-',
-      COALESCE(mp.country_code, 'Unknown')
-    ) AS metro,
-    mp.country_code,
-    mp.polygon
+    ul.lat_key, ul.lon_key,
+    -- Positive geometry: ST_COVERS against ${METRO_POLYGONS} (metro_polygons_v2),
+    -- NOT the old `NOT ST_CONTAINS` against inverted polygons. `metro` is taken
+    -- straight from the table so there is exactly one naming authority -- this is
+    -- also where the state_iso2-only regression lived, which put 37.85% of metros
+    -- into the `City-NA-CC` form.
+    ARRAY_AGG(mp.metro ORDER BY
+      ST_DISTANCE(ST_GEOGPOINT(ul.lon_key, ul.lat_key),
+                  ST_GEOGPOINT(mp.seed_lon, mp.seed_lat)), mp.metro_id
+      LIMIT 1)[OFFSET(0)] AS metro
   FROM unique_lat_lon ul
-  LEFT JOIN `mlab-collaboration.hermes.metro_polygons_with_population` mp
-    ON NOT(ST_CONTAINS(mp.polygon, ST_GEOGPOINT(ul.lon_key, ul.lat_key)))
+  JOIN `${METRO_POLYGONS}` mp
+    ON ST_COVERS(mp.polygon, ST_GEOGPOINT(ul.lon_key, ul.lat_key))
+  GROUP BY 1, 2
+),
+-- Offshore of the boundary coastline: nearest cell within 100 km, so these keep a
+-- metro instead of regressing to Unknown. Beyond 100 km they stay NULL rather
+-- than being handed a metro thousands of km away.
+latlon_nearby AS (
+  SELECT
+    ul.lat_key, ul.lon_key,
+    ARRAY_AGG(mp.metro ORDER BY
+      ST_DISTANCE(ST_GEOGPOINT(ul.lon_key, ul.lat_key),
+                   ST_GEOGPOINT(mp.seed_lon, mp.seed_lat)), mp.metro_id
+      LIMIT 1)[OFFSET(0)] AS metro
+  FROM unique_lat_lon ul
+  LEFT JOIN latlon_translation_to_metro t
+    ON t.lat_key = ul.lat_key AND t.lon_key = ul.lon_key
+  JOIN `${METRO_POLYGONS}` mp
+    ON ST_DWITHIN(mp.polygon, ST_GEOGPOINT(ul.lon_key, ul.lat_key), 100000)
+  WHERE t.lat_key IS NULL
+  GROUP BY 1, 2
 ),
 
-deduped_latlon_to_metro AS (
-  SELECT
-    lat_key,
-    lon_key,
-    ARRAY_AGG(STRUCT(metro, polygon, country_code)
-              ORDER BY metro ASC LIMIT 1)[OFFSET(0)] AS entry
-  FROM latlon_translation_to_metro
-  GROUP BY lat_key, lon_key
-),
-
-hostname_to_metro AS (
-  SELECT
-    hostname,
-    b.lat_key,
-    b.lon_key,
-    ARRAY_AGG(STRUCT(entry.metro, entry.polygon, entry.country_code)
-              ORDER BY entry.metro ASC LIMIT 1)[OFFSET(0)] AS entry
-  FROM base AS b
-  LEFT JOIN deduped_latlon_to_metro AS d
-    ON b.lat_key = d.lat_key AND b.lon_key = d.lon_key
-  WHERE b.lat_key IS NOT NULL
-  GROUP BY hostname, lat_key, lon_key
+-- One metro per coordinate. No dedup step is needed any more: v2 cells tile each
+-- country's land disjointly, so ST_COVERS returns exactly one cell per land
+-- coordinate, and the ORDER BY above is only a determinism guard for a point on a
+-- shared cell boundary. The old alphabetical `ORDER BY metro ASC` tie-break is
+-- gone -- that is what labelled Suva as Nukualofa/TO.
+latlon_to_metro AS (
+  SELECT lat_key, lon_key, metro FROM latlon_translation_to_metro
+  UNION ALL
+  SELECT lat_key, lon_key, metro FROM latlon_nearby
 ),
 
 final_output AS (
   SELECT
     b.* EXCEPT (metro, lat_key, lon_key, place_key),
+    -- Keep the historical guard: a '%remainder%' metro is not a real place. v2 has
+    -- no remainder cells, so this should never fire.
     CASE
-      WHEN h.entry.metro LIKE '%remainder%' THEN COALESCE(b.place_key, 'Unknown')
-      ELSE h.entry.metro
+      WHEN d.metro LIKE '%remainder%' THEN COALESCE(b.place_key, 'Unknown')
+      ELSE d.metro
     END AS metro
   FROM base AS b
-  LEFT JOIN hostname_to_metro AS h
-    ON b.hostname = h.hostname
-   AND b.lat_key = h.lat_key
-   AND b.lon_key = h.lon_key
+  LEFT JOIN latlon_to_metro AS d
+    ON b.lat_key = d.lat_key AND b.lon_key = d.lon_key
   WHERE b.hostname IS NOT NULL
 )
 SELECT
