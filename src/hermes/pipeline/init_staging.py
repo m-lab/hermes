@@ -58,7 +58,8 @@ def _exists(client: bigquery.Client, table: str) -> bool:
 
 def plan(client: bigquery.Client) -> tuple[list[str], list[str]]:
     """Split the staging tables into (missing, present)."""
-    missing, present = [], []
+    missing: list[str] = []
+    present: list[str] = []
     for table in staging_targets():
         (present if _exists(client, table) else missing).append(table)
     return missing, present
