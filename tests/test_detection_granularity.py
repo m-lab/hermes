@@ -65,9 +65,7 @@ def test_run_sql_steps_passes_metro_to_loader(monkeypatch):
     ("present", "expected"),
     [([], False), (["metro"], True)],
 )
-def test_granularity_aware_resume_accepts_only_the_requested_mode(
-    monkeypatch, present, expected
-):
+def test_granularity_aware_resume_accepts_only_the_requested_mode(monkeypatch, present, expected):
     rows = [SimpleNamespace(granularity=value) for value in present]
     query_job = SimpleNamespace(result=lambda: rows)
     client = SimpleNamespace(query=lambda *args, **kwargs: query_job)
@@ -101,9 +99,7 @@ def test_granularity_aware_resume_rejects_a_mixed_or_conflicting_partition(monke
 
 def test_legacy_flag_backfill_is_idempotent_and_preserves_untested_rows():
     sql = (
-        Path(__file__).resolve().parents[1]
-        / "scripts"
-        / "backfill_detection_granularity.sql"
+        Path(__file__).resolve().parents[1] / "scripts" / "backfill_detection_granularity.sql"
     ).read_text(encoding="utf-8")
     assert "SET detection_granularity = 'maxmind_city'" in sql
     assert "WHERE detection_granularity IS NULL" in sql
@@ -121,8 +117,8 @@ def test_staging_builder_emits_every_numbered_sql_stage(tmp_path):
 
 
 def test_acceptance_query_is_parameterized_for_both_detection_modes():
-    sql = (
-        Path(__file__).resolve().parents[1] / "scripts" / "verify_group_identity.sql"
-    ).read_text(encoding="utf-8")
+    sql = (Path(__file__).resolve().parents[1] / "scripts" / "verify_group_identity.sql").read_text(
+        encoding="utf-8"
+    )
     assert "DEFAULT '${EXPECTED_GRANULARITY}'" in sql
     assert "detection_granularity != _expected_granularity" in sql

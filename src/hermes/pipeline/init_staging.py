@@ -116,7 +116,10 @@ def copy_input_partitions(
     job.result()
     logger.info(
         "copied %s..%s of %s into staging (%d rows, %.2f GiB billed)",
-        start, end, INPUT_TABLE, job.num_dml_affected_rows or 0,
+        start,
+        end,
+        INPUT_TABLE,
+        job.num_dml_affected_rows or 0,
         job.total_bytes_billed / 2**30,
     )
     return job.num_dml_affected_rows or 0
@@ -158,7 +161,9 @@ def main() -> None:
             ap.error("--copy-inputs requires --start and --end")
         start = date.fromisoformat(args.start) - timedelta(days=args.baseline_days)
         end = date.fromisoformat(args.end)
-        print(f"  copying {INPUT_TABLE} {start}..{end} (includes {args.baseline_days} baseline days)")
+        print(
+            f"  copying {INPUT_TABLE} {start}..{end} (includes {args.baseline_days} baseline days)"
+        )
         copy_input_partitions(client, start, end, dry_run=args.dry_run)
 
 

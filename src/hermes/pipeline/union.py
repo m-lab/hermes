@@ -71,6 +71,7 @@ def parse_detection_granularity(value: str) -> DetectionGranularity:
         raise ValueError(f"Unsupported detection granularity {value!r}; choose one of: {choices}")
     return cast(DetectionGranularity, value)
 
+
 # Maps each SQL file to the output table whose presence means "this step already
 # ran for this date". Used for per-step resume only.
 #
@@ -415,7 +416,7 @@ def ensure_baseline(
         max_workers,
         skip_data_check=True,
         detection_granularity=detection_granularity,
-        dataset=dataset
+        dataset=dataset,
     )
     for r in results:
         if not r.startswith("Success:"):
@@ -550,9 +551,7 @@ def step_already_done(
         WHERE DATE(partition_date) = @day
     """
     job_config = bigquery.QueryJobConfig(
-        query_parameters=[
-            bigquery.ScalarQueryParameter("day", "DATE", date.fromisoformat(day_str))
-        ]
+        query_parameters=[bigquery.ScalarQueryParameter("day", "DATE", date.fromisoformat(day_str))]
     )
     present = {row.granularity for row in client.query(query, job_config=job_config).result()}
     if not present:
@@ -1222,7 +1221,7 @@ def run_dates(
         max_workers,
         skip_data_check,
         detection_granularity,
-        dataset=dataset
+        dataset=dataset,
     )
 
     # Determine which dates succeeded phase A (eligible for enrichment + phase C)
@@ -1286,7 +1285,7 @@ def run_dates(
         max_workers,
         skip_data_check=True,  # no data check needed for step 04
         detection_granularity=detection_granularity,
-        dataset=dataset
+        dataset=dataset,
     )
 
     # ── Phase D: Python v2 correlation + temporal tomography (parallel across dates) ──
@@ -1301,9 +1300,7 @@ def run_dates(
     # deadlocking — see _run_phase_d_tomography.
     tomo_workers = tomography_workers or 1
     logger.info(f"  Phase D parallelism: {tomo_workers} worker(s)")
-    worker_args = [
-        (date, project_id, tomography_backend, dataset) for date in successful_dates
-    ]
+    worker_args = [(date, project_id, tomography_backend, dataset) for date in successful_dates]
 
     if len(successful_dates) == 1:
         results_d = [_run_tomography_worker(worker_args[0])]
@@ -1346,7 +1343,7 @@ def run_dates(
         max_workers,
         skip_data_check=True,
         detection_granularity=detection_granularity,
-        dataset=dataset
+        dataset=dataset,
     )
     results_e += [f"Error: {day} - Phase D failed, Phase E skipped" for day in tomography_failed]
 
@@ -1506,7 +1503,9 @@ def main() -> None:
         logger.warning(
             "TARGET=%s — reading and writing %s, metro polygons from %s. "
             "Production tables are untouched.",
-            args.target, dataset, metro_polygons_for(dataset),
+            args.target,
+            dataset,
+            metro_polygons_for(dataset),
         )
 
     # Handle specific dates to rerun

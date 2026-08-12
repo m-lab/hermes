@@ -6,16 +6,16 @@ build-backend = "hatchling.build"
 name = "hermes"
 version = "0.1.0"
 description = "HERMES network monitoring and anomaly detection pipeline"
-# Minimum the source actually needs, not the deployment target. The floor is 3.11
-# because `datetime.UTC` (pipeline/budget.py, enrichment/ipinfo/enricher*.py) was
-# added in 3.11; every module compiles and the full suite passes on 3.11.14, and
-# .github/workflows/sql-lint.yml already runs on 3.11.
+# 3.14 is the real floor, not just the deployment target. [tool.ruff]
+# target-version = "py314" means `ruff format` emits PEP 758 syntax
+# (`except ValueError, IndexError:` without parentheses), which does not parse on
+# 3.11-3.13. Dockerfile is python:3.14-slim and ci.yml pins 3.14, so the toolchain
+# is coherent at 3.14 and only at 3.14.
 #
-# The deployment target is still 3.14 and is pinned where it belongs: Dockerfile
-# (`python:3.14-slim-bookworm`) and .github/workflows/ci.yml. Declaring >=3.14 here
-# additionally blocked contributors on 3.11-3.13 and made a stale 3.11 venv fail
-# `pip install` with a version gate rather than anything real.
-requires-python = ">=3.11"
+# This was briefly lowered to ">=3.11" on the grounds that datetime.UTC is the only
+# hard requirement and the suite passes on 3.11. That was wrong: it ignored the
+# formatter, which actively rewrites the source into 3.14-only syntax.
+requires-python = ">=3.14"
 dependencies = [
     "google-cloud-bigquery>=3.42.3",
     # Arrow-based download path for tomography. WITHOUT this, the client logs
