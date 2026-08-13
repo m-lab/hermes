@@ -28,7 +28,8 @@ ELSE
     ADD COLUMN IF NOT EXISTS detection_granularity STRING;
 END IF;
 ALTER TABLE `mlab-collaboration.${DS}.anomaly_counts_union`
-  ADD COLUMN IF NOT EXISTS src_group_label STRING;
+  ADD COLUMN IF NOT EXISTS src_group_label STRING,
+  ADD COLUMN IF NOT EXISTS client_geo_source STRING;
 
 IF EXISTS (
   SELECT 1 FROM `mlab-collaboration.${DS}.INFORMATION_SCHEMA.COLUMNS`
@@ -46,7 +47,8 @@ ELSE
     ADD COLUMN IF NOT EXISTS detection_granularity STRING;
 END IF;
 ALTER TABLE `mlab-collaboration.${DS}.transient_events_union`
-  ADD COLUMN IF NOT EXISTS src_group_label STRING;
+  ADD COLUMN IF NOT EXISTS src_group_label STRING,
+  ADD COLUMN IF NOT EXISTS client_geo_source STRING;
 
 -- 04 uses explicit column lists, so order is not load-bearing for these two.
 IF EXISTS (
@@ -66,7 +68,8 @@ ELSE
 END IF;
 ALTER TABLE `mlab-collaboration.${DS}.events_with_as_and_geoloc`
   ADD COLUMN IF NOT EXISTS src_group_label STRING,
-  ADD COLUMN IF NOT EXISTS src_metro STRING;
+  ADD COLUMN IF NOT EXISTS src_metro STRING,
+  ADD COLUMN IF NOT EXISTS client_geo_source STRING;
 
 IF EXISTS (
   SELECT 1 FROM `mlab-collaboration.${DS}.INFORMATION_SCHEMA.COLUMNS`
@@ -85,11 +88,13 @@ ELSE
 END IF;
 ALTER TABLE `mlab-collaboration.${DS}.giga_meter_measurements`
   ADD COLUMN IF NOT EXISTS src_group_label STRING,
-  ADD COLUMN IF NOT EXISTS src_metro STRING;
+  ADD COLUMN IF NOT EXISTS src_metro STRING,
+  ADD COLUMN IF NOT EXISTS client_geo_source STRING;
 
--- The public table appends five columns, in exactly this order
+-- The public table appends six columns, in exactly this order
 -- (final_result: ... confidence_tier, detection_granularity, src_metro,
--- src_group_label, n_dayof, src_match_granularity). Adjacent STRINGs mean a
+-- src_group_label, n_dayof, src_match_granularity, client_geo_source).
+-- Adjacent STRINGs mean a
 -- transposition is type-valid and silent; the INT64 in position 4 is the only
 -- positional anchor. verify_group_identity.sql check 4 tests it.
 IF EXISTS (
@@ -110,7 +115,8 @@ END IF;
 ALTER TABLE `mlab-collaboration.${DS}.events_explained_daily`
   ADD COLUMN IF NOT EXISTS src_metro STRING,
   ADD COLUMN IF NOT EXISTS src_group_label STRING,
-  ADD COLUMN IF NOT EXISTS n_dayof INT64;
+  ADD COLUMN IF NOT EXISTS n_dayof INT64,
+  ADD COLUMN IF NOT EXISTS client_geo_source STRING;
 IF EXISTS (
   SELECT 1 FROM `mlab-collaboration.${DS}.INFORMATION_SCHEMA.COLUMNS`
   WHERE table_name = 'events_explained_daily'

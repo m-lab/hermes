@@ -20,14 +20,35 @@ DDL_FILES = [
     # had been created by hand on the VM.
     "create_correlation_culprits_multigranularity.sql",
     "create_correlation_entity_stats_multigranularity.sql",
+    # Must precede the view and all Step0-aware writers.
+    "add_client_geo_source_columns.sql",
+    # Stable nested compatibility interface over the legacy physical table.
+    "create_events_enriched.sql",
 ]
 
+DEFAULT_SOURCE_DATASET = "hermes_union"
+DEFAULT_PUBLISHED_DATASET = "hermes"
 
-def bootstrap(client) -> None:
-    """Run each CREATE TABLE IF NOT EXISTS DDL once."""
+
+def _ddl_params(name: str, source_dataset: str, published_dataset: str) -> dict[str, object]:
+    """Return the substitutions required by a bootstrap DDL."""
+    params: dict[str, object] = {"DS": source_dataset}
+    if name == "create_events_enriched.sql":
+        params["PUBLISHED_DS"] = published_dataset
+    return params
+
+
+def bootstrap(
+    client,
+    *,
+    source_dataset: str = DEFAULT_SOURCE_DATASET,
+    published_dataset: str = DEFAULT_PUBLISHED_DATASET,
+) -> None:
+    """Create or refresh each bootstrapped table/view definition."""
     for name in DDL_FILES:
         logger.info("Bootstrapping via %s", name)
-        client.query(loader.load_query(name, {})).result()
+        params = _ddl_params(name, source_dataset, published_dataset)
+        client.query(loader.load_query(name, params)).result()
 
 
 if __name__ == "__main__":

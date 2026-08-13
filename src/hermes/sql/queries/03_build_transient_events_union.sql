@@ -16,8 +16,8 @@
 -- PARTITION BY partition_date
 -- AS
 DECLARE _detection_granularity STRING DEFAULT '${DETECTION_GRANULARITY}';
-ASSERT _detection_granularity IN ('maxmind_city', 'metro')
-  AS 'DETECTION_GRANULARITY must be maxmind_city or metro';
+ASSERT _detection_granularity IN ('city', 'metro')
+  AS 'DETECTION_GRANULARITY must be city or metro';
 
 -- This resolver intentionally mirrors step 02. Traceroutes and day-of
 -- percentiles must attach to the exact population whose anomaly was tested.
@@ -47,7 +47,8 @@ INSERT INTO `mlab-collaboration.${DS}.transient_events_union`
    difference_upload_throughput, wasserstein_throughput_result,
    wasserstein_upload_throughput_result, mann_whitney_latency,
    mann_whitney_throughput, mann_whitney_upload_throughput, t_test_latency,
-   median_upload_throughput, detection_granularity, src_group_label)
+   median_upload_throughput, detection_granularity, src_group_label,
+   client_geo_source)
 
 WITH
 MeasurementsWithGroup AS (
@@ -155,6 +156,7 @@ ScamperDataIntermediary AS (
     -- See docs/proposals/2026-08-group-granularity.md.
     ANY_VALUE(a.detection_granularity) AS detection_granularity,
     ANY_VALUE(a.src_group_label)       AS src_group_label,
+    'ipinfo'                           AS client_geo_source,
     ANY_VALUE(a.anomaly_ratio_rtt)        AS anomaly_ratio_rtt,
     ANY_VALUE(a.anomaly_ratio_throughput) AS anomaly_ratio_throughput,
     ANY_VALUE(a.anomaly_ratio_upload_throughput) AS anomaly_ratio_upload_throughput,
@@ -270,6 +272,7 @@ Scamper2DataIntermediary AS (
     -- See docs/proposals/2026-08-group-granularity.md.
     ANY_VALUE(a.detection_granularity) AS detection_granularity,
     ANY_VALUE(a.src_group_label)       AS src_group_label,
+    'ipinfo'                           AS client_geo_source,
     ANY_VALUE(a.anomaly_ratio_rtt)        AS anomaly_ratio_rtt,
     ANY_VALUE(a.anomaly_ratio_throughput) AS anomaly_ratio_throughput,
     ANY_VALUE(a.anomaly_ratio_upload_throughput) AS anomaly_ratio_upload_throughput,
@@ -530,7 +533,7 @@ NodeExtraction AS (
     id, src, dst, src_city, src_asn, dst_site, dst_city, dst_asn, dst_country,
     src_country, src_asn_name, client_name, src_lat, src_state, src_lon, dst_lat, dst_lon,
     is_consistent, window_start, total_windows, ndt_rtt, ndt_throughput, ndt_loss_rate, traceroute_rtt,
-    detection_granularity, src_group_label,
+    detection_granularity, src_group_label, client_geo_source,
     start_sec, addr, rdns_name, rtts, probe_ttl,
     number_of_measurements_baseline, number_of_unique_src_ips_baseline,
     unique_ip_count_per_site, measurement_count_per_site,
@@ -563,7 +566,7 @@ NodeExtraction AS (
     src, dst, src_city, src_asn, dst_site, dst_city, dst_asn, dst_country,
     src_country, src_asn_name, client_name, src_lat, src_state, src_lon, dst_lat, dst_lon,
     is_consistent, window_start, total_windows, ndt_rtt, ndt_throughput, ndt_loss_rate, traceroute_rtt,
-    detection_granularity, src_group_label,
+    detection_granularity, src_group_label, client_geo_source,
     start_sec,
     CAST(dst AS STRING)          AS addr,
     CAST(NULL AS STRING)         AS rdns_name,
@@ -615,6 +618,7 @@ SequenceGenerator AS (
     ne.ip_version AS ip_version,
     ANY_VALUE(ne.detection_granularity) AS detection_granularity,
     ANY_VALUE(ne.src_group_label)       AS src_group_label,
+    ANY_VALUE(ne.client_geo_source)     AS client_geo_source,
     GENERATE_ARRAY(1, MAX(ne.probe_ttl)) AS ttl_sequence,
     ANY_VALUE(ne.number_of_measurements_baseline)   AS number_of_measurements_baseline,
     ANY_VALUE(ne.number_of_unique_src_ips_baseline) AS number_of_unique_src_ips_baseline,
@@ -728,6 +732,7 @@ ExpandedNodeDetails AS (
     ANY_VALUE(er.total_windows)   AS total_windows,
     ANY_VALUE(er.detection_granularity) AS detection_granularity,
     ANY_VALUE(er.src_group_label)       AS src_group_label,
+    ANY_VALUE(er.client_geo_source)     AS client_geo_source,
     ANY_VALUE(er.is_consistent)   AS is_consistent,
 
     ANY_VALUE(er.src_city)        AS src_city,
@@ -804,6 +809,7 @@ AggregatedData AS (
     total_windows,
     detection_granularity,
     src_group_label,
+    client_geo_source,
     is_consistent,
     src_city,
     src_lat,
@@ -923,7 +929,7 @@ with_median_lat_throughput AS (
       median_upload_throughput,
       -- re-emitted last to keep the final projection easy to compare with the
       -- explicit INSERT list and the appended ALTER TABLE positions
-      detection_granularity, src_group_label
+      detection_granularity, src_group_label, client_geo_source
     ),
 
     cslts.median_rtt                       AS city_median_rtt,
@@ -956,7 +962,8 @@ with_median_lat_throughput AS (
 
     -- Detection-group identity, last (appended columns)
     aga.detection_granularity,
-    aga.src_group_label
+    aga.src_group_label,
+    aga.client_geo_source
   FROM WithReversePathData aga
   INNER JOIN CityServerLatencyThroughputSummary cslts
     ON cslts.src_city = aga.src_city

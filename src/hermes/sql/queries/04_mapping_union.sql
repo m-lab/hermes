@@ -1558,7 +1558,7 @@ WITH src_coords AS (
   SELECT DISTINCT src_lat AS lat, src_lon AS lon
   FROM _mapping_result
   WHERE src_lat IS NOT NULL AND src_lon IS NOT NULL
-    AND COALESCE(detection_granularity, 'maxmind_city') != 'metro'
+    AND COALESCE(detection_granularity, 'city') != 'metro'
 )
 -- Single pass; see the _dst_metro header. Measured on this exact coordinate set
 -- for 2026-08-08 (29,698,426 rows / 60,142 distinct coordinates) against the old
@@ -1589,7 +1589,7 @@ GROUP BY 1, 2;
 CREATE OR REPLACE TEMP TABLE _mapping_result AS
 SELECT
   m.* REPLACE (
-    -- Readable label: MaxMind city NAME + the metro's FULL state name + country
+    -- Readable label: client city NAME + the metro's FULL state name + country
     -- (Castello de la Plana-VC-ES -> Castello de la Plana-Comunidad Valenciana-ES).
     -- Parsed from the RIGHT: subdivision ISO codes never contain '-', but city and
     -- state names do (Saint-Agapit-QC-CA, Ile-de-France).
@@ -1610,7 +1610,8 @@ SELECT
          ))
     ) AS src_city,
     -- Keep src_state on the same authority as the label above, so the row does
-    -- not carry the full name in src_city and MaxMind's ISO code in src_state.
+    -- not carry the full name in src_city and a different region vocabulary in
+    -- src_state.
     -- 07 passes src_state through untouched, so this is what reaches the
     -- public table.
     IF(m.detection_granularity = 'metro', m.src_state,
@@ -1656,7 +1657,7 @@ INSERT INTO `mlab-collaboration.${DS}.events_with_as_and_geoloc`
    mann_whitney_latency, mann_whitney_throughput, mann_whitney_upload_throughput,
    t_test_latency,
    -- Detection identity (from 02) + geo annotations (set here)
-   detection_granularity, src_group_label, src_metro)
+   detection_granularity, src_group_label, src_metro, client_geo_source)
 SELECT
   id, dst, src, ndt_rtt, ndt_throughput, ndt_loss_rate, traceroute_rtt,
   total_windows, is_consistent, src_city, src_lat, src_state, src_lon,
@@ -1685,7 +1686,7 @@ SELECT
   wasserstein_throughput_result, wasserstein_upload_throughput_result,
   mann_whitney_latency, mann_whitney_throughput, mann_whitney_upload_throughput,
   t_test_latency,
-  detection_granularity, src_group_label, src_metro
+  detection_granularity, src_group_label, src_metro, client_geo_source
 FROM _mapping_result;
 
 INSERT INTO `mlab-collaboration.${DS}.giga_meter_measurements`
@@ -1717,7 +1718,7 @@ INSERT INTO `mlab-collaboration.${DS}.giga_meter_measurements`
    mann_whitney_latency, mann_whitney_throughput, mann_whitney_upload_throughput,
    t_test_latency,
    -- Detection identity (from 02) + geo annotations (set here)
-   detection_granularity, src_group_label, src_metro)
+   detection_granularity, src_group_label, src_metro, client_geo_source)
 SELECT
   id, dst, src, ndt_rtt, ndt_throughput, ndt_loss_rate, traceroute_rtt,
   total_windows, is_consistent, src_city, src_lat, src_state, src_lon,
@@ -1746,7 +1747,7 @@ SELECT
   wasserstein_throughput_result, wasserstein_upload_throughput_result,
   mann_whitney_latency, mann_whitney_throughput, mann_whitney_upload_throughput,
   t_test_latency,
-  detection_granularity, src_group_label, src_metro
+  detection_granularity, src_group_label, src_metro, client_geo_source
 FROM _mapping_result
 WHERE (
         client_name = 'giga-meter'

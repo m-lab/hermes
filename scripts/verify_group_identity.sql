@@ -4,10 +4,11 @@
 -- See docs/proposals/2026-08-group-granularity.md.
 --
 -- Substitute ${DAY} and ${EXPECTED_GRANULARITY}. Every `bad_*` column must be 0.
+-- New rehearsal rows always use IPInfo client geography.
 
 DECLARE _expected_granularity STRING DEFAULT '${EXPECTED_GRANULARITY}';
-ASSERT _expected_granularity IN ('maxmind_city', 'metro')
-  AS 'EXPECTED_GRANULARITY must be maxmind_city or metro';
+ASSERT _expected_granularity IN ('city', 'metro')
+  AS 'EXPECTED_GRANULARITY must be city or metro';
 
 -- 1. IDENTITY PRESERVED. The detection label reaches the mapped table intact.
 --    Before this change src_city was overwritten with the metro and the label
@@ -16,7 +17,10 @@ SELECT '1_identity_preserved' AS check_,
        COUNT(*)                                              AS rows_,
        COUNTIF(e.src_group_label IS NULL)                    AS bad_null_label,
        COUNTIF(e.src_group_label != t.src_city)              AS bad_label_mismatch,
-       COUNTIF(e.detection_granularity != _expected_granularity) AS bad_granularity
+       COUNTIF(
+         e.detection_granularity != _expected_granularity
+         OR e.client_geo_source != 'ipinfo'
+       ) AS bad_provenance
 FROM `mlab-collaboration.hermes_staging.events_with_as_and_geoloc` e
 JOIN `mlab-collaboration.hermes_staging.transient_events_union` t
   USING (id, partition_date)
@@ -37,7 +41,7 @@ WHERE partition_date = DATE '${DAY}' AND detection_granularity IS NOT NULL
 
 UNION ALL
 
--- 3. DISPLAY/GROUP CONTRACT. In city mode, src_city keeps the MaxMind city
+-- 3. DISPLAY/GROUP CONTRACT. In city mode, src_city keeps the IPInfo city
 --    name. In metro mode, both src_city (the pre-public readable label) and
 --    src_metro equal the exact metro detection label.
 --
@@ -82,7 +86,10 @@ UNION ALL
 --    two strings can never be equal.
 SELECT '4_public_columns_not_transposed',
        COUNT(*),
-       COUNTIF(p.detection_granularity != _expected_granularity),
+       COUNTIF(
+         p.detection_granularity != _expected_granularity
+         OR p.client_geo_source != 'ipinfo'
+       ),
        COUNTIF(p.n_dayof IS NULL OR p.n_dayof < 1),
        COUNTIF(e.src_group_label IS NULL)
 FROM `mlab-collaboration.hermes_staging.events_explained_daily` p

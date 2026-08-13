@@ -87,6 +87,7 @@ LEFT JOIN nearby  n ON n.lat = u.lat AND n.lon = u.lon;
 UPDATE `mlab-collaboration.${DS}.events_with_as_and_geoloc` e
 SET
   e.detection_granularity = 'maxmind_city',
+  e.client_geo_source     = 'maxmind',
   e.src_group_label       = t.src_city,
   -- already the metro on a rolled-up partition (asserted above)
   e.src_metro             = e.src_city,

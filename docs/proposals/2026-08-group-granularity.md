@@ -7,6 +7,13 @@ names. See
 Operational state (deployment, remaining work, quota) lives in the companion
 `2026-08-group-granularity-HANDOVER.md`; that file is authoritative for status.
 
+> **Step0 provenance update (2026-08-12):** this proposal originally coupled
+> the grouping shape and provider in the value `maxmind_city`. The production
+> contract now separates them: `detection_granularity` is `city|metro`, while
+> `client_geo_source` is `ipinfo` for new runs. Historical NULL rows are exposed
+> by the compatibility view as `city` + `maxmind`; the legacy
+> `maxmind_city` value is retained only for optional physical backfills.
+
 ## The bug, in one sentence
 
 A downstream geographic enrichment silently re-grouped every stage after it at a
@@ -51,19 +58,21 @@ distinct labels/day against ~3,977 elsewhere.
 
 ### Metro-mode extension (2026-08-11)
 
-The pipeline now accepts `--detection-granularity maxmind_city|metro` (default
-`maxmind_city`). Metro mode resolves `metro_polygons_v2` before trimming,
-baseline construction, and statistical tests; step 03 uses the same resolver
-when attaching traceroutes and computing day-of summaries. Existing dates must
-be deleted across the complete pipeline before changing mode, and
-`scripts/backfill_detection_granularity.sql` labels historical tested rows as
-`maxmind_city` without falsely labelling unmatched giga-meter traces.
+The pipeline now accepts `--detection-granularity city|metro` (default
+`metro`). Both modes use IPInfo client geography. Metro mode resolves the
+canonical metro before trimming, baseline construction, and statistical tests;
+step 03 uses the same resolver when attaching traceroutes and computing day-of
+summaries. Existing dates must be deleted across the complete pipeline before
+changing mode. `scripts/backfill_detection_granularity.sql` can label verified
+historical tested rows as legacy `maxmind_city` + `maxmind` without falsely
+labelling unmatched giga-meter traces.
 
 ## Final schema
 
 | column | example | role |
 |---|---|---|
-| `detection_granularity` | `maxmind_city` | granularity of anomaly detection and detection-derived counts/statistics |
+| `detection_granularity` | `metro` | grouping shape of anomaly detection and detection-derived counts/statistics |
+| `client_geo_source` | `ipinfo` | provider used to map the client before grouping |
 | `src_group_label` | `Castelló de la Plana-VC-ES` | the **exact key `02` grouped on**; all keying and counting uses this |
 | `src_city` | `Castelló de la Plana-Comunidad Valenciana-ES` | readable label — MaxMind city name, metro's **full** state, country |
 | `src_state` | `Comunidad Valenciana` | same authority as the label above |

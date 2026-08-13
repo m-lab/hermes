@@ -16,8 +16,8 @@ from hermes.sql import loader
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
-DetectionGranularity = Literal["maxmind_city", "metro"]
-DETECTION_GRANULARITIES: tuple[DetectionGranularity, ...] = ("maxmind_city", "metro")
+DetectionGranularity = Literal["city", "metro"]
+DETECTION_GRANULARITIES: tuple[DetectionGranularity, ...] = ("city", "metro")
 
 # SQL files executed sequentially for each date.
 # 01-03 run first, then a Python enrichment step geolocates new topology IPs,
@@ -392,7 +392,7 @@ def ensure_baseline(
     dates: list[date],
     max_workers: int | None,
     window_days: int = 7,
-    detection_granularity: DetectionGranularity = "maxmind_city",
+    detection_granularity: DetectionGranularity = "metro",
     dataset: str = DEFAULT_DATASET,
 ) -> None:
     """Auto-fill missing baseline days by running step 01 for them.
@@ -703,7 +703,7 @@ def _run_sql_steps(
     project_id,
     sql_files,
     skip_data_check=False,
-    detection_granularity: DetectionGranularity = "maxmind_city",
+    detection_granularity: DetectionGranularity = "metro",
     dataset: str = DEFAULT_DATASET,
 ):
     """Run a list of SQL steps for a single date, skipping steps already done."""
@@ -1122,7 +1122,7 @@ def _run_parallel_sql(
     sql_files,
     max_workers,
     skip_data_check,
-    detection_granularity: DetectionGranularity = "maxmind_city",
+    detection_granularity: DetectionGranularity = "metro",
     dataset: str = DEFAULT_DATASET,
 ):
     """Run SQL steps for multiple dates in parallel. Returns list of result strings."""
@@ -1177,7 +1177,7 @@ def run_dates(
     tomography_backend: str = "python",
     auto_baseline: bool = True,
     tomography_workers: int | None = None,
-    detection_granularity: DetectionGranularity = "maxmind_city",
+    detection_granularity: DetectionGranularity = "metro",
     dataset: str = DEFAULT_DATASET,
 ) -> None:
     """Run the full union pipeline for a batch of dates.
@@ -1209,9 +1209,9 @@ def run_dates(
     tomography_backend
         Correlation tomography backend (python v2 hybrid).
     detection_granularity
-        Source-location key used before anomaly aggregation. ``maxmind_city``
-        preserves the historical algorithm; ``metro`` pools measurements by
-        the canonical metro resolver.
+        Client-location key used before anomaly aggregation. ``city`` and
+        ``metro`` both use IPInfo-derived geography; ``metro`` pools raw
+        measurements by the canonical metro resolver.
     """
     if not dates:
         logger.info("No dates to process.")
@@ -1510,9 +1510,9 @@ def main() -> None:
     parser.add_argument(
         "--detection-granularity",
         choices=DETECTION_GRANULARITIES,
-        default="maxmind_city",
-        help="Source geography used by anomaly detection and every downstream "
-        "grouping step (default: maxmind_city).",
+        default="metro",
+        help="Client grouping used by anomaly detection and every downstream "
+        "grouping step (default: metro; geography source: IPInfo).",
     )
     parser.add_argument(
         "--target",
@@ -1692,15 +1692,12 @@ def main() -> None:
     dates_to_actually_process = []
     for current_date in dates_to_process:
         if current_date in existing_dates and not args.force_rerun:
-            # Existing data is skippable only when it was produced by the mode
-            # the operator requested. A city partition must never make a metro
-            # invocation look successfully complete.
-            step_already_done(
-                project_id,
-                final_table,
-                current_date.strftime("%Y-%m-%d"),
-                parse_detection_granularity(args.detection_granularity),
-            )
+            # The final partition is already complete and this branch never
+            # writes to it, so its historical regime cannot conflict with the
+            # requested regime. Strict checks remain in _run_sql_steps for every
+            # table/date that may actually be appended. This distinction lets a
+            # daily metro run skip yesterday's legacy city partition and process
+            # the newly due date instead of failing before any work begins.
             logger.info(f"Skipping date {current_date.strftime('%Y-%m-%d')} (already processed).")
         else:
             dates_to_actually_process.append(current_date)

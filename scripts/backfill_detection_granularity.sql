@@ -10,52 +10,52 @@
 -- See docs/proposals/2026-08-group-granularity.md.
 
 ASSERT (
-  SELECT COUNTIF(detection_granularity NOT IN ('maxmind_city', 'metro')) = 0
+  SELECT COUNTIF(detection_granularity NOT IN ('maxmind_city', 'city', 'metro')) = 0
   FROM `mlab-collaboration.${DS}.anomaly_counts_union`
 ) AS 'anomaly_counts_union contains an unsupported detection_granularity';
 
 ASSERT (
-  SELECT COUNTIF(detection_granularity NOT IN ('maxmind_city', 'metro')) = 0
+  SELECT COUNTIF(detection_granularity NOT IN ('maxmind_city', 'city', 'metro')) = 0
   FROM `mlab-collaboration.${DS}.transient_events_union`
 ) AS 'transient_events_union contains an unsupported detection_granularity';
 
 ASSERT (
-  SELECT COUNTIF(detection_granularity NOT IN ('maxmind_city', 'metro')) = 0
+  SELECT COUNTIF(detection_granularity NOT IN ('maxmind_city', 'city', 'metro')) = 0
   FROM `mlab-collaboration.${DS}.events_with_as_and_geoloc`
 ) AS 'events_with_as_and_geoloc contains an unsupported detection_granularity';
 
 ASSERT (
-  SELECT COUNTIF(detection_granularity NOT IN ('maxmind_city', 'metro')) = 0
+  SELECT COUNTIF(detection_granularity NOT IN ('maxmind_city', 'city', 'metro')) = 0
   FROM `mlab-collaboration.${DS}.giga_meter_measurements`
 ) AS 'giga_meter_measurements contains an unsupported detection_granularity';
 
 ASSERT (
-  SELECT COUNTIF(detection_granularity NOT IN ('maxmind_city', 'metro')) = 0
+  SELECT COUNTIF(detection_granularity NOT IN ('maxmind_city', 'city', 'metro')) = 0
   FROM `mlab-collaboration.${DS}.events_explained_daily`
 ) AS 'events_explained_daily contains an unsupported detection_granularity';
 
 UPDATE `mlab-collaboration.${DS}.anomaly_counts_union`
-SET detection_granularity = 'maxmind_city'
+SET detection_granularity = 'maxmind_city', client_geo_source = 'maxmind'
 WHERE detection_granularity IS NULL
   AND partition_date <= DATE '${LEGACY_THROUGH_DAY}';
 
 UPDATE `mlab-collaboration.${DS}.transient_events_union`
-SET detection_granularity = 'maxmind_city'
+SET detection_granularity = 'maxmind_city', client_geo_source = 'maxmind'
 WHERE detection_granularity IS NULL
   AND partition_date <= DATE '${LEGACY_THROUGH_DAY}';
 
 UPDATE `mlab-collaboration.${DS}.events_with_as_and_geoloc`
-SET detection_granularity = 'maxmind_city'
+SET detection_granularity = 'maxmind_city', client_geo_source = 'maxmind'
 WHERE detection_granularity IS NULL
   AND partition_date <= DATE '${LEGACY_THROUGH_DAY}';
 
 UPDATE `mlab-collaboration.${DS}.giga_meter_measurements`
-SET detection_granularity = 'maxmind_city'
+SET detection_granularity = 'maxmind_city', client_geo_source = 'maxmind'
 WHERE detection_granularity IS NULL
   AND partition_date <= DATE '${LEGACY_THROUGH_DAY}';
 
 UPDATE `mlab-collaboration.${DS}.events_explained_daily`
-SET detection_granularity = 'maxmind_city'
+SET detection_granularity = 'maxmind_city', client_geo_source = 'maxmind'
 WHERE detection_granularity IS NULL
   AND partition_date <= DATE '${LEGACY_THROUGH_DAY}';
 

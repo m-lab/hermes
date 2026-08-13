@@ -14,12 +14,9 @@
 -- PARTITION BY partition_date
 -- AS
 DECLARE _detection_granularity STRING DEFAULT '${DETECTION_GRANULARITY}';
-ASSERT _detection_granularity IN ('maxmind_city', 'metro')
-  AS 'DETECTION_GRANULARITY must be maxmind_city or metro';
+ASSERT _detection_granularity IN ('city', 'metro')
+  AS 'DETECTION_GRANULARITY must be city or metro';
 
--- Resolve distinct coordinates once. The WHERE predicate makes this table
--- empty in city mode, avoiding the spatial join entirely. metro_polygons_v2
--- uses ordinary positive geometry and a stable, country-constrained resolver.
 -- _source_metro_lookup is gone: Phase A0 already resolved every client IP
 -- to a metro in unified_src_ip_to_geoloc, so detection no longer does a spatial
 -- join at all. That also removes the ST_COVERS/ST_DWITHIN work from this step.
@@ -42,7 +39,7 @@ INSERT INTO `mlab-collaboration.${DS}.anomaly_counts_union`
    mann_whitney_loss_severity, t_test_latency, client_name,
    anomaly_rtt_count, anomaly_throughput_count,
    anomaly_upload_throughput_count, anomaly_loss_rate_count, partition_date,
-   detection_granularity, src_group_label)
+   detection_granularity, src_group_label, client_geo_source)
 
 WITH
 MeasurementsWithGroup AS (
@@ -1022,7 +1019,8 @@ AnomalyCounts AS (
     -- rollback safe; these fields remain last for compatibility with the ALTER.
     -- See docs/proposals/2026-08-group-granularity.md.
     _detection_granularity AS detection_granularity,
-    src_city AS src_group_label
+    src_city AS src_group_label,
+    'ipinfo' AS client_geo_source
   FROM DayLevelAnomaly
   GROUP BY
     src_asn,

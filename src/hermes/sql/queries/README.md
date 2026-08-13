@@ -22,10 +22,15 @@ hermes-pipeline --start-date 2026-05-17 --end-date 2026-05-23 --dry-run
 # Re-run specific dates, clearing their rows first (see "Resume and idempotency")
 hermes-pipeline --rerun-dates 2026-05-20 2026-05-21 --delete-first
 
-# Run true metro-keyed detection. Existing dates require a complete delete so
-# city- and metro-derived outputs can never coexist for one partition.
+# Metro-keyed detection is the default. Existing dates require a complete delete
+# so city- and metro-derived outputs can never coexist for one partition.
 hermes-pipeline --rerun-dates 2026-05-20 --delete-first \
     --detection-granularity metro
+
+# Compare against the old grouping shape using IPInfo city labels. This is not
+# the historical MaxMind provider; provenance remains client_geo_source=ipinfo.
+hermes-pipeline --rerun-dates 2026-05-20 --delete-first \
+    --detection-granularity city
 
 # Fill only the gaps in a range — dates absent, empty, or fully unattributed
 hermes-pipeline --start-date 2026-05-01 --end-date 2026-05-23 --fill-missing
@@ -125,11 +130,13 @@ Joins each NDT download test with its corresponding upload test via `access_toke
 **Reads:** `hermes_union.merged_download_upload`
 **Writes:** `hermes_union.anomaly_counts_union`
 
-For each `(ASN, source-group, server-site, ip_version)` group. The source group
-is selected by `--detection-granularity`: `maxmind_city` (the default) uses the
-MaxMind City-Subdivision-Country label; `metro` resolves `metro_polygons_v2`
-before any aggregation and pools every accepted measurement assigned to that
-canonical metro.
+For each `(client ASN, client group, server site, ip_version)` group. The client
+group is selected by `--detection-granularity`: `city` uses the IPInfo
+City-Region-Country label; `metro` (the default) pools every accepted
+measurement assigned to the canonical metro. Both modes use IPInfo geography,
+recorded independently as `client_geo_source = 'ipinfo'`. Historical rows may
+retain `detection_granularity = 'maxmind_city'` and
+`client_geo_source = 'maxmind'`.
 
 1. Filters to consistent client IPs (geographic proximity + metro_rank checks).
 2. Caps each IP at 40% of the group's measurements to prevent single-IP dominance.
@@ -190,6 +197,41 @@ Three details worth knowing before editing this query:
   with a fixed start date — that makes the scan grow without limit as time passes.
 
 Also writes the GIGA-meter subset: rows where `client_name = 'giga-meter'` OR the client IP appears in `hermes_union.giga_school_ips` (for older measurements before the explicit flag was adopted).
+
+### Canonical compatibility view: `events_enriched`
+
+**SQL:** `create_events_enriched.sql`
+**Reads:** `hermes_union.events_with_as_and_geoloc`
+**Publishes:** `hermes.events_enriched`
+
+`events_enriched` is the stable downstream interface. It leaves the large
+historical physical table unchanged and presents each row as nested `client`,
+`server`, `performance`, `server_to_client_path`, `client_to_server_path`, and
+`quality` records. No source/destination endpoint names are exposed by the
+canonical contract; those names are contained at the legacy-table boundary.
+Forward and reverse hops use the same canonical names; reverse-only RevTr fields
+remain direction-specific. The view also materializes path summaries such as AS,
+country, metro, and IXP paths, hop counts, geolocation coverage, direct geodesic
+distance, and detour ratio.
+
+The legacy names do not describe endpoint direction. Scamper's so-called forward
+path is measured `server_to_client`; RevTr is measured `client_to_server`. The
+view preserves each measured hop order and exposes both `direction` and
+`measurement_method`, rather than reversing arrays and misrepresenting the RTT
+vantage point. Segment and cumulative distance are recomputed in that exposed
+order, so cumulative distance increases consistently for both paths.
+
+Historical rows created before grouping provenance was stored are exposed as
+`client.grouping_granularity = 'city'`, `client.geo_source = 'maxmind'`, with
+`client.group_label` falling back to the legacy city label. New rows expose
+`city` or `metro` independently from their `ipinfo` source. This is a
+compatibility projection only: the physical historical rows remain NULL and are
+not rewritten.
+
+The legacy `speed_of_internet_fiber` field is a calculated lower-bound RTT, not
+a speed. The canonical hop therefore exposes it as `fiber_lower_bound_rtt_ms`
+and separately records the assumed propagation speed as
+`propagation_speed_km_s = 200000`.
 
 ### Step 05: Temporal tomography
 
