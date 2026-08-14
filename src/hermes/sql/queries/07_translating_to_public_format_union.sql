@@ -16,15 +16,32 @@ INSERT INTO `mlab-collaboration.${DS}.events_explained_daily`
    max_baseline_forward_distance, max_daily_reverse_distance,
    max_baseline_reverse_distance, attribution_method, confidence_tier,
    detection_granularity, src_metro, src_group_label, n_dayof,
-   src_match_granularity, client_geo_source)
+   src_match_granularity, client_geo_source, n_baseline)
 -- Rebuild the total set of anomalous src-dst pairs
 WITH
   -- Data-sufficiency gate: only consider user groups with >= 10 measurements on
   -- the incident day (DATE(window_start) >= DAY), counted per ip_version.
-  dayof_counts AS (
-    SELECT src_asn, src_group_label, dst_site, ip_version, COUNT(*) AS n_dayof
+  --
+  -- Both counts come from ONE pass over the partition. The window split moved from
+  -- the WHERE clause into COUNTIF so the baseline half can be counted alongside the
+  -- day-of half without a second scan; the partition is the pipeline's single
+  -- largest table, so a second CTE over it would be the expensive way to do this.
+  -- Groups with no day-of measurements now reach this CTE with n_dayof = 0 rather
+  -- than being dropped by the WHERE -- harmless, since the >= 10 gate below still
+  -- excludes them.
+  --
+  -- n_baseline exists so consumers stop recomputing it. The dashboard was
+  -- re-deriving both counts per page load by aggregating the whole partition, and
+  -- doing it on a COARSER key (short city) than the detector groups on -- which
+  -- pooled neighbouring populations and let a 6-measurement group pass a
+  -- 20-measurement threshold on its neighbours' totals. Counting here, on
+  -- src_group_label, is both cheaper and the only correct place to do it.
+  group_counts AS (
+    SELECT src_asn, src_group_label, dst_site, ip_version,
+      COUNTIF(DATE(window_start) >= '${DAY}') AS n_dayof,
+      COUNTIF(DATE(window_start) <  '${DAY}') AS n_baseline
     FROM `mlab-collaboration.${DS}.events_with_as_and_geoloc`
-    WHERE partition_date = '${DAY}' AND DATE(window_start) >= '${DAY}'
+    WHERE partition_date = '${DAY}'
     GROUP BY src_asn, src_group_label, dst_site, ip_version
   ),
   -- The granularity anomaly detection ran at. src_metro is deliberately NOT
@@ -63,6 +80,7 @@ WITH
       ANY_VALUE(fr.src_city) AS src_city,
       ANY_VALUE(fr.src_metro) AS src_metro,
       ANY_VALUE(dc.n_dayof) AS n_dayof,
+      ANY_VALUE(dc.n_baseline) AS n_baseline,
       fr.src_state,
       fr.src_country,
       fr.dst_site,
@@ -81,7 +99,7 @@ WITH
       ANY_VALUE(fr.anomaly_ratio_throughput) AS anomaly_ratio_throughput
     FROM
       `mlab-collaboration.${DS}.events_with_as_and_geoloc` AS fr
-    JOIN dayof_counts dc
+    JOIN group_counts dc
       ON dc.src_asn = fr.src_asn AND dc.src_group_label = fr.src_group_label
          AND dc.dst_site = fr.dst_site AND dc.ip_version = fr.ip_version
     WHERE
@@ -151,6 +169,7 @@ WITH
       ta.src_city,
       ta.src_metro,
       ta.n_dayof,
+      ta.n_baseline,
       -- Which source vocabulary matched. When the exact tested label matched,
       -- report the detection regime itself; the metro fallback remains for
       -- historical city-detected partitions with metro-keyed Phase-D output.
@@ -217,6 +236,7 @@ WITH
       src_city,
       src_metro,
       n_dayof,
+      n_baseline,
       CAST(NULL AS STRING) AS src_match_granularity,
       src_state,
       src_country,
@@ -296,6 +316,7 @@ combined AS (
     src_city,
     src_metro,
     n_dayof,
+    n_baseline,
     src_match_granularity,
     src_state,
     src_country,
@@ -332,6 +353,7 @@ combined AS (
     src_city,
     src_metro,
     n_dayof,
+    n_baseline,
     src_match_granularity,
     src_state,
     src_country,
@@ -367,6 +389,7 @@ combined_with_AS_meta AS (
     src_city,
     src_metro,
     n_dayof,
+    n_baseline,
     src_match_granularity,
     -- `src_country` is emitted separately. Keep the dashboard-facing state
     -- value as its resolved name (for example, `Alberta`), not `CA-Alberta`.
@@ -567,7 +590,10 @@ final_result AS (
     src_group_label,
     n_dayof,
     src_match_granularity,
-    client_geo_source
+    client_geo_source,
+    -- Appended after client_geo_source, matching the position ALTER TABLE ADD
+    -- COLUMN gives it on the live table. Do not reorder to sit beside n_dayof.
+    n_baseline
   FROM
     combined_with_anomaly_summary
 )

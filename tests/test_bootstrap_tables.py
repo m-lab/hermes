@@ -12,6 +12,19 @@ def test_ddl_files_listed():
     ) < bootstrap_tables.DDL_FILES.index("create_events_enriched.sql")
 
 
+def test_n_baseline_migration_is_bootstrapped_after_the_create():
+    """Step 07 names n_baseline in its INSERT list, so the column must exist first.
+
+    CREATE TABLE IF NOT EXISTS is a no-op on the already-created production table
+    and will never add the column, so without this migration in the list the
+    nightly run fails on the INSERT rather than degrading.
+    """
+    assert "add_n_baseline_column.sql" in bootstrap_tables.DDL_FILES
+    assert bootstrap_tables.DDL_FILES.index(
+        "create_events_explained_daily.sql"
+    ) < bootstrap_tables.DDL_FILES.index("add_n_baseline_column.sql")
+
+
 def test_bootstrap_runs_each_ddl(monkeypatch):
     loaded = []
     monkeypatch.setattr(

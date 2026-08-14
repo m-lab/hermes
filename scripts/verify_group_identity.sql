@@ -90,7 +90,9 @@ SELECT '4_public_columns_not_transposed',
          p.detection_granularity != _expected_granularity
          OR p.client_geo_source != 'ipinfo'
        ),
-       COUNTIF(p.n_dayof IS NULL OR p.n_dayof < 1),
+       -- n_baseline may legitimately be 0 (a group with no trailing measurements),
+       -- so only NULL is a fault for it. n_dayof < 1 cannot survive the >=10 gate.
+       COUNTIF(p.n_dayof IS NULL OR p.n_dayof < 1 OR p.n_baseline IS NULL),
        COUNTIF(e.src_group_label IS NULL)
 FROM `mlab-collaboration.hermes_staging.events_explained_daily` p
 LEFT JOIN (
