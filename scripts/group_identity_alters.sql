@@ -91,12 +91,13 @@ ALTER TABLE `mlab-collaboration.${DS}.giga_meter_measurements`
   ADD COLUMN IF NOT EXISTS src_metro STRING,
   ADD COLUMN IF NOT EXISTS client_geo_source STRING;
 
--- The public table appends six columns, in exactly this order
+-- The public table appends seven columns, in exactly this order
 -- (final_result: ... confidence_tier, detection_granularity, src_metro,
--- src_group_label, n_dayof, src_match_granularity, client_geo_source).
+-- src_group_label, n_dayof, src_match_granularity, client_geo_source,
+-- n_baseline).
 -- Adjacent STRINGs mean a
--- transposition is type-valid and silent; the INT64 in position 4 is the only
--- positional anchor. verify_group_identity.sql check 4 tests it.
+-- transposition is type-valid and silent; the INT64s in positions 4 and 7 are the
+-- only positional anchors. verify_group_identity.sql check 4 tests them.
 IF EXISTS (
   SELECT 1 FROM `mlab-collaboration.${DS}.INFORMATION_SCHEMA.COLUMNS`
   WHERE table_name = 'events_explained_daily'
@@ -132,3 +133,8 @@ ELSE
   ALTER TABLE `mlab-collaboration.${DS}.events_explained_daily`
     ADD COLUMN IF NOT EXISTS src_match_granularity STRING;
 END IF;
+-- n_baseline is added LAST, on its own, and must stay last: the live tables were
+-- created with client_geo_source in final position, so appending here is what keeps
+-- the CREATE DDL and an ALTERed table in the same order.
+ALTER TABLE `mlab-collaboration.${DS}.events_explained_daily`
+  ADD COLUMN IF NOT EXISTS n_baseline INT64;
