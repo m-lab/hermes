@@ -42,6 +42,7 @@ CREATE TABLE IF NOT EXISTS `mlab-collaboration.${DS}.events_explained_daily`
   src_metro STRING,
   src_group_label STRING,
   n_dayof INT64,
-  src_match_granularity STRING
+  src_match_granularity STRING,
+  client_geo_source STRING
 )
 PARTITION BY partition_date;

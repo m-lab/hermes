@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from datetime import date
 from pathlib import Path
 from types import SimpleNamespace
@@ -26,6 +27,11 @@ def test_parse_detection_granularity_accepts_supported_values(value):
 def test_parse_detection_granularity_rejects_unknown_value():
     with pytest.raises(ValueError, match="Unsupported detection granularity"):
         union.parse_detection_granularity("state")
+
+
+def test_supported_modes_separate_grouping_shape_from_provider():
+    assert union.DETECTION_GRANULARITIES == ("city", "metro")
+    assert "maxmind_city" not in union.DETECTION_GRANULARITIES
 
 
 @pytest.mark.parametrize(
@@ -97,14 +103,70 @@ def test_granularity_aware_resume_rejects_a_mixed_or_conflicting_partition(monke
         )
 
 
+def test_daily_resume_skips_complete_legacy_day_and_runs_missing_day(monkeypatch):
+    """A skipped legacy day must not block the newly due metro day."""
+    captured = {}
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "hermes-pipeline",
+            "--start-date",
+            "2026-08-10",
+            "--end-date",
+            "2026-08-11",
+        ],
+    )
+    monkeypatch.setattr(union, "print_active_credentials", lambda: None)
+    monkeypatch.setattr(union, "get_existing_dates", lambda *args: {date(2026, 8, 10)})
+    monkeypatch.setattr(
+        union,
+        "step_already_done",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("top-level skip must not validate a historical regime")
+        ),
+    )
+    monkeypatch.setattr(
+        union,
+        "run_dates",
+        lambda dates, *args, **kwargs: captured.update(dates=dates, kwargs=kwargs),
+    )
+
+    union.main()
+
+    assert captured["dates"] == [date(2026, 8, 11)]
+    assert captured["kwargs"]["detection_granularity"] == "metro"
+
+
 def test_legacy_flag_backfill_is_idempotent_and_preserves_untested_rows():
     sql = (
         Path(__file__).resolve().parents[1] / "scripts" / "backfill_detection_granularity.sql"
     ).read_text(encoding="utf-8")
     assert "SET detection_granularity = 'maxmind_city'" in sql
+    assert "client_geo_source = 'maxmind'" in sql
     assert "WHERE detection_granularity IS NULL" in sql
     assert sql.count("partition_date <= DATE '${LEGACY_THROUGH_DAY}'") == 5
     assert "SET detection_granularity = 'metro'" not in sql
+
+
+def test_new_detection_rows_record_ipinfo_provenance():
+    for step in ("02_detect_anomalies_union.sql", "03_build_transient_events_union.sql"):
+        sql = loader.load_query(step, {**PARAMS, "DETECTION_GRANULARITY": "metro"})
+        assert "client_geo_source" in sql
+        assert "'ipinfo'" in sql
+
+
+def test_provenance_schema_migration_covers_every_pipeline_output():
+    sql = loader.load_query("add_client_geo_source_columns.sql", {"DS": "hermes_staging"})
+    for table in (
+        "anomaly_counts_union",
+        "transient_events_union",
+        "events_with_as_and_geoloc",
+        "giga_meter_measurements",
+        "events_explained_daily",
+    ):
+        assert f"hermes_staging.{table}`" in sql
+    assert sql.count("ADD COLUMN IF NOT EXISTS client_geo_source STRING") == 5
 
 
 def test_staging_builder_emits_every_numbered_sql_stage(tmp_path):

@@ -14,73 +14,13 @@
 -- PARTITION BY partition_date
 -- AS
 DECLARE _detection_granularity STRING DEFAULT '${DETECTION_GRANULARITY}';
-ASSERT _detection_granularity IN ('maxmind_city', 'metro')
-  AS 'DETECTION_GRANULARITY must be maxmind_city or metro';
+ASSERT _detection_granularity IN ('city', 'metro')
+  AS 'DETECTION_GRANULARITY must be city or metro';
 
--- Resolve distinct coordinates once. The WHERE predicate makes this table
--- empty in city mode, avoiding the spatial join entirely. metro_polygons_v2
--- uses ordinary positive geometry and a stable, country-constrained resolver.
-CREATE TEMP TABLE _source_metro_lookup AS
-WITH source_coordinates AS (
-  SELECT DISTINCT
-    client.Geo.Latitude AS lat,
-    client.Geo.Longitude AS lon,
-    client.Geo.CountryCode AS country_code
-  FROM `mlab-collaboration.${DS}.merged_download_upload`
-  WHERE _detection_granularity = 'metro'
-    AND partition_date BETWEEN '${ONE_WEEK_EARLIER}' AND '${DAY}'
-    AND client.Geo.Latitude IS NOT NULL
-    AND client.Geo.Longitude IS NOT NULL
-    AND client.Geo.CountryCode IS NOT NULL
-),
-covered AS (
-  SELECT
-    c.lat, c.lon, c.country_code,
-    ARRAY_AGG(
-      STRUCT(mp.metro, mp.state_resolved,
-             ST_DISTANCE(ST_GEOGPOINT(c.lon, c.lat),
-                         ST_GEOGPOINT(mp.seed_lon, mp.seed_lat)) AS distance_m)
-      ORDER BY ST_DISTANCE(ST_GEOGPOINT(c.lon, c.lat),
-                           ST_GEOGPOINT(mp.seed_lon, mp.seed_lat)),
-               mp.metro_id
-      LIMIT 1
-    )[OFFSET(0)] AS pick
-  FROM source_coordinates c
-  JOIN `${METRO_POLYGONS}` mp
-    ON mp.country_code = c.country_code
-   AND ST_COVERS(mp.polygon, ST_GEOGPOINT(c.lon, c.lat))
-  GROUP BY c.lat, c.lon, c.country_code
-),
-uncovered AS (
-  SELECT c.*
-  FROM source_coordinates c
-  LEFT JOIN covered v USING (lat, lon, country_code)
-  WHERE v.lat IS NULL
-),
-fallback AS (
-  SELECT
-    c.lat, c.lon, c.country_code,
-    ARRAY_AGG(
-      STRUCT(mp.metro, mp.state_resolved,
-             ST_DISTANCE(ST_GEOGPOINT(c.lon, c.lat),
-                         ST_GEOGPOINT(mp.seed_lon, mp.seed_lat)) AS distance_m)
-      ORDER BY ST_DISTANCE(ST_GEOGPOINT(c.lon, c.lat),
-                           ST_GEOGPOINT(mp.seed_lon, mp.seed_lat)),
-               mp.metro_id
-      LIMIT 1
-    )[OFFSET(0)] AS pick
-  FROM uncovered c
-  JOIN `${METRO_POLYGONS}` mp
-    ON mp.country_code = c.country_code
-  GROUP BY c.lat, c.lon, c.country_code
-)
-SELECT lat, lon, country_code, pick.metro AS metro,
-       pick.state_resolved AS metro_state
-FROM covered
-UNION ALL
-SELECT lat, lon, country_code, pick.metro AS metro,
-       pick.state_resolved AS metro_state
-FROM fallback;
+-- _source_metro_lookup is gone: Phase A0 already resolved every client IP
+-- to a metro in unified_src_ip_to_geoloc, so detection no longer does a spatial
+-- join at all. That also removes the ST_COVERS/ST_DWITHIN work from this step.
+
 
 INSERT INTO `mlab-collaboration.${DS}.anomaly_counts_union`
   (src_asn, src_country, src_asn_name, src_city, src_lat, src_lon, src_state,
@@ -99,32 +39,93 @@ INSERT INTO `mlab-collaboration.${DS}.anomaly_counts_union`
    mann_whitney_loss_severity, t_test_latency, client_name,
    anomaly_rtt_count, anomaly_throughput_count,
    anomaly_upload_throughput_count, anomaly_loss_rate_count, partition_date,
-   detection_granularity, src_group_label)
+   detection_granularity, src_group_label, client_geo_source)
 
 WITH
 MeasurementsWithGroup AS (
+  -- Client geography comes from IPInfo (unified_src_ip_to_geoloc, written by
+  -- Phase A0), NOT MaxMind. Rewriting the client.Geo struct in place means every
+  -- downstream reference keeps working unchanged, and none of them can
+  -- accidentally still be reading MaxMind.
+  --
+  -- Why replace rather than blend: MaxMind emits a single designated point per
+  -- country when it cannot place a client below country level -- 547,105
+  -- measurements on 864 coordinates across 185 countries on 2026-08-07, sometimes
+  -- the geographic centre (India 21.997,79.001), often the capital (Tokyo, London,
+  -- Paris, Jakarta). Metro grouping piled those into whichever metro contains the
+  -- point, leaving Tokyo 53.3% and Paris 55.9% synthetic. IPInfo resolves them
+  -- properly: 8,066 distinct cities at a median /24.5.
+  --
+  -- Where IPInfo has nothing the geography is NULL, deliberately. Coverage is
+  -- 99.995% of client IPs / 99.05% of measurements (measured against the 2-month
+  -- stale BigQuery snapshot, so a lower bound on the daily MMDB). A NULL city
+  -- yields a NULL group label, which is exactly how MaxMind's unplaceable clients
+  -- already behaved -- excluded rather than guessed at.
+  --
+  -- NOTE: Subdivision1ISOCode now carries IPInfo's full region NAME, not an ISO
+  -- code, so city-mode labels become `Paris-Ile-de-France-FR` rather than
+  -- `Paris-IDF-FR`. That matches the metro label shape.
   SELECT
-    ndt.*,
+    ndt.* REPLACE (
+      (SELECT AS STRUCT ndt.client.* REPLACE (
+          (SELECT AS STRUCT ndt.client.Geo.* REPLACE (
+              g.city_ip_info        AS City,
+              g.region_ip_info      AS Subdivision1ISOCode,
+              g.country_ip_info     AS CountryCode,
+              g.lat_ip_info         AS Latitude,
+              g.lon_ip_info         AS Longitude
+          )) AS Geo
+      )) AS client
+    ),
     IF(
       _detection_granularity = 'metro',
-      sm.metro,
-      CONCAT(ndt.client.Geo.City, '-', ndt.client.Geo.Subdivision1ISOCode,
-             '-', ndt.client.Geo.CountryCode)
+      g.metro,
+      CONCAT(g.city_ip_info, '-', g.region_ip_info, '-', g.country_ip_info)
     ) AS detection_src_city,
-    IF(
-      _detection_granularity = 'metro',
-      sm.metro_state,
-      ndt.client.Geo.Subdivision1ISOCode
-    ) AS detection_src_state
+    -- The client's region either way: in metro mode the metro was resolved from
+    -- this same coordinate, so IPInfo's region is the consistent answer and
+    -- avoids re-parsing it out of the metro string.
+    g.region_ip_info AS detection_src_state
   FROM `mlab-collaboration.${DS}.merged_download_upload` ndt
-  LEFT JOIN _source_metro_lookup sm
-    ON ndt.client.Geo.Latitude = sm.lat
-   AND ndt.client.Geo.Longitude = sm.lon
-   AND ndt.client.Geo.CountryCode = sm.country_code
+  LEFT JOIN (
+    -- One row per IP: the geolocation closest in time to the day being detected,
+    -- mirroring _closest_geo in 04.
+    SELECT * EXCEPT(rn) FROM (
+      SELECT ip_address, city_ip_info, region_ip_info, country_ip_info,
+             lat_ip_info, lon_ip_info, metro,
+             ROW_NUMBER() OVER (
+               PARTITION BY ip_address
+               ORDER BY ABS(DATE_DIFF(partition_date, DATE '${DAY}', DAY)) ASC,
+                        partition_date DESC
+             ) AS rn
+      -- BOTH address families. The enrichment writes IPv4 and IPv6 client
+      -- geolocation to separate tables (the enricher is instantiated once per
+      -- family, each with its own `tables` dict), so reading only the IPv4 table
+      -- silently drops every IPv6 client: 1,169,928 of 2,564,893 distinct client
+      -- IPs on 2026-08-07 (45.6%), carrying 1,786,805 of 4,855,404 measurements
+      -- (36.8%). Those measurements got a NULL group label and left detection
+      -- entirely -- which is why the first staging run showed transient events
+      -- down 70% rather than the expected small change.
+      --
+      -- UNION ALL, not a join: an address belongs to exactly one family, so the
+      -- two tables are disjoint on ip_address and the ROW_NUMBER below still
+      -- yields one row per IP.
+      FROM (
+        SELECT ip_address, partition_date, city_ip_info, region_ip_info,
+               country_ip_info, lat_ip_info, lon_ip_info, metro
+        FROM `mlab-collaboration.hermes.unified_src_ip_to_geoloc`
+        UNION ALL
+        SELECT ip_address, partition_date, city_ip_info, region_ip_info,
+               country_ip_info, lat_ip_info, lon_ip_info, metro
+        FROM `mlab-collaboration.hermes.unified_src_ip_to_geoloc_ipv6`
+      )
+    ) WHERE rn = 1
+  ) g
+    ON ndt.client_ip = g.ip_address
   WHERE ndt.partition_date BETWEEN '${ONE_WEEK_EARLIER}' AND '${DAY}'
     -- An unresolved coordinate is not a metro. Do not silently mix a city
     -- fallback into a partition labelled as metro-derived.
-    AND (_detection_granularity != 'metro' OR sm.metro IS NOT NULL)
+    AND (_detection_granularity != 'metro' OR g.metro IS NOT NULL)
 ),
 --------------------------------------------------------------------------------
 -- A) Find consistent IP addresses (distance + "metro_rank"), then keep them.
@@ -1018,7 +1019,8 @@ AnomalyCounts AS (
     -- rollback safe; these fields remain last for compatibility with the ALTER.
     -- See docs/proposals/2026-08-group-granularity.md.
     _detection_granularity AS detection_granularity,
-    src_city AS src_group_label
+    src_city AS src_group_label,
+    'ipinfo' AS client_geo_source
   FROM DayLevelAnomaly
   GROUP BY
     src_asn,

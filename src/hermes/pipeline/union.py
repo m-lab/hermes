@@ -16,8 +16,8 @@ from hermes.sql import loader
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
-DetectionGranularity = Literal["maxmind_city", "metro"]
-DETECTION_GRANULARITIES: tuple[DetectionGranularity, ...] = ("maxmind_city", "metro")
+DetectionGranularity = Literal["city", "metro"]
+DETECTION_GRANULARITIES: tuple[DetectionGranularity, ...] = ("city", "metro")
 
 # SQL files executed sequentially for each date.
 # 01-03 run first, then a Python enrichment step geolocates new topology IPs,
@@ -38,6 +38,13 @@ SQL_FILES_DETECT = [
 ]
 
 SQL_FILES_PRE_ENRICHMENT = SQL_FILES_MERGE + SQL_FILES_DETECT
+
+#: Length of step 02's baseline window, in days: it compares ``${DAY}`` against
+#: ``${ONE_WEEK_EARLIER}``..``${DAY}``. Phase A0 must geolocate client IPs across
+#: this whole window, not just the batch, or the baseline is grouped on a fraction
+#: of its traffic while the target day uses all of it. Shared so the two cannot
+#: drift apart -- they were separate literals, and only the SQL side was obvious.
+BASELINE_DAYS = 7
 
 SQL_FILES_POST_ENRICHMENT = [
     "04_mapping_union.sql",
@@ -385,7 +392,7 @@ def ensure_baseline(
     dates: list[date],
     max_workers: int | None,
     window_days: int = 7,
-    detection_granularity: DetectionGranularity = "maxmind_city",
+    detection_granularity: DetectionGranularity = "metro",
     dataset: str = DEFAULT_DATASET,
 ) -> None:
     """Auto-fill missing baseline days by running step 01 for them.
@@ -605,7 +612,11 @@ def execute_query(query: str, project_id: str, description: str = "") -> bigquer
 
 
 def run_enrichment(
-    date_str: str, project_id: str, lookback_days: int = 30, source: str = "topology"
+    date_str: str,
+    project_id: str,
+    lookback_days: int = 30,
+    source: str = "topology",
+    dataset: str = DEFAULT_DATASET,
 ) -> None:
     """Geolocate new IPs with IPInfo.
 
@@ -632,8 +643,13 @@ def run_enrichment(
         ~20.5 GiB for 7 days and ~86.4 GiB for 30 — so a single-date nightly
         should not pay for 30. Defaults to 30 to preserve the old behaviour for
         any caller that does not size it.
+    source
+        ``"topology"`` (hop IPs, Phase B) or ``"clients"`` (client IPs, Phase A0).
+    dataset
+        Operational dataset the client-IP scan reads from, so a ``--target staging``
+        run collects its clients from staging rather than production.
     """
-    union_transient_table = "mlab-collaboration.hermes_union.transient_events_union"
+    union_transient_table = f"mlab-collaboration.{dataset}.transient_events_union"
 
     for ipv6 in (False, True):
         label = "IPv6" if ipv6 else "IPv4"
@@ -647,10 +663,26 @@ def run_enrichment(
 
         # 1. Geolocate new IPs (IPInfo + RIPE IPMap)
         #    topology -> unified_ip_to_geoloc, clients -> unified_src_ip_to_geoloc
-        enricher.process_geolocation(date_str, lookback_days=lookback_days, source=source)
+        enricher.process_geolocation(
+            date_str, lookback_days=lookback_days, source=source, dataset=dataset
+        )
 
-        # 2 & 3. rDNS + HOIHO — skip for dates >90 days in the past
-        # (lookups would not return the hostnames that were valid then)
+        # 2 & 3. rDNS + HOIHO — topology only.
+        #
+        # Both infer geolocation from *router* hostnames (rDNS naming conventions,
+        # then HOIHO's learned regexes). Client IPs are residential CPE, whose
+        # hostnames encode the access network rather than the subscriber's location,
+        # so there is nothing to learn from them. They are also the expensive part of
+        # enrichment -- HOIHO alone loads a 3.7M-entry rDNS cache -- and, decisively,
+        # they write to the *topology* tables: running them from Phase A0 duplicates
+        # Phase B's work and mutates topology state from a client-geolocation step.
+        if source == "clients":
+            logger.info(f"[enrichment] Skipping rDNS/HOIHO for {date_str} (client IPs)")
+            logger.info(f"[enrichment] Finished {label} enrichment for {date_str}")
+            continue
+
+        # Skip for dates >90 days in the past: lookups would not return the
+        # hostnames that were valid then.
         cutoff_str = (datetime.today() - timedelta(days=90)).strftime("%Y-%m-%d")
         if date_str >= cutoff_str:
             if ipv6:
@@ -671,13 +703,13 @@ def _run_sql_steps(
     project_id,
     sql_files,
     skip_data_check=False,
-    detection_granularity: DetectionGranularity = "maxmind_city",
+    detection_granularity: DetectionGranularity = "metro",
     dataset: str = DEFAULT_DATASET,
 ):
     """Run a list of SQL steps for a single date, skipping steps already done."""
     day_str = date.strftime("%Y-%m-%d")
     params = {
-        "ONE_WEEK_EARLIER": (date - timedelta(days=7)).strftime("%Y-%m-%d"),
+        "ONE_WEEK_EARLIER": (date - timedelta(days=BASELINE_DAYS)).strftime("%Y-%m-%d"),
         "DAY": day_str,
         "DETECTION_GRANULARITY": detection_granularity,
         "DS": dataset,
@@ -1090,7 +1122,7 @@ def _run_parallel_sql(
     sql_files,
     max_workers,
     skip_data_check,
-    detection_granularity: DetectionGranularity = "maxmind_city",
+    detection_granularity: DetectionGranularity = "metro",
     dataset: str = DEFAULT_DATASET,
 ):
     """Run SQL steps for multiple dates in parallel. Returns list of result strings."""
@@ -1145,14 +1177,17 @@ def run_dates(
     tomography_backend: str = "python",
     auto_baseline: bool = True,
     tomography_workers: int | None = None,
-    detection_granularity: DetectionGranularity = "maxmind_city",
+    detection_granularity: DetectionGranularity = "metro",
     dataset: str = DEFAULT_DATASET,
 ) -> None:
     """Run the full union pipeline for a batch of dates.
 
     Executes four phases:
 
-    - **Phase A** — SQL steps 01-03 for all dates in parallel.
+    - **Phase A1** — SQL step 01 for all dates in parallel.
+    - **Phase A0** — source-IP geolocation (IPInfo) for the batch, so
+      detection groups on IPInfo geography rather than MaxMind's.
+    - **Phase A2** — SQL steps 02-03 for the dates that merged.
     - **Phase B** — Enrichment once (geolocation + rDNS for topology IPs,
       covering all dates via the 30-day lookback window).
     - **Phase C** — SQL steps 04 + temporal tomography for all dates in parallel.
@@ -1174,9 +1209,9 @@ def run_dates(
     tomography_backend
         Correlation tomography backend (python v2 hybrid).
     detection_granularity
-        Source-location key used before anomaly aggregation. ``maxmind_city``
-        preserves the historical algorithm; ``metro`` pools measurements by
-        the canonical metro resolver.
+        Client-location key used before anomaly aggregation. ``city`` and
+        ``metro`` both use IPInfo-derived geography; ``metro`` pools raw
+        measurements by the canonical metro resolver.
     """
     if not dates:
         logger.info("No dates to process.")
@@ -1212,17 +1247,79 @@ def run_dates(
     else:
         warn_thin_baselines(project_id, dates)
 
-    # ── Phase A: steps 01-03 in parallel ──────────────────────────────────
-    logger.info(f"═══ Phase A: Running steps 01-03 for {len(dates)} date(s) ═══")
-    results_a = _run_parallel_sql(
+    # ── Phase A1: step 01 (merge) ─────────────────────────────────────────
+    # Split from detection so source-IP geolocation can run in between. Step 01
+    # produces merged_download_upload, which is where the client IPs come from,
+    # and steps 02/03 group on client geography -- so the order is forced.
+    logger.info(f"═══ Phase A1: Running step 01 for {len(dates)} date(s) ═══")
+    results_a1 = _run_parallel_sql(
         dates,
         project_id,
-        SQL_FILES_PRE_ENRICHMENT,
+        SQL_FILES_MERGE,
         max_workers,
         skip_data_check,
         detection_granularity,
         dataset=dataset,
     )
+    merged_dates = [d for d, r in zip(dates, results_a1, strict=True) if r.startswith("Success:")]
+
+    # ── Phase A0: source-IP geolocation ───────────────────────────────────
+    # Resolve client IPs with IPInfo into unified_src_ip_to_geoloc before
+    # detection groups on them. MaxMind emits a single designated point per
+    # country when it cannot place a client below country level -- on 2026-08-07
+    # that was 547,105 measurements on 864 coordinates across 185 countries,
+    # which metro grouping would otherwise pile into whichever metro contains
+    # that point (Tokyo 53.3% synthetic, Paris 55.9%).
+    if merged_dates:
+        # The window must cover step 02's BASELINE, not just the batch. 02 compares
+        # the target day against `${ONE_WEEK_EARLIER}`..`${DAY}` of
+        # merged_download_upload, and it groups every one of those days by client
+        # geography. Sizing this to the batch span alone left the baseline days
+        # geolocated at 17-24% of measurements, so each group's history was computed
+        # from a fifth of its traffic while the target day used all of it -- not a
+        # like-for-like comparison, and the dominant cause of the first staging run's
+        # 70% drop in transient events.
+        #
+        # In steady state this costs little: the staleness join only re-enriches IPs
+        # absent from the table or older than 30 days, so a nightly still enriches
+        # roughly one day of new client IPs. The wider window is what makes a cold
+        # start, or a gap after a failed run, self-healing.
+        src_lookback = (max(merged_dates) - min(merged_dates)).days + BASELINE_DAYS
+        logger.info(
+            f"═══ Phase A0: Source-IP geolocation "
+            f"(date={max(merged_dates)}, lookback={src_lookback}d) ═══"
+        )
+        # Fatal, deliberately. This was non-fatal while steps 02/03 still read
+        # `client.Geo.*`, because detection could fall back to MaxMind geography and
+        # a failure here only cost quality. Those steps now take client geography
+        # solely from unified_src_ip_to_geoloc, so a failed A0 does not degrade the
+        # batch -- it produces a batch in which every measurement is grouped under
+        # NULL, which looks like "no anomalies" rather than like a failure. Better
+        # to stop and leave the partition absent.
+        run_enrichment(
+            max(merged_dates).strftime("%Y-%m-%d"),
+            project_id,
+            lookback_days=src_lookback,
+            source="clients",
+            dataset=dataset,
+        )
+
+    # ── Phase A2: steps 02-03 (detection) ─────────────────────────────────
+    logger.info(f"═══ Phase A2: Running steps 02-03 for {len(merged_dates)} date(s) ═══")
+    results_a2 = _run_parallel_sql(
+        merged_dates,
+        project_id,
+        SQL_FILES_DETECT,
+        max_workers,
+        skip_data_check,
+        detection_granularity,
+        dataset=dataset,
+    )
+
+    # Recombine so the per-date reporting below still lines up with `dates`:
+    # a date that failed 01 keeps that error, otherwise it carries its 02/03 result.
+    a2_by_date = dict(zip(merged_dates, results_a2, strict=True))
+    results_a = [a2_by_date.get(d, r) for d, r in zip(dates, results_a1, strict=True)]
 
     # Determine which dates succeeded phase A (eligible for enrichment + phase C)
     successful_dates = []
@@ -1272,7 +1369,7 @@ def run_dates(
         f"═══ Phase B: Running enrichment once (date={enrichment_date}, "
         f"lookback={enrichment_lookback}d) ═══"
     )
-    run_enrichment(enrichment_date, project_id, lookback_days=enrichment_lookback)
+    run_enrichment(enrichment_date, project_id, lookback_days=enrichment_lookback, dataset=dataset)
 
     # ── Phase C: steps 04 + temporal tomography in parallel ─────────────
     logger.info(
@@ -1413,9 +1510,9 @@ def main() -> None:
     parser.add_argument(
         "--detection-granularity",
         choices=DETECTION_GRANULARITIES,
-        default="maxmind_city",
-        help="Source geography used by anomaly detection and every downstream "
-        "grouping step (default: maxmind_city).",
+        default="metro",
+        help="Client grouping used by anomaly detection and every downstream "
+        "grouping step (default: metro; geography source: IPInfo).",
     )
     parser.add_argument(
         "--target",
@@ -1595,15 +1692,12 @@ def main() -> None:
     dates_to_actually_process = []
     for current_date in dates_to_process:
         if current_date in existing_dates and not args.force_rerun:
-            # Existing data is skippable only when it was produced by the mode
-            # the operator requested. A city partition must never make a metro
-            # invocation look successfully complete.
-            step_already_done(
-                project_id,
-                final_table,
-                current_date.strftime("%Y-%m-%d"),
-                parse_detection_granularity(args.detection_granularity),
-            )
+            # The final partition is already complete and this branch never
+            # writes to it, so its historical regime cannot conflict with the
+            # requested regime. Strict checks remain in _run_sql_steps for every
+            # table/date that may actually be appended. This distinction lets a
+            # daily metro run skip yesterday's legacy city partition and process
+            # the newly due date instead of failing before any work begins.
             logger.info(f"Skipping date {current_date.strftime('%Y-%m-%d')} (already processed).")
         else:
             dates_to_actually_process.append(current_date)

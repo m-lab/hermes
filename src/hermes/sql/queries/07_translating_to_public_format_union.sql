@@ -16,7 +16,7 @@ INSERT INTO `mlab-collaboration.${DS}.events_explained_daily`
    max_baseline_forward_distance, max_daily_reverse_distance,
    max_baseline_reverse_distance, attribution_method, confidence_tier,
    detection_granularity, src_metro, src_group_label, n_dayof,
-   src_match_granularity)
+   src_match_granularity, client_geo_source)
 -- Rebuild the total set of anomalous src-dst pairs
 WITH
   -- Data-sufficiency gate: only consider user groups with >= 10 measurements on
@@ -34,7 +34,8 @@ WITH
   -- See docs/proposals/2026-08-group-granularity.md.
   group_identity AS (
     SELECT src_asn, src_group_label, dst_site, ip_version,
-      ANY_VALUE(detection_granularity) AS detection_granularity
+      ANY_VALUE(detection_granularity) AS detection_granularity,
+      ANY_VALUE(client_geo_source) AS client_geo_source
     FROM `mlab-collaboration.${DS}.events_with_as_and_geoloc`
     WHERE partition_date = '${DAY}'
     GROUP BY src_asn, src_group_label, dst_site, ip_version
@@ -461,6 +462,7 @@ combined_with_anomaly_summary AS (
     dist.max_daily_reverse_distance,
     dist.max_baseline_reverse_distance,
     gi.detection_granularity,
+    gi.client_geo_source,
   FROM
     combined_with_AS_meta AS combined
   INNER JOIN anomaly_summary AS summary
@@ -486,7 +488,7 @@ final_result AS (
   -- Add or update the information_source and source_events fields
   SELECT
     src_asn,
-    -- Display city name. A maxmind_city label is City-ISO-CC and can be parsed
+    -- Display city name. A city label is City-Region-CC and can be parsed
     -- from the right. A metro label is City-FullState-CC; remove the exact
     -- src_state/src_country suffix instead, because both city and state names
     -- may contain '-'.
@@ -564,7 +566,8 @@ final_result AS (
     -- events_with_as_and_geoloc and filterable by sample size.
     src_group_label,
     n_dayof,
-    src_match_granularity
+    src_match_granularity,
+    client_geo_source
   FROM
     combined_with_anomaly_summary
 )

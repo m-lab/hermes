@@ -1,7 +1,7 @@
 """Detection granularity must stay consistent from 02 through to the public table.
 
 02 groups by (src_asn, src_city, dst_site, ip_version), where src_city is the
-selected source-group label: a MaxMind City-Subdivision-Country triple or a
+selected client-group label: an IPInfo City-Region-Country triple or a
 canonical metro. 04 used to REPLACE src_city in place with a
 coarser metro-polygon label, so every stage after it silently re-grouped at a
 granularity nobody tested at: 22.78% of keys covered several tested populations,
@@ -9,8 +9,9 @@ granularity nobody tested at: 22.78% of keys covered several tested populations,
 sufficiency gate counted whole metros rather than the group that fired.
 
 Now: src_group_label carries the exact key 02 grouped on and everything keys on
-it; src_city is a readable label (MaxMind city name + metro's full state);
-src_metro is the rollup; detection_granularity records what the numbers mean.
+it; src_city is a readable label; src_metro is the rollup;
+detection_granularity records the grouping shape; client_geo_source records
+the provider.
 
 See docs/proposals/2026-08-group-granularity.md and its HANDOVER companion.
 """
@@ -116,14 +117,49 @@ def test_02_declares_granularity_and_the_grouping_key(step02):
     assert "DECLARE _detection_granularity STRING DEFAULT '${DETECTION_GRANULARITY}'" in step02
     assert re.search(r"_detection_granularity\s+AS\s+detection_granularity", step02)
     assert re.search(r"\bsrc_city\s+AS\s+src_group_label\b", step02)
+    assert "'ipinfo' AS client_geo_source" in step02
 
 
 def test_02_resolves_metro_before_statistical_grouping(step02):
-    assert "CREATE TEMP TABLE _source_metro_lookup" in step02
-    assert "ST_COVERS(mp.polygon" in step02
+    """The metro must be settled before any statistic is computed.
+
+    It used to be resolved inside 02 by a spatial join (_source_metro_lookup +
+    ST_COVERS). Phase A0 now resolves every client IP to a metro in
+    unified_src_ip_to_geoloc, so 02 reads it rather than computing it and does no
+    spatial join at all. The invariant is unchanged; only where it is satisfied
+    moved. Asserting on the *outcome* rather than the mechanism.
+    """
+    assert "unified_src_ip_to_geoloc" in step02, "metro must come from Phase A0"
+    # Check the DDL, not the bare name -- a comment explaining the removal is fine.
+    assert "CREATE TEMP TABLE _source_metro_lookup" not in step02, (
+        "02 must no longer resolve metro itself"
+    )
+    assert "ST_COVERS(mp.polygon" not in step02, "02 must no longer do a spatial join"
     assert "MeasurementsWithGroup AS" in step02
     assert "ndt.detection_src_city AS src_city" in step02
     assert "PARTITION BY src_asn, src_city, dst_site, ip_version" in step02
+
+
+def test_02_client_geography_comes_from_ipinfo_not_maxmind(step02):
+    """MaxMind's client.Geo is replaced wholesale, not blended.
+
+    The struct is rewritten in place so every downstream reference reads IPInfo;
+    the guard is that no MaxMind value can survive into a group label. A blended
+    COALESCE would silently reintroduce MaxMind's country-centroid fallback,
+    which is what made Tokyo 53.3% and Paris 55.9% synthetic under metro grouping.
+    """
+    for field in (
+        "city_ip_info",
+        "region_ip_info",
+        "country_ip_info",
+        "lat_ip_info",
+        "lon_ip_info",
+    ):
+        assert f"g.{field}" in step02, f"{field} must feed the rewritten client.Geo"
+    assert "AS Geo" in step02 and "AS client" in step02, "client.Geo must be replaced in place"
+    assert "COALESCE(g.city_ip_info, ndt.client.Geo.City)" not in step02, (
+        "must not fall back to MaxMind"
+    )
 
 
 def test_03_reattaches_raw_measurements_with_the_selected_group(step03):
@@ -141,6 +177,7 @@ def test_03_carries_identity_without_synthesising_it(step03):
     for col in ("detection_granularity", "src_group_label"):
         assert f"ANY_VALUE(a.{col})" in step03
         assert not re.search(rf"IF\(\s*a\.src_asn IS NULL[^)]*\)\s*AS\s+{col}\b", step03)
+    assert step03.count("'ipinfo'                           AS client_geo_source") == 2
 
 
 # ---------------------------------------------------------------------------
@@ -273,6 +310,7 @@ def test_07_public_table_is_joinable_and_filterable(step07):
         "detection_granularity",
         "src_metro",
         "src_match_granularity",
+        "client_geo_source",
     ):
         assert col in step07
 
@@ -294,6 +332,7 @@ def test_public_bootstrap_ddl_contains_the_identity_contract():
         "src_group_label STRING",
         "n_dayof INT64",
         "src_match_granularity STRING",
+        "client_geo_source STRING",
     ):
         assert col in ddl
 

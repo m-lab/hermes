@@ -39,7 +39,8 @@ chmod 600 /etc/hermes/hermes.env
 
 ### 3. Run the pipeline
 
-**Default mode** (processes last 2 days — use this for daily cron):
+**Default mode** (processes last 2 days with metro grouping and IPInfo client
+geography — use this for daily cron):
 
 ```bash
 docker run --rm \
@@ -106,6 +107,7 @@ All options from `hermes_pipeline_union.py` are passed through:
 | `--delete-first` | Delete existing output before processing |
 | `--skip-data-check` | Skip input data availability check |
 | `--dry-run` | Show plan without executing |
+| `--detection-granularity city\|metro` | Client grouping shape (default: `metro`; both modes use IPInfo) |
 
 ## Environment Variables
 

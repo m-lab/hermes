@@ -127,11 +127,12 @@ Partitioned by `partition_date`. One row per transient event, carrying all the o
 
 ### `forward_updated_node_details` (enriched forward path)
 
-`ARRAY<STRUCT>` — one element per TTL hop, ordered by TTL ascending (client to server direction).
+`ARRAY<STRUCT>` — one element per TTL hop, ordered by TTL ascending in Scamper's
+measured server-to-client direction.
 
 | Sub-field | Type | Description |
 |-----------|------|-------------|
-| `ttl` | `INT64` | Time-to-live / hop number (1 = first hop from client) |
+| `ttl` | `INT64` | Time-to-live / hop number (1 = first hop from the M-Lab server) |
 | `addr` | `STRING` | IP address of the router at this hop (`"*"` if non-responsive) |
 | `rdns_name` | `STRING` | Reverse DNS hostname of the hop IP |
 | `rtts` | `FLOAT64` | Round-trip time to this hop (ms); `-1` if no response |
@@ -150,9 +151,9 @@ Partitioned by `partition_date`. One row per transient event, carrying all the o
 | `geo_partition_date` | `DATE` | Date of the geolocation data used (NULL for HOIHO/server metadata) |
 | `ixp_partition_date` | `DATE` | Date of the IXP membership data used |
 | `facilities_info` | `ARRAY<STRUCT>` | Reserved for colocation facility data (currently NULL) |
-| `cumulative_distance_km` | `FLOAT64` | Cumulative geographic distance from client to this hop (km) |
-| `distance_to_destination_km` | `FLOAT64` | Great-circle distance from this hop to the server (km) |
-| `speed_of_internet_fiber` | `FLOAT64` | Minimum possible RTT based on fiber distance at 200 km/ms (ms) |
+| `cumulative_distance_km` | `FLOAT64` | Cumulative geographic distance from the M-Lab server to this hop (km) |
+| `distance_to_destination_km` | `FLOAT64` | Great-circle remaining distance from this hop to the client (km) |
+| `speed_of_internet_fiber` | `FLOAT64` | Lower-bound RTT to this hop: traced server-to-hop distance plus a geodesic hop-to-server return leg, at 200 km/ms (ms) |
 | `distance_rtt_check` | `STRING` | `"Above threshold"` if fiber-speed RTT > observed RTT (potential geolocation error); `"Below threshold"` otherwise |
 | `above_baseline_flag` | `STRING` | Always NULL on forward path (computed only for reverse) |
 | `increasing_latency_flag` | `STRING` | Always NULL on forward path |
@@ -160,7 +161,8 @@ Partitioned by `partition_date`. One row per transient event, carrying all the o
 
 ### `reverse_updated_node_details` (enriched reverse path)
 
-`ARRAY<STRUCT>` — one element per hop on the reverse traceroute (server to client direction), ordered by hop number.
+`ARRAY<STRUCT>` — one element per hop on the reverse traceroute in its measured
+client-to-server direction, ordered by hop number.
 
 Same sub-fields as the forward path, plus:
 

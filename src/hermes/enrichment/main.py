@@ -92,7 +92,11 @@ class HermesEnrichment:
         return self.tables["src_ip_to_geoloc" if source == "clients" else "ip_to_geoloc"]
 
     def process_geolocation(
-        self, date: str, lookback_days: int = 30, source: str = "topology"
+        self,
+        date: str,
+        lookback_days: int = 30,
+        source: str = "topology",
+        dataset: str = "hermes_union",
     ) -> None:
         """Process geolocation data for IPs from transient events that need updates.
 
@@ -108,6 +112,12 @@ class HermesEnrichment:
             by dry run, this scan costs ~3.3 GiB for 1 day, ~20.5 GiB for 7 and
             ~86.4 GiB for 30 — it is the dominant cost of enrichment, not the
             lookup-table join (~2.1 GiB).
+        source
+            ``"topology"`` for hop IPs, ``"clients"`` for client IPs.
+        dataset
+            Operational dataset to collect client IPs from. Only used by
+            ``source="clients"``; ``"topology"`` reads ``transient_events``, whose
+            name is already overridden by the caller.
 
         Notes
         -----
@@ -120,6 +130,19 @@ class HermesEnrichment:
         a candidate, and an IP absent from it does not need enriching for this run.
         """
         logger.info(f"Processing {'IPv6' if self.ipv6 else 'IPv4'} geolocation for date: {date}")
+
+        # For topology IPs a missing IPInfo reader degrades the run: the hop keeps
+        # whatever geolocation the other enrichers supply. For client IPs it does
+        # not degrade, it silently empties the pipeline -- steps 02/03 take client
+        # geography *only* from this table, so every measurement would be grouped
+        # under NULL and detection would compare nothing against nothing. A run that
+        # cannot geolocate clients must stop, not produce an empty answer.
+        if source == "clients" and getattr(self.ipinfo, "reader", None) is None:
+            raise RuntimeError(
+                "IPInfo reader unavailable "
+                f"(db path: {getattr(self.ipinfo, 'ipinfo_db_path', None)}) — refusing to "
+                "run client geolocation, which would leave every measurement ungrouped."
+            )
 
         current_date = datetime.strptime(date, "%Y-%m-%d")
         # Staleness threshold: stored geolocation older than this is refetched.
@@ -135,6 +158,12 @@ class HermesEnrichment:
             # Client IPs come from merged_download_upload, which step 01 writes, so
             # this must run after 01 and before 02/03 -- collecting them from the
             # raw NDT tables instead would duplicate step 01's 122.66 GiB scan.
+            #
+            # The dataset is a parameter because a --target staging run must collect
+            # its clients from the staging merged table. Hardcoding hermes_union here
+            # made a staging A0 read production, which defeats the isolation the
+            # --target flag exists to provide -- staging happens to hold a copy of the
+            # same partitions today, so the leak was invisible in the output.
             ipv6_pred = "" if self.ipv6 else "NOT "
             query = rf"""
             WITH latest_geoloc AS (
@@ -144,7 +173,7 @@ class HermesEnrichment:
             ),
             unique_ips AS (
               SELECT DISTINCT client_ip AS addr
-              FROM `mlab-collaboration.hermes_union.merged_download_upload`
+              FROM `mlab-collaboration.{dataset}.merged_download_upload`
               WHERE partition_date BETWEEN '{start_date}' AND '{date}'
                 AND client_ip IS NOT NULL
                 AND {ipv6_pred}REGEXP_CONTAINS(client_ip, ':')

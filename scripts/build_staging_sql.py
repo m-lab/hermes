@@ -37,7 +37,7 @@ def build(
     day: str,
     dataset: str,
     out: Path,
-    detection_granularity: str = "maxmind_city",
+    detection_granularity: str = "metro",
 ) -> int:
     if dataset == "hermes_union":
         print("REFUSED: this script is for rehearsal datasets, not production.")
@@ -106,8 +106,8 @@ if __name__ == "__main__":
     ap.add_argument("--out", type=Path, required=True)
     ap.add_argument(
         "--detection-granularity",
-        choices=("maxmind_city", "metro"),
-        default="maxmind_city",
+        choices=("city", "metro"),
+        default="metro",
     )
     a = ap.parse_args()
     sys.exit(build(a.day, a.dataset, a.out, a.detection_granularity))

@@ -28,8 +28,8 @@ from google.cloud import bigquery
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
-DetectionGranularity = Literal["maxmind_city", "metro"]
-DETECTION_GRANULARITIES: tuple[DetectionGranularity, ...] = ("maxmind_city", "metro")
+DetectionGranularity = Literal["city", "metro"]
+DETECTION_GRANULARITIES: tuple[DetectionGranularity, ...] = ("city", "metro")
 
 
 def print_active_credentials() -> None:
@@ -176,7 +176,7 @@ def process_date_with_sql(
     project_id: str,
     sql_folder: str,
     sql_file: str,
-    detection_granularity: DetectionGranularity = "maxmind_city",
+    detection_granularity: DetectionGranularity = "metro",
 ) -> str:
     """Process a single date with the specified SQL file.
 
@@ -328,8 +328,9 @@ def main() -> None:
     parser.add_argument(
         "--detection-granularity",
         choices=DETECTION_GRANULARITIES,
-        default="maxmind_city",
-        help="Value substituted for ${DETECTION_GRANULARITY} (default: maxmind_city).",
+        default="metro",
+        help="Client grouping substituted for ${DETECTION_GRANULARITY} "
+        "(default: metro; geography source: IPInfo).",
     )
     parser.add_argument(
         "--dry-run", action="store_true", help="Show what would be done without executing"
