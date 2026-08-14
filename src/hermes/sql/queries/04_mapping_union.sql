@@ -1218,13 +1218,17 @@ distance_rtt_checks AS (
       WHEN latitude IS NULL OR longitude IS NULL OR src_lat IS NULL OR src_lon IS NULL THEN NULL
       ELSE ST_DISTANCE(ST_GEOGPOINT(longitude, latitude), ST_GEOGPOINT(src_lon, src_lat)) / 1000
     END AS distance_to_destination_km,
+    -- Scamper measures server -> client: cumulative_distance_km is the traced
+    -- server-to-hop leg, while the geodesic hop-to-server leg closes a conservative
+    -- RTT lower bound. This intentionally uses dst (server), unlike the remaining
+    -- distance above, which uses src (client).
     CASE
-      WHEN cumulative_distance_km IS NULL OR latitude IS NULL OR longitude IS NULL OR src_lat IS NULL OR src_lon IS NULL THEN NULL
+      WHEN cumulative_distance_km IS NULL OR latitude IS NULL OR longitude IS NULL OR dst_lat IS NULL OR dst_lon IS NULL THEN NULL
       ELSE (cumulative_distance_km / 200)
         + (ST_DISTANCE(ST_GEOGPOINT(longitude, latitude), ST_GEOGPOINT(dst_lon, dst_lat)) / (200 * 1000))
     END AS speed_of_internet_fiber,
     CASE
-      WHEN cumulative_distance_km IS NULL OR latitude IS NULL OR longitude IS NULL OR src_lat IS NULL OR src_lon IS NULL THEN NULL
+      WHEN cumulative_distance_km IS NULL OR latitude IS NULL OR longitude IS NULL OR dst_lat IS NULL OR dst_lon IS NULL THEN NULL
       WHEN (
         (cumulative_distance_km / 200)
         + ST_DISTANCE(ST_GEOGPOINT(longitude, latitude), ST_GEOGPOINT(dst_lon, dst_lat)) / (200 * 1000)
