@@ -174,6 +174,7 @@ def execute_query(query: str, project_id: str, description: str = "") -> bigquer
 def process_date_with_sql(
     date: _dt.date,
     project_id: str,
+    dataset: str,
     sql_folder: str,
     sql_file: str,
     detection_granularity: DetectionGranularity = "metro",
@@ -186,6 +187,8 @@ def process_date_with_sql(
         The date to process; substituted as ``${DAY}`` and ``${ONE_WEEK_EARLIER}``.
     project_id
         GCP project ID.
+    dataset
+        Dataset substituted as ``${DS}`` in dataset-aware pipeline SQL.
     sql_folder
         Directory containing the SQL file.
     sql_file
@@ -214,6 +217,7 @@ def process_date_with_sql(
     params = {
         "ONE_WEEK_EARLIER": (date - timedelta(days=7)).strftime("%Y-%m-%d"),
         "DAY": date.strftime("%Y-%m-%d"),
+        "DS": dataset,
         "DETECTION_GRANULARITY": detection_granularity,
     }
 
@@ -231,11 +235,12 @@ def process_date_with_sql(
 
 def process_date_worker(args: tuple) -> str:
     """Worker function for multiprocessing — processes a single date."""
-    date, project_id, sql_folder, sql_file, detection_granularity = args
+    date, project_id, dataset, sql_folder, sql_file, detection_granularity = args
     try:
         return process_date_with_sql(
             date,
             project_id,
+            dataset,
             sql_folder,
             sql_file,
             detection_granularity,
@@ -283,9 +288,13 @@ def validate_table_name(table_name: str) -> bool:
     Returns
     -------
     bool
-        ``True`` if the name contains at least one dot; ``False`` otherwise.
+        ``True`` if the name has exactly three non-empty components; ``False`` otherwise.
     """
-    if not table_name or "." not in table_name:
+    if (
+        not table_name
+        or len(table_name.split(".")) != 3
+        or any(not part for part in table_name.split("."))
+    ):
         logger.error("Table name must be in format: project.dataset.table")
         return False
     return True
@@ -349,7 +358,7 @@ def main() -> None:
         sys.exit(1)
 
     # Set up project ID
-    project_id = args.table.split(".")[0]
+    project_id, dataset, _ = args.table.split(".")
 
     # Print credentials
     print_active_credentials()
@@ -418,6 +427,7 @@ def main() -> None:
         process_date_with_sql(
             dates_to_process[0],
             project_id,
+            dataset,
             args.sql_folder,
             args.sql_file,
             args.detection_granularity,
@@ -434,6 +444,7 @@ def main() -> None:
             (
                 date,
                 project_id,
+                dataset,
                 args.sql_folder,
                 args.sql_file,
                 args.detection_granularity,
@@ -457,6 +468,7 @@ def main() -> None:
             logger.warning("Failed dates:")
             for failure in failed:
                 logger.warning(f"  {failure}")
+            raise SystemExit(1)
 
     logger.info("Table rerun completed successfully!")
 
