@@ -211,10 +211,25 @@ def test_07_sufficiency_gate_counts_the_tested_population(step07):
     totals -- the motivating Castello case.
     """
     assert re.search(
-        r"COUNT\(\*\) AS n_dayof\s*\n\s*FROM[^\n]*\n\s*WHERE[^\n]*\n\s*GROUP BY "
+        r"COUNTIF\(DATE\(window_start\) >= '\$\{DAY\}'\) AS n_dayof,\s*\n"
+        r"\s*COUNTIF\(DATE\(window_start\) <\s+'\$\{DAY\}'\) AS n_baseline\s*\n"
+        r"\s*FROM[^\n]*\n\s*WHERE[^\n]*\n\s*GROUP BY "
         r"src_asn, src_group_label, dst_site, ip_version",
         step07,
     )
+
+
+def test_07_counts_both_windows_in_one_pass(step07):
+    """n_dayof and n_baseline must come from a single scan of the partition.
+
+    events_with_as_and_geoloc is the pipeline's largest table; splitting the two
+    windows into separate CTEs would double the scan for no benefit.
+    """
+    assert "dayof_counts" not in step07, "renamed to group_counts; it counts both windows"
+    # Both counts are defined in one CTE, so adding n_baseline must not have added a
+    # reference to the partition. 7 is the count before n_baseline existed.
+    assert step07.count("events_with_as_and_geoloc") == 7
+    assert step07.count("COUNTIF(DATE(window_start)") == 2
 
 
 def test_07_does_not_group_or_join_on_src_city(step07):
@@ -307,6 +322,7 @@ def test_07_public_table_is_joinable_and_filterable(step07):
     for col in (
         "src_group_label",
         "n_dayof",
+        "n_baseline",
         "detection_granularity",
         "src_metro",
         "src_match_granularity",
@@ -331,6 +347,7 @@ def test_public_bootstrap_ddl_contains_the_identity_contract():
         "src_metro STRING",
         "src_group_label STRING",
         "n_dayof INT64",
+        "n_baseline INT64",
         "src_match_granularity STRING",
         "client_geo_source STRING",
     ):

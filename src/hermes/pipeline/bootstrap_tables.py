@@ -22,6 +22,10 @@ DDL_FILES = [
     "create_correlation_entity_stats_multigranularity.sql",
     # Must precede the view and all Step0-aware writers.
     "add_client_geo_source_columns.sql",
+    # Must precede step 07, which names n_baseline in its INSERT column list.
+    # create_events_explained_daily.sql above is CREATE TABLE IF NOT EXISTS, so on the
+    # already-created production table it is a no-op and cannot add the column.
+    "add_n_baseline_column.sql",
     # Stable nested compatibility interface over the legacy physical table.
     "create_events_enriched.sql",
 ]

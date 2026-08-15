@@ -43,6 +43,10 @@ CREATE TABLE IF NOT EXISTS `mlab-collaboration.${DS}.events_explained_daily`
   src_group_label STRING,
   n_dayof INT64,
   src_match_granularity STRING,
-  client_geo_source STRING
+  client_geo_source STRING,
+  -- Baseline measurement count for this group, the companion to n_dayof. Last,
+  -- because that is where ALTER TABLE ADD COLUMN puts it on an already-created
+  -- table; a fresh CREATE has to agree with an altered one.
+  n_baseline INT64
 )
 PARTITION BY partition_date;
