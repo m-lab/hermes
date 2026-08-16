@@ -31,6 +31,10 @@ from hermes.enrichment.zdns.enricher import ZDNSEnricher
 from hermes.enrichment.zdns.enricher_ipv6 import ZDNSEnricherIPv6
 from hermes.sql import loader, paths
 
+#: IPs resolved and uploaded per batch. Caps peak memory at ~1 GB regardless of run
+#: size; see the chunk loop in process_geolocation.
+GEOLOC_UPLOAD_CHUNK = 250_000
+
 
 class HermesEnrichment:
     def __init__(
@@ -180,8 +184,12 @@ class HermesEnrichment:
             ipv6_pred = "" if self.ipv6 else "NOT "
             query = rf"""
             WITH latest_geoloc AS (
+              -- Only rows that actually carry a location count as covering an IP.
+              -- A chunk that dies mid-run leaves rows with no geolocation; without
+              -- this they look fresh and are never retried.
               SELECT ip_address, MAX(partition_date) AS partition_date
               FROM `{geoloc_table}`
+              WHERE COALESCE(lat_ip_info, lat) IS NOT NULL
               GROUP BY ip_address
             ),
             unique_ips AS (
@@ -209,8 +217,10 @@ class HermesEnrichment:
             # IPv6 query - look for addresses with colons
             query = f"""
             WITH latest_geoloc AS (
+                  -- See the client branch: ungeolocated rows must not count.
                   SELECT ip_address, MAX(partition_date) AS partition_date
                   FROM `{geoloc_table}`
+                  WHERE COALESCE(lat_ip_info, lat) IS NOT NULL
                   GROUP BY ip_address
                 ),
             unique_ips AS (
@@ -239,8 +249,12 @@ class HermesEnrichment:
             # IPv4 query - look for addresses without colons
             query = rf"""
             WITH latest_geoloc AS (
+              -- Only rows that actually carry a location count as covering an IP.
+              -- A chunk that dies mid-run leaves rows with no geolocation; without
+              -- this they look fresh and are never retried.
               SELECT ip_address, MAX(partition_date) AS partition_date
               FROM `{geoloc_table}`
+              WHERE COALESCE(lat_ip_info, lat) IS NOT NULL
               GROUP BY ip_address
             ),
             unique_ips AS (
@@ -302,23 +316,39 @@ class HermesEnrichment:
                 datetime.strptime(ripe_end_date, "%Y-%m-%d").date(),
             )
 
-        new_geo = {}
+        # Chunked so peak memory tracks the chunk, not the run. Resolving everything
+        # first kept the candidate list, the futures, `new_geo` and the `rows` copy
+        # alive at once -- OOM at 7.07M IPs / 28 GB. Safe because the load is
+        # WRITE_APPEND, so N loads equal one big load.
+        uploaded = 0
+        total = len(ips_to_update)
+        for start in range(0, total, GEOLOC_UPLOAD_CHUNK):
+            batch = ips_to_update[start : start + GEOLOC_UPLOAD_CHUNK]
+            new_geo: dict[str, dict[str, Any]] = {}
 
-        # Parallel IP lookups
-        with ThreadPoolExecutor(max_workers=3) as executor:
-            futures = {executor.submit(self._get_geolocation_data, ip): ip for ip in ips_to_update}
-            for future in tqdm(as_completed(futures), total=len(futures)):
-                ip = futures[future]
-                try:
-                    geo_data = future.result()
-                    if geo_data:
-                        new_geo[ip] = geo_data
-                except Exception as e:
-                    logger.error(f"Error processing geolocation for {ip}: {e}")
+            with ThreadPoolExecutor(max_workers=3) as executor:
+                futures = {executor.submit(self._get_geolocation_data, ip): ip for ip in batch}
+                for future in tqdm(
+                    as_completed(futures),
+                    total=len(futures),
+                    desc=f"geoloc {start + len(batch)}/{total}",
+                ):
+                    ip = futures[future]
+                    try:
+                        geo_data = future.result()
+                        if geo_data:
+                            new_geo[ip] = geo_data
+                    except Exception as e:
+                        logger.error(f"Error processing geolocation for {ip}: {e}")
 
-        # Upload results
-        if new_geo:
-            self._upload_geolocation_data(new_geo, date, source)
+            if new_geo:
+                self._upload_geolocation_data(new_geo, date, source)
+                uploaded += len(new_geo)
+
+        # Once, after every chunk: the MERGE is partition-scoped, so per-chunk runs
+        # would re-scan for nothing.
+        if uploaded:
+            logger.info(f"Uploaded {uploaded:,} of {total:,} candidate IPs; resolving metros")
             self._update_metro_for_geolocation_table(date, source)
 
     def process_hoiho_geolocation(self, date) -> None:
