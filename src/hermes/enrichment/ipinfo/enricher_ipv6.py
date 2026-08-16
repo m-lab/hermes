@@ -2,22 +2,28 @@ import ipaddress
 import json
 import os
 import subprocess
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from typing import Any
 
 import maxminddb
 import requests
 
-from hermes.enrichment.ipinfo.enricher import latest_snapshot
+from hermes.enrichment.ipinfo.enricher import closest_snapshot, latest_snapshot
 from hermes.enrichment.utils.common import BaseEnrichment, logger
 
 
 class IPInfoEnricherIPv6(BaseEnrichment):
-    def __init__(self, project_id: str = "mlab-collaboration"):
-        """Initialize IPInfo enricher for IPv6 addresses."""
+    def __init__(self, project_id: str = "mlab-collaboration", snapshot_date: date | None = None):
+        """Initialize IPInfo enricher for IPv6 addresses.
+
+        ``snapshot_date`` pins the MMDB to the dump closest to the date being
+        processed; see the IPv4 enricher for why.
+        """
         super().__init__(project_id)
         self.ipinfo_token = os.getenv("IPINFO_TOKEN")
         self.ipinfo_db_path = None
+        self.snapshot_name: str | None = None
+        self.snapshot_date = snapshot_date
 
         if not self.ipinfo_token:
             logger.warning(
@@ -25,6 +31,7 @@ class IPInfoEnricherIPv6(BaseEnrichment):
             )
         else:
             self.ipinfo_db_path = self._download_ipinfo_database()
+            self.snapshot_name = os.path.basename(self.ipinfo_db_path)
             try:
                 self.reader = maxminddb.open_database(self.ipinfo_db_path)
             except Exception as e:
@@ -34,9 +41,10 @@ class IPInfoEnricherIPv6(BaseEnrichment):
     def _download_ipinfo_database(self) -> str:
         """Use existing IPInfo database (same for IPv4 and IPv6)."""
         # Look for existing IPInfo database file
-        existing = latest_snapshot(self.cache_dir)
+        target = self.snapshot_date or datetime.now(UTC).date()
+        existing = closest_snapshot(self.cache_dir, target) or latest_snapshot(self.cache_dir)
         if existing:
-            logger.info(f"Using existing IPInfo database for IPv6: {existing}")
+            logger.info(f"Using IPInfo database for IPv6 (target {target}): {existing}")
             return existing
 
         # If no existing file, download one (same as IPv4)
@@ -47,8 +55,8 @@ class IPInfoEnricherIPv6(BaseEnrichment):
         else:
             current_checksums = {"checksums": {"md5": "", "sha1": "", "sha256": ""}}
 
-        date = datetime.now(UTC).strftime("%Y-%m-%d")
-        geolocation_ofile = f"{self.cache_dir}/ipinfo_{date}.snapshot"
+        today_str = datetime.now(UTC).strftime("%Y-%m-%d")
+        geolocation_ofile = f"{self.cache_dir}/ipinfo_{today_str}.snapshot"
 
         try:
             new_checksums = requests.get(

@@ -4,6 +4,7 @@ import argparse
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import date as date_cls
 from datetime import datetime, timedelta
 from string import Template
 from typing import Any
@@ -31,10 +32,21 @@ from hermes.sql import loader, paths
 
 
 class HermesEnrichment:
-    def __init__(self, project_id: str = "mlab-collaboration", ipv6: bool = False):
-        """Initialize the Hermes enrichment pipeline."""
+    def __init__(
+        self,
+        project_id: str = "mlab-collaboration",
+        ipv6: bool = False,
+        snapshot_date: date_cls | None = None,
+    ):
+        """Initialize the Hermes enrichment pipeline.
+
+        ``snapshot_date`` is the date being processed; it pins the IPInfo MMDB to
+        the dump closest to that date instead of the newest one, so a backfill does
+        not geolocate historical traffic with present-day data.
+        """
         self.project_id = project_id
         self.ipv6 = ipv6
+        self.snapshot_date = snapshot_date
         self.client = bigquery.Client(project=project_id)
 
         # Define table names based on IPv6 flag
@@ -68,7 +80,7 @@ class HermesEnrichment:
         # Initialize enrichers based on IPv6 flag
         if ipv6:
             logger.info("Initializing IPv6 enrichers")
-            self.ipinfo = IPInfoEnricherIPv6(project_id)
+            self.ipinfo = IPInfoEnricherIPv6(project_id, snapshot_date=snapshot_date)
             self.zdns = ZDNSEnricherIPv6(project_id)
             self.hoiho = HOIHOEnricherIPv6(project_id)
             self.ripe_ipmap = RIPEIPMapEnricher(project_id)  # Always use the same RIPEIPMapEnricher
@@ -76,7 +88,7 @@ class HermesEnrichment:
             self.ixp_collector = IXPCollectorIPv6(project_id)
         else:
             logger.info("Initializing IPv4 enrichers")
-            self.ipinfo = IPInfoEnricher(project_id)
+            self.ipinfo = IPInfoEnricher(project_id, snapshot_date=snapshot_date)
             self.zdns = ZDNSEnricher(project_id)
             self.hoiho = HOIHOEnricher(project_id)
             self.ripe_ipmap = RIPEIPMapEnricher(project_id)
@@ -600,6 +612,9 @@ class HermesEnrichment:
                 "polygon": data["polygon"],
                 "partition_date": date,
                 "rank": data["rank"],
+                # Which IPInfo dump produced this row. Without it a backfilled
+                # partition is indistinguishable from a contemporaneous one.
+                "geoloc_snapshot": getattr(self.ipinfo, "snapshot_name", None),
             }
             for ip, data in geo_data.items()
         ]
@@ -621,6 +636,7 @@ class HermesEnrichment:
                 bigquery.SchemaField("polygon", "GEOGRAPHY"),
                 bigquery.SchemaField("partition_date", "DATE"),
                 bigquery.SchemaField("rank", "INTEGER"),
+                bigquery.SchemaField("geoloc_snapshot", "STRING"),
             ],
             write_disposition=bigquery.WriteDisposition.WRITE_APPEND,
         )

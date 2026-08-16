@@ -64,6 +64,7 @@ def test_unchanged_checksum_falls_back_to_existing_snapshot(tmp_path):
     enricher = IPInfoEnricher.__new__(IPInfoEnricher)
     enricher.cache_dir = cache
     enricher.ipinfo_token = "token"
+    enricher.snapshot_date = None  # nightly: no pinning
 
     response = mock.Mock()
     response.json.return_value = checksums
