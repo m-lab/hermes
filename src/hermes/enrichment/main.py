@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import argparse
+import re
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -595,6 +596,12 @@ class HermesEnrichment:
         self, geo_data: dict[str, dict[str, Any]], date: str, source: str = "topology"
     ) -> None:
         """Upload geolocation data to BigQuery."""
+        snapshot_name = getattr(self.ipinfo, "snapshot_name", None)
+        snapshot_day = None
+        if snapshot_name:
+            found = re.search(r"(\d{4}-\d{2}-\d{2})", snapshot_name)
+            snapshot_day = found.group(1) if found else None
+
         rows = [
             {
                 "ip_address": ip,
@@ -614,7 +621,15 @@ class HermesEnrichment:
                 "rank": data["rank"],
                 # Which IPInfo dump produced this row. Without it a backfilled
                 # partition is indistinguishable from a contemporaneous one.
-                "geoloc_snapshot": getattr(self.ipinfo, "snapshot_name", None),
+                #
+                # The DATE form is the join key steps 02/03 match on. partition_date
+                # cannot serve that purpose: it is the RUN's target date, so a batched
+                # run stamps every IP in a 20-day lookback with the same value (3.59M
+                # rows landed on 2025-07-31 covering traffic from 07-11 onward). The
+                # dump date is a property of the geolocation itself and is unaffected
+                # by how runs happened to be batched.
+                "geoloc_snapshot": snapshot_name,
+                "geoloc_snapshot_date": snapshot_day,
             }
             for ip, data in geo_data.items()
         ]
@@ -637,6 +652,7 @@ class HermesEnrichment:
                 bigquery.SchemaField("partition_date", "DATE"),
                 bigquery.SchemaField("rank", "INTEGER"),
                 bigquery.SchemaField("geoloc_snapshot", "STRING"),
+                bigquery.SchemaField("geoloc_snapshot_date", "DATE"),
             ],
             write_disposition=bigquery.WriteDisposition.WRITE_APPEND,
         )

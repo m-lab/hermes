@@ -27,8 +27,26 @@ ordering.
 
 ## Where it is recorded
 
-`geoloc_snapshot` (STRING) on all four geolocation tables in
-`mlab-collaboration.hermes`:
+Two columns on all four geolocation tables in `mlab-collaboration.hermes`:
+
+| column | type | purpose |
+|---|---|---|
+| `geoloc_snapshot` | STRING | dump filename, e.g. `ipinfo_2025-08-07.snapshot` |
+| `geoloc_snapshot_date` | DATE | **the match key** steps 02/03 order by |
+
+`partition_date` cannot serve as the match key. It is the **run's target date**, not
+the date the geolocation describes, so a batched run stamps every IP in its lookback
+with one value: 3,592,678 rows landed on `2025-07-31` carrying traffic from 07-11
+onward. The topology table is coarser still — its partitions are sparse, one per
+historical *run* (2025-07-07, 07-16, 07-30, 07-31, 08-04 …). Ordering by
+`partition_date` therefore selects rows according to how runs happened to be batched.
+`geoloc_snapshot_date` is a property of the geolocation itself.
+
+Steps 02/03 order by `COALESCE(geoloc_snapshot_date, partition_date)`; the fallback
+covers rows written before the column existed, where `partition_date` is a fair proxy
+because a nightly used that day's dump.
+
+The tables:
 
 | table | population |
 |---|---|
@@ -92,6 +110,23 @@ dump (a ~386 day gap) before pinning existed. Those rows —
 7,894,179 IPv4 and 7,306,240 IPv6 — were deleted and re-derived. If any analysis
 was run against `unified_src_ip_to_geoloc` for 2025 partitions between those two
 points, it used the wrong geolocation.
+
+### Known limitation of this batch — accepted, not fixed
+
+Detection for 2025-07-18 → 07-31 was built **before** the match key moved to
+`geoloc_snapshot_date`. At that time the staleness join was one-directional
+(`partition_date < month_ago`), so a client IP that already had a 2026 row counted
+as "fresh" for a 2025 target and no contemporaneous row was written for it.
+
+Measured on 2025-07-31: of 1,448,550 distinct IPv4 client IPs, **578,756 (39.95%)**
+resolve to a 2026 partition rather than the pinned 2025 dump. Coverage is not the
+issue — 99.9976% of the 67,590,869 measurements across the 14 days have a real
+coordinate, a named city and a resolved metro; only 1,593 measurements (932 IPs)
+have none. It is *fidelity*: ~40% of that geography is a year newer than the traffic.
+
+This was left in place deliberately (decision, 2026-08-16) rather than re-run. Treat
+2025-07-18 → 07-31 as having mixed geolocation provenance. Any later re-run of these
+dates will pick up the corrected key automatically.
 
 ## What this does and does not buy
 
