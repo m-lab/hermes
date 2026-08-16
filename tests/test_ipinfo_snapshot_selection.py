@@ -19,10 +19,11 @@ from unittest import mock
 from hermes.enrichment.ipinfo.enricher import IPInfoEnricher, latest_snapshot
 
 
-def _snap(cache: str, day: str) -> str:
+def _snap(cache: str, day: str, mb: int = 700) -> str:
+    """Plausible-size sparse snapshot; anything under the size floor is ignored."""
     path = os.path.join(cache, f"ipinfo_{day}.snapshot")
-    with open(path, "w") as fh:
-        fh.write("x")
+    with open(path, "wb") as fh:
+        fh.truncate(mb * 1024 * 1024)
     return path
 
 
@@ -64,6 +65,7 @@ def test_unchanged_checksum_falls_back_to_existing_snapshot(tmp_path):
     enricher = IPInfoEnricher.__new__(IPInfoEnricher)
     enricher.cache_dir = cache
     enricher.ipinfo_token = "token"
+    enricher.snapshot_date = None  # nightly: no pinning
 
     response = mock.Mock()
     response.json.return_value = checksums

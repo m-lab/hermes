@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 
 import argparse
+import re
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import date as date_cls
 from datetime import datetime, timedelta
 from string import Template
 from typing import Any
@@ -29,12 +31,27 @@ from hermes.enrichment.zdns.enricher import ZDNSEnricher
 from hermes.enrichment.zdns.enricher_ipv6 import ZDNSEnricherIPv6
 from hermes.sql import loader, paths
 
+#: IPs resolved and uploaded per batch. Caps peak memory at ~1 GB regardless of run
+#: size; see the chunk loop in process_geolocation.
+GEOLOC_UPLOAD_CHUNK = 250_000
+
 
 class HermesEnrichment:
-    def __init__(self, project_id: str = "mlab-collaboration", ipv6: bool = False):
-        """Initialize the Hermes enrichment pipeline."""
+    def __init__(
+        self,
+        project_id: str = "mlab-collaboration",
+        ipv6: bool = False,
+        snapshot_date: date_cls | None = None,
+    ):
+        """Initialize the Hermes enrichment pipeline.
+
+        ``snapshot_date`` is the date being processed; it pins the IPInfo MMDB to
+        the dump closest to that date instead of the newest one, so a backfill does
+        not geolocate historical traffic with present-day data.
+        """
         self.project_id = project_id
         self.ipv6 = ipv6
+        self.snapshot_date = snapshot_date
         self.client = bigquery.Client(project=project_id)
 
         # Define table names based on IPv6 flag
@@ -68,7 +85,7 @@ class HermesEnrichment:
         # Initialize enrichers based on IPv6 flag
         if ipv6:
             logger.info("Initializing IPv6 enrichers")
-            self.ipinfo = IPInfoEnricherIPv6(project_id)
+            self.ipinfo = IPInfoEnricherIPv6(project_id, snapshot_date=snapshot_date)
             self.zdns = ZDNSEnricherIPv6(project_id)
             self.hoiho = HOIHOEnricherIPv6(project_id)
             self.ripe_ipmap = RIPEIPMapEnricher(project_id)  # Always use the same RIPEIPMapEnricher
@@ -76,7 +93,7 @@ class HermesEnrichment:
             self.ixp_collector = IXPCollectorIPv6(project_id)
         else:
             logger.info("Initializing IPv4 enrichers")
-            self.ipinfo = IPInfoEnricher(project_id)
+            self.ipinfo = IPInfoEnricher(project_id, snapshot_date=snapshot_date)
             self.zdns = ZDNSEnricher(project_id)
             self.hoiho = HOIHOEnricher(project_id)
             self.ripe_ipmap = RIPEIPMapEnricher(project_id)
@@ -167,8 +184,12 @@ class HermesEnrichment:
             ipv6_pred = "" if self.ipv6 else "NOT "
             query = rf"""
             WITH latest_geoloc AS (
+              -- Only rows that actually carry a location count as covering an IP.
+              -- A chunk that dies mid-run leaves rows with no geolocation; without
+              -- this they look fresh and are never retried.
               SELECT ip_address, MAX(partition_date) AS partition_date
               FROM `{geoloc_table}`
+              WHERE COALESCE(lat_ip_info, lat) IS NOT NULL
               GROUP BY ip_address
             ),
             unique_ips AS (
@@ -196,8 +217,10 @@ class HermesEnrichment:
             # IPv6 query - look for addresses with colons
             query = f"""
             WITH latest_geoloc AS (
+                  -- See the client branch: ungeolocated rows must not count.
                   SELECT ip_address, MAX(partition_date) AS partition_date
                   FROM `{geoloc_table}`
+                  WHERE COALESCE(lat_ip_info, lat) IS NOT NULL
                   GROUP BY ip_address
                 ),
             unique_ips AS (
@@ -226,8 +249,12 @@ class HermesEnrichment:
             # IPv4 query - look for addresses without colons
             query = rf"""
             WITH latest_geoloc AS (
+              -- Only rows that actually carry a location count as covering an IP.
+              -- A chunk that dies mid-run leaves rows with no geolocation; without
+              -- this they look fresh and are never retried.
               SELECT ip_address, MAX(partition_date) AS partition_date
               FROM `{geoloc_table}`
+              WHERE COALESCE(lat_ip_info, lat) IS NOT NULL
               GROUP BY ip_address
             ),
             unique_ips AS (
@@ -289,23 +316,39 @@ class HermesEnrichment:
                 datetime.strptime(ripe_end_date, "%Y-%m-%d").date(),
             )
 
-        new_geo = {}
+        # Chunked so peak memory tracks the chunk, not the run. Resolving everything
+        # first kept the candidate list, the futures, `new_geo` and the `rows` copy
+        # alive at once -- OOM at 7.07M IPs / 28 GB. Safe because the load is
+        # WRITE_APPEND, so N loads equal one big load.
+        uploaded = 0
+        total = len(ips_to_update)
+        for start in range(0, total, GEOLOC_UPLOAD_CHUNK):
+            batch = ips_to_update[start : start + GEOLOC_UPLOAD_CHUNK]
+            new_geo: dict[str, dict[str, Any]] = {}
 
-        # Parallel IP lookups
-        with ThreadPoolExecutor(max_workers=3) as executor:
-            futures = {executor.submit(self._get_geolocation_data, ip): ip for ip in ips_to_update}
-            for future in tqdm(as_completed(futures), total=len(futures)):
-                ip = futures[future]
-                try:
-                    geo_data = future.result()
-                    if geo_data:
-                        new_geo[ip] = geo_data
-                except Exception as e:
-                    logger.error(f"Error processing geolocation for {ip}: {e}")
+            with ThreadPoolExecutor(max_workers=3) as executor:
+                futures = {executor.submit(self._get_geolocation_data, ip): ip for ip in batch}
+                for future in tqdm(
+                    as_completed(futures),
+                    total=len(futures),
+                    desc=f"geoloc {start + len(batch)}/{total}",
+                ):
+                    ip = futures[future]
+                    try:
+                        geo_data = future.result()
+                        if geo_data:
+                            new_geo[ip] = geo_data
+                    except Exception as e:
+                        logger.error(f"Error processing geolocation for {ip}: {e}")
 
-        # Upload results
-        if new_geo:
-            self._upload_geolocation_data(new_geo, date, source)
+            if new_geo:
+                self._upload_geolocation_data(new_geo, date, source)
+                uploaded += len(new_geo)
+
+        # Once, after every chunk: the MERGE is partition-scoped, so per-chunk runs
+        # would re-scan for nothing.
+        if uploaded:
+            logger.info(f"Uploaded {uploaded:,} of {total:,} candidate IPs; resolving metros")
             self._update_metro_for_geolocation_table(date, source)
 
     def process_hoiho_geolocation(self, date) -> None:
@@ -583,6 +626,12 @@ class HermesEnrichment:
         self, geo_data: dict[str, dict[str, Any]], date: str, source: str = "topology"
     ) -> None:
         """Upload geolocation data to BigQuery."""
+        snapshot_name = getattr(self.ipinfo, "snapshot_name", None)
+        snapshot_day = None
+        if snapshot_name:
+            found = re.search(r"(\d{4}-\d{2}-\d{2})", snapshot_name)
+            snapshot_day = found.group(1) if found else None
+
         rows = [
             {
                 "ip_address": ip,
@@ -600,6 +649,17 @@ class HermesEnrichment:
                 "polygon": data["polygon"],
                 "partition_date": date,
                 "rank": data["rank"],
+                # Which IPInfo dump produced this row. Without it a backfilled
+                # partition is indistinguishable from a contemporaneous one.
+                #
+                # The DATE form is the join key steps 02/03 match on. partition_date
+                # cannot serve that purpose: it is the RUN's target date, so a batched
+                # run stamps every IP in a 20-day lookback with the same value (3.59M
+                # rows landed on 2025-07-31 covering traffic from 07-11 onward). The
+                # dump date is a property of the geolocation itself and is unaffected
+                # by how runs happened to be batched.
+                "geoloc_snapshot": snapshot_name,
+                "geoloc_snapshot_date": snapshot_day,
             }
             for ip, data in geo_data.items()
         ]
@@ -621,6 +681,8 @@ class HermesEnrichment:
                 bigquery.SchemaField("polygon", "GEOGRAPHY"),
                 bigquery.SchemaField("partition_date", "DATE"),
                 bigquery.SchemaField("rank", "INTEGER"),
+                bigquery.SchemaField("geoloc_snapshot", "STRING"),
+                bigquery.SchemaField("geoloc_snapshot_date", "DATE"),
             ],
             write_disposition=bigquery.WriteDisposition.WRITE_APPEND,
         )

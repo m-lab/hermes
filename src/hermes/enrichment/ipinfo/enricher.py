@@ -1,7 +1,7 @@
 import json
 import os
 import subprocess
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from typing import Any
 
 import maxminddb
@@ -19,18 +19,89 @@ def latest_snapshot(cache_dir: str) -> str | None:
     database while a current one sits next to it. The filename is the only
     record of which day the data describes.
     """
-    snapshots = sorted(
-        f for f in os.listdir(cache_dir) if f.startswith("ipinfo_") and f.endswith(".snapshot")
-    )
-    return os.path.join(cache_dir, snapshots[-1]) if snapshots else None
+    snapshots = sorted(_snapshot_dates(cache_dir))
+    return os.path.join(cache_dir, snapshots[-1][1]) if snapshots else None
+
+
+#: Smallest plausible IPInfo location MMDB. Real dumps run 585-915 MB across the
+#: 2025-05..2026-08 archive; the cache also holds truncated downloads left behind
+#: when `wget` died mid-transfer (ipinfo_2025-09-09.snapshot is 11 MB). Those parse
+#: as a valid date and sort normally, so without a size floor a "closest snapshot"
+#: rule will cheerfully select one and geolocate a whole backfill against a stub.
+MIN_SNAPSHOT_BYTES = 100 * 1024 * 1024
+
+
+def _snapshot_dates(cache_dir: str) -> list[tuple[date, str]]:
+    """``(date, filename)`` for every usable snapshot in ``cache_dir``.
+
+    Files whose name does not carry a valid date are skipped rather than raising:
+    the cache also holds ``ip_info.checksums`` and partial ``wget`` output.
+    Implausibly small files are skipped too -- see :data:`MIN_SNAPSHOT_BYTES`.
+    """
+    out: list[tuple[date, str]] = []
+    for f in os.listdir(cache_dir):
+        if not (f.startswith("ipinfo_") and f.endswith(".snapshot")):
+            continue
+        try:
+            parsed = date.fromisoformat(f[len("ipinfo_") : -len(".snapshot")])
+        except ValueError:
+            continue
+        try:
+            size = os.path.getsize(os.path.join(cache_dir, f))
+        except OSError:
+            continue
+        if size < MIN_SNAPSHOT_BYTES:
+            logger.warning(
+                "Ignoring truncated IPInfo snapshot %s (%.1f MB < %d MB floor)",
+                f,
+                size / 1048576,
+                MIN_SNAPSHOT_BYTES // 1048576,
+            )
+            continue
+        out.append((parsed, f))
+    return out
+
+
+def closest_snapshot(cache_dir: str, target: date) -> str | None:
+    """Snapshot nearest in time to ``target``, or None if the cache is empty.
+
+    IPInfo geolocation is a point-in-time assertion about where an address is. Using
+    today's dump to place addresses seen a year ago silently reassigns them to
+    wherever the space moved *since*, which is a fabricated answer for the date
+    being processed -- an address reallocated from one country to another lands in
+    the wrong country for every historical measurement.
+
+    So a run is pinned to the dump closest to the date it is processing. For a
+    nightly that is today's dump, exactly as before. For a backfill it is the oldest
+    dump still on disk, which is the least-wrong available answer and, crucially, a
+    *stated* one: the chosen filename is recorded per row so the gap between the
+    measurement and the geolocation is queryable rather than invisible.
+
+    Ties (equidistant dumps either side) resolve to the earlier one, so the choice
+    does not depend on filesystem ordering.
+    """
+    snapshots = _snapshot_dates(cache_dir)
+    if not snapshots:
+        return None
+    best = min(snapshots, key=lambda ds: (abs((ds[0] - target).days), ds[0]))
+    return os.path.join(cache_dir, best[1])
 
 
 class IPInfoEnricher(BaseEnrichment):
-    def __init__(self, project_id: str = "mlab-collaboration"):
-        """Initialize IPInfo enricher."""
+    def __init__(self, project_id: str = "mlab-collaboration", snapshot_date: date | None = None):
+        """Initialize IPInfo enricher.
+
+        ``snapshot_date`` is the date being *processed*. The MMDB used is the dump
+        closest to it (see :func:`closest_snapshot`), not simply the newest one, so a
+        backfill does not geolocate old traffic with new data. Defaults to today,
+        which reproduces the previous behaviour for a nightly run.
+        """
         super().__init__(project_id)
         self.ipinfo_token = os.getenv("IPINFO_TOKEN")
         self.ipinfo_db_path = None
+        #: Basename of the MMDB actually used, recorded per row for provenance.
+        self.snapshot_name: str | None = None
+        self.snapshot_date = snapshot_date
         self.state_mapping = {}
         if not self.ipinfo_token:
             logger.warning(
@@ -38,6 +109,7 @@ class IPInfoEnricher(BaseEnrichment):
             )
         else:
             self.ipinfo_db_path = self._download_ipinfo_database()
+            self.snapshot_name = os.path.basename(self.ipinfo_db_path)
             try:
                 self.reader = maxminddb.open_database(self.ipinfo_db_path)
             except Exception as e:
@@ -53,8 +125,8 @@ class IPInfoEnricher(BaseEnrichment):
         else:
             current_checksums = {"checksums": {"md5": "", "sha1": "", "sha256": ""}}
 
-        date = datetime.now(UTC).strftime("%Y-%m-%d")
-        geolocation_ofile = f"{self.cache_dir}/ipinfo_{date}.snapshot"
+        today_str = datetime.now(UTC).strftime("%Y-%m-%d")
+        geolocation_ofile = f"{self.cache_dir}/ipinfo_{today_str}.snapshot"
 
         try:
             new_checksums = requests.get(
@@ -92,6 +164,24 @@ class IPInfoEnricher(BaseEnrichment):
                     os.path.basename(fallback),
                 )
                 geolocation_ofile = fallback
+
+        # The cache is now as fresh as it can be; choose the dump closest to the date
+        # being processed rather than the newest one. For a nightly these are the same
+        # file. For a backfill they are not, and taking the newest would place old
+        # addresses using new data -- see closest_snapshot().
+        target = self.snapshot_date or datetime.now(UTC).date()
+        pinned = closest_snapshot(self.cache_dir, target)
+        if pinned and pinned != geolocation_ofile:
+            gap = abs((date.fromisoformat(os.path.basename(pinned)[7:-9]) - target).days)
+            logger.warning(
+                "IPInfo pinned to %s for target date %s (%d day gap) instead of %s — "
+                "geolocation is as of the dump, NOT as of the measurement",
+                os.path.basename(pinned),
+                target,
+                gap,
+                os.path.basename(geolocation_ofile),
+            )
+            geolocation_ofile = pinned
 
         return geolocation_ofile
 

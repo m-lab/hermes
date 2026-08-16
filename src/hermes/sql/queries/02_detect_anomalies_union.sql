@@ -93,10 +93,19 @@ MeasurementsWithGroup AS (
     SELECT * EXCEPT(rn) FROM (
       SELECT ip_address, city_ip_info, region_ip_info, country_ip_info,
              lat_ip_info, lon_ip_info, metro,
+             -- Match on the IPInfo dump that produced the row, NOT on partition_date.
+             -- partition_date is the RUN's target date, so a batched run stamps every
+             -- IP in its lookback with one value: 3,592,678 rows landed on 2025-07-31
+             -- carrying traffic from 07-11 onward. Ordering by that picks rows by how
+             -- the runs happened to be batched. The dump date is a property of the
+             -- geolocation itself. COALESCE covers rows written before the column
+             -- existed, where partition_date is a fair proxy because a nightly used
+             -- that day's dump.
              ROW_NUMBER() OVER (
                PARTITION BY ip_address
-               ORDER BY ABS(DATE_DIFF(partition_date, DATE '${DAY}', DAY)) ASC,
-                        partition_date DESC
+               ORDER BY ABS(DATE_DIFF(COALESCE(geoloc_snapshot_date, partition_date),
+                                      DATE '${DAY}', DAY)) ASC,
+                        COALESCE(geoloc_snapshot_date, partition_date) DESC
              ) AS rn
       -- BOTH address families. The enrichment writes IPv4 and IPv6 client
       -- geolocation to separate tables (the enricher is instantiated once per
@@ -111,12 +120,12 @@ MeasurementsWithGroup AS (
       -- two tables are disjoint on ip_address and the ROW_NUMBER below still
       -- yields one row per IP.
       FROM (
-        SELECT ip_address, partition_date, city_ip_info, region_ip_info,
-               country_ip_info, lat_ip_info, lon_ip_info, metro
+        SELECT ip_address, partition_date, geoloc_snapshot_date, city_ip_info,
+               region_ip_info, country_ip_info, lat_ip_info, lon_ip_info, metro
         FROM `mlab-collaboration.hermes.unified_src_ip_to_geoloc`
         UNION ALL
-        SELECT ip_address, partition_date, city_ip_info, region_ip_info,
-               country_ip_info, lat_ip_info, lon_ip_info, metro
+        SELECT ip_address, partition_date, geoloc_snapshot_date, city_ip_info,
+               region_ip_info, country_ip_info, lat_ip_info, lon_ip_info, metro
         FROM `mlab-collaboration.hermes.unified_src_ip_to_geoloc_ipv6`
       )
     ) WHERE rn = 1

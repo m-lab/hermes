@@ -655,7 +655,14 @@ def run_enrichment(
         label = "IPv6" if ipv6 else "IPv4"
         logger.info(f"[enrichment] Starting {label} enrichment for {date_str}")
 
-        enricher = HermesEnrichment(project_id=project_id, ipv6=ipv6)
+        # Pin the IPInfo dump to the date being processed, not to today. For a
+        # nightly these coincide; for a backfill they do not, and using today's
+        # dump would assert present-day geolocation about year-old traffic.
+        enricher = HermesEnrichment(
+            project_id=project_id,
+            ipv6=ipv6,
+            snapshot_date=datetime.strptime(date_str, "%Y-%m-%d").date(),
+        )
         # Override the transient_events table to the union version
         # (must also propagate to child enrichers that have their own tables dict)
         enricher.tables["transient_events"] = union_transient_table
