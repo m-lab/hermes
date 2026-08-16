@@ -23,20 +23,42 @@ def latest_snapshot(cache_dir: str) -> str | None:
     return os.path.join(cache_dir, snapshots[-1][1]) if snapshots else None
 
 
+#: Smallest plausible IPInfo location MMDB. Real dumps run 585-915 MB across the
+#: 2025-05..2026-08 archive; the cache also holds truncated downloads left behind
+#: when `wget` died mid-transfer (ipinfo_2025-09-09.snapshot is 11 MB). Those parse
+#: as a valid date and sort normally, so without a size floor a "closest snapshot"
+#: rule will cheerfully select one and geolocate a whole backfill against a stub.
+MIN_SNAPSHOT_BYTES = 100 * 1024 * 1024
+
+
 def _snapshot_dates(cache_dir: str) -> list[tuple[date, str]]:
-    """``(date, filename)`` for every parseable snapshot in ``cache_dir``.
+    """``(date, filename)`` for every usable snapshot in ``cache_dir``.
 
     Files whose name does not carry a valid date are skipped rather than raising:
     the cache also holds ``ip_info.checksums`` and partial ``wget`` output.
+    Implausibly small files are skipped too -- see :data:`MIN_SNAPSHOT_BYTES`.
     """
     out: list[tuple[date, str]] = []
     for f in os.listdir(cache_dir):
         if not (f.startswith("ipinfo_") and f.endswith(".snapshot")):
             continue
         try:
-            out.append((date.fromisoformat(f[len("ipinfo_") : -len(".snapshot")]), f))
+            parsed = date.fromisoformat(f[len("ipinfo_") : -len(".snapshot")])
         except ValueError:
             continue
+        try:
+            size = os.path.getsize(os.path.join(cache_dir, f))
+        except OSError:
+            continue
+        if size < MIN_SNAPSHOT_BYTES:
+            logger.warning(
+                "Ignoring truncated IPInfo snapshot %s (%.1f MB < %d MB floor)",
+                f,
+                size / 1048576,
+                MIN_SNAPSHOT_BYTES // 1048576,
+            )
+            continue
+        out.append((parsed, f))
     return out
 
 

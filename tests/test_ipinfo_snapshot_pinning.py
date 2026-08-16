@@ -5,9 +5,11 @@ newest dump for a backfill silently reassigns year-old traffic to wherever the a
 space moved *since* — an address reallocated between countries lands in the wrong
 country for every historical measurement, and nothing in the output says so.
 
-Pinning does not make historical geolocation correct; no 2025 dump exists locally
-(the oldest is 2026-06-12). It makes it *least-wrong and stated*: the chosen dump is
-recorded per row, so the gap between measurement and geolocation is queryable.
+Pinning does not make historical geolocation correct, but it gets close when the
+archive is there: the operator keeps dumps back to 2025-05-13, so July 2025 resolves
+to a dump 7-17 days away rather than the 11-month-newer one the old code would take.
+The chosen dump is recorded per row, so the remaining gap is queryable rather than
+assumed to be zero.
 """
 
 from __future__ import annotations
@@ -20,10 +22,11 @@ from unittest import mock
 from hermes.enrichment.ipinfo.enricher import IPInfoEnricher, closest_snapshot, latest_snapshot
 
 
-def _snap(cache: str, day: str) -> str:
+def _snap(cache: str, day: str, mb: int = 700) -> str:
+    """Write a snapshot of plausible size; real dumps are 585-915 MB."""
     path = os.path.join(cache, f"ipinfo_{day}.snapshot")
-    with open(path, "w") as fh:
-        fh.write("x")
+    with open(path, "wb") as fh:
+        fh.truncate(mb * 1024 * 1024)
     return path
 
 
@@ -32,7 +35,7 @@ def test_closest_snapshot_picks_nearest_not_newest(tmp_path):
     old = _snap(cache, "2026-06-12")
     _snap(cache, "2026-08-15")
 
-    # A July 2025 backfill: every dump is later, so the nearest is the oldest.
+    # When only later dumps exist, the nearest is the oldest available.
     assert closest_snapshot(cache, date(2025, 7, 31)) == old
     # A nightly: the nearest is today's.
     assert closest_snapshot(cache, date(2026, 8, 15)).endswith("ipinfo_2026-08-15.snapshot")
@@ -115,3 +118,19 @@ def test_nightly_behaviour_is_unchanged(tmp_path):
         path = _enricher(cache, None)._download_ipinfo_database()
 
     assert path == newest
+
+
+def test_truncated_snapshot_is_never_selected(tmp_path):
+    """A partial download parses as a valid date and would otherwise win on distance.
+
+    ipinfo_2025-09-09.snapshot is 11 MB of a ~613 MB dump. Selecting it would
+    geolocate an entire backfill against a stub, and every lookup would miss.
+    """
+    cache = str(tmp_path)
+    _snap(cache, "2025-09-09", mb=11)  # the real truncated file
+    good = _snap(cache, "2025-08-07")
+
+    assert closest_snapshot(cache, date(2025, 9, 9)) == good, (
+        "an exact-date match must still lose to a valid dump when it is truncated"
+    )
+    assert latest_snapshot(cache) == good
