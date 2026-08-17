@@ -27,7 +27,7 @@ dependencies = [
     # pyarrow is the wire format for that path — pin it here rather than relying
     # on it arriving transitively via pandas/db-dtypes.
     "google-cloud-bigquery-storage>=2.40.0",
-    "pyarrow>=25.0.0",
+    "pyarrow>=25.0.1",
     "db-dtypes>=1.7.1",  # required by bigquery .to_dataframe() for DATE/TIME columns (download_edges)
     "google-auth>=2.56.3",
     "pandas>=3.0.5",
@@ -42,7 +42,7 @@ dependencies = [
 
 [project.optional-dependencies]
 plot = ["matplotlib>=3.11.1", "geopandas>=1.1.4", "folium>=0.20.0"]
-dev = ["ruff>=0.16.2", "mypy>=2.3.0", "pytest>=9.1.1", "pre-commit>=4.6.1", "pandas-stubs", "types-requests", "pyarrow>=25.0.0"]
+dev = ["ruff>=0.16.3", "mypy>=2.3.0", "pytest>=9.1.1", "pre-commit>=4.6.2", "pandas-stubs", "types-requests", "pyarrow>=25.0.1"]
 
 [project.scripts]
 hermes-pipeline = "hermes.pipeline.union:main"
