@@ -76,11 +76,46 @@ buys a free re-fetch during the week instead of another 48 h Bulk wait.
 | Temporary restored copy, 7 days | $0.18 |
 | Download to `hermes-ec2` (same region) | free |
 
-Deep Archive has **no Expedited tier** — 12 h Standard or 48 h Bulk only, so a restore
-is always a plan-ahead operation. Minimum billable storage duration is **180 days**.
+Minimum billable storage duration is **180 days**. These objects were written
+2026-08-28, so they are committed until roughly late February 2027; deleting sooner
+bills the remainder (about $0.17 for the whole set — immaterial, but real).
 
-If same-day access is ever needed, Glacier Instant Retrieval holds the same data for
-~$0.13/month with millisecond access.
+## Retrieval: what the wait actually is
+
+The wait is the **thaw**, not the transfer. A Deep Archive object is frozen: you issue
+a restore request, AWS thaws a temporary copy, and only then can you GET it.
+
+| Tier | Thaw (AWS documented upper bound) | All 44 | One date |
+|---|---|---|---|
+| `Bulk` — the script default | up to **48 h** | $0.09 | ~$0.002 |
+| `Standard` | up to **12 h** | $0.67 | ~$0.015 |
+
+Deep Archive has **no Expedited tier**, so 12 h is the floor. Bulk often finishes
+sooner, but plan against 48 h.
+
+Three things make this cheaper than it first looks:
+
+* **The download itself is minutes, not hours.** After the thaw it is an ordinary S3
+  GET, in-region to `hermes-ec2`, and free.
+* **Objects thaw in parallel.** Requesting 44 dates is one wait, not 44 sequential
+  ones.
+* **A backfill needs two or three dumps, not 44.** That is the whole reason for one
+  object per snapshot rather than a tarball.
+
+Trade money for time with `TIER=Standard` on the `request` subcommand.
+
+### If Deep Archive turns out to be the wrong tier, order matters
+
+**You cannot transition an object *out* of Deep Archive with a lifecycle rule.** Moving
+to a warmer class requires thawing it first (12–48 h) and then copying — so switching
+tiers after the fact costs a full restore cycle for every object.
+
+While a local copy of a snapshot still exists, switching is instead just a re-upload
+with a different `--storage-class`: no thaw, no wait. **So decide the tier before
+deleting local originals, not after.** Glacier Instant Retrieval holds this data for
+~$0.13/month with millisecond access — ten cents more than Deep Archive — and is the
+right choice if same-day access to a gap date is ever plausible. Deep Archive is right
+only if these are genuinely break-glass copies you would reach for with a day's notice.
 
 ## Runbook
 
