@@ -87,10 +87,13 @@ If same-day access is ever needed, Glacier Instant Retrieval holds the same data
 Archive new snapshots (from the machine holding them):
 
 ```bash
+AWS_PROFILE=ipinfo-writer \
 MANIFEST=/tmp/manifest.txt \
 BUCKET=hermes-ipinfo-archive-627275104670 \
   scripts/ipinfo_archive_to_glacier.sh
 ```
+
+`AWS_PROFILE=ipinfo-writer` is required, not optional — see the traps section below.
 
 Restore onto the VM for a week:
 
@@ -113,16 +116,29 @@ loans. Three guards:
 3. **It self-defers while any `hermes-pipeline` container is running**, so a restored
    snapshot cannot vanish mid-backfill.
 
-## Two bugs this tooling was built around
+## Two traps this tooling was built around
 
-**`aws s3 cp` cannot upload with `aws login` credentials.** `cp` runs a
-multi-threaded multipart upload, and those threads race to refresh the single-use
-OAuth token; one rotates it and the rest die with
-`CreateOAuth2Token ... The provided authorization grant is invalid, expired, revoked,
-or malformed`. Small calls (`sts get-caller-identity`, `head-object`) work fine, which
-makes it look like a credential problem rather than a concurrency one. Every snapshot
-is under the 5 GB single-PUT ceiling, so the archive script uses `aws s3api
-put-object` — one request, one thread, no race.
+**`aws login` credentials cannot carry a bulk upload; use a static IAM key.**
+Long-running uploads fail with `CreateOAuth2Token ... The provided authorization
+grant is invalid, expired, revoked, or malformed`, while short calls
+(`sts get-caller-identity`, `head-object`) keep succeeding seconds later — so it
+presents as an expired session and is not one.
+
+Reproduced 2026-08-28 with **both** `aws s3 cp` (multi-threaded multipart) and
+`aws s3api put-object` (a single request), which rules out multipart threading as the
+cause. **The root cause is not confirmed.** What was observed: the cached token type
+is `access_token_sigv4` (DPoP-bound, short-lived), `~/.aws/login/cache` held two
+session files — one refreshed on demand, one six weeks stale — and the failure
+correlates with request *duration*, not with elapsed session age.
+
+The workaround, which works reliably: IAM user `hermes-ipinfo-writer` in account
+627275104670 with a static access key in the local `ipinfo-writer` profile, scoped to
+`PutObject`/`GetObject` on this bucket prefix. Static keys have no refresh path to
+fail. Run uploads with `AWS_PROFILE=ipinfo-writer`.
+
+The script keeps `s3api put-object` (every snapshot is under the 5 GB single-PUT
+ceiling) because it is proven working; with static credentials `s3 cp` would also
+work and would be faster on large files.
 
 **`cmd && echo ok` silently disables `set -e`.** Under `set -e` a failure on the
 **left** of `&&` does not exit the script; only the command after the final `&&`

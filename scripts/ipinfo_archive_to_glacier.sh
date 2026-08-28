@@ -29,12 +29,12 @@ while read -r f; do
   # NB: do NOT write this as `aws s3 cp ... && echo ok`. Under `set -e` a failure
   # on the LEFT of && does not exit the script, so a dead credential would grind
   # through the whole manifest failing 44 times instead of stopping at the first.
-  # s3api put-object, NOT `s3 cp`: cp uses a multi-threaded multipart upload, and
-  # those threads race to refresh the single-use OAuth token that `aws login`
-  # issues -- one thread rotates it and the rest die with
-  # "CreateOAuth2Token ... grant is invalid, expired, revoked, or malformed".
-  # Every snapshot is well under the 5 GB single-PUT ceiling, so one request
-  # per object sidesteps the race entirely.
+  # Run this with a STATIC IAM key (AWS_PROFILE=ipinfo-writer), never with
+  # `aws login` credentials: long uploads fail with "CreateOAuth2Token ... grant is
+  # invalid, expired, revoked, or malformed" even though short calls keep working.
+  # Seen with both `s3 cp` and `put-object`, so it is not multipart threading; root
+  # cause unconfirmed. See docs/reference/ipinfo-archive-s3.md.
+  # put-object is used because every snapshot is under the 5 GB single-PUT ceiling.
   if aws s3api put-object \
       --bucket "$BUCKET" --key "$key" --body "$f" \
       --region "$REGION" \
