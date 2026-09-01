@@ -1,4 +1,5 @@
 --------------------------------------------------------------------------------
+-- @requires-udf: compute_wasserstein_p_value
 -- HERMES (union): anomaly detection only (no topology joins)
 --
 -- Input:  `mlab-collaboration.${DS}.merged_download_upload`
@@ -13,8 +14,7 @@
 -- CREATE OR REPLACE TABLE `mlab-collaboration.${DS}.anomaly_counts_union`
 -- PARTITION BY partition_date
 -- AS
-DECLARE _detection_granularity STRING DEFAULT '${DETECTION_GRANULARITY}';
-ASSERT _detection_granularity IN ('city', 'metro')
+ASSERT '${DETECTION_GRANULARITY}' IN ('city', 'metro')
   AS 'DETECTION_GRANULARITY must be city or metro';
 
 -- _source_metro_lookup is gone: Phase A0 already resolved every client IP
@@ -78,7 +78,7 @@ MeasurementsWithGroup AS (
       )) AS client
     ),
     IF(
-      _detection_granularity = 'metro',
+      '${DETECTION_GRANULARITY}' = 'metro',
       g.metro,
       CONCAT(g.city_ip_info, '-', g.region_ip_info, '-', g.country_ip_info)
     ) AS detection_src_city,
@@ -105,7 +105,13 @@ MeasurementsWithGroup AS (
                PARTITION BY ip_address
                ORDER BY ABS(DATE_DIFF(COALESCE(geoloc_snapshot_date, partition_date),
                                       DATE '${DAY}', DAY)) ASC,
-                        COALESCE(geoloc_snapshot_date, partition_date) DESC
+                        COALESCE(geoloc_snapshot_date, partition_date) DESC,
+                        COALESCE(city_ip_info, '') ASC,
+                        COALESCE(region_ip_info, '') ASC,
+                        COALESCE(country_ip_info, '') ASC,
+                        COALESCE(lat_ip_info, -999.0) ASC,
+                        COALESCE(lon_ip_info, -999.0) ASC,
+                        COALESCE(metro, '') ASC
              ) AS rn
       -- BOTH address families. The enrichment writes IPv4 and IPv6 client
       -- geolocation to separate tables (the enricher is instantiated once per
@@ -134,7 +140,7 @@ MeasurementsWithGroup AS (
   WHERE ndt.partition_date BETWEEN '${ONE_WEEK_EARLIER}' AND '${DAY}'
     -- An unresolved coordinate is not a metro. Do not silently mix a city
     -- fallback into a partition labelled as metro-derived.
-    AND (_detection_granularity != 'metro' OR g.metro IS NOT NULL)
+    AND ('${DETECTION_GRANULARITY}' != 'metro' OR g.metro IS NOT NULL)
 ),
 --------------------------------------------------------------------------------
 -- A) Find consistent IP addresses (distance + "metro_rank"), then keep them.
@@ -260,7 +266,9 @@ Enumerated AS (
     COUNT(*) OVER (PARTITION BY src_asn, src_city, dst_site, ip_version) AS group_total_measurements,
     ROW_NUMBER() OVER (
       PARTITION BY src_asn, src_city, dst_site, client_ip, ip_version
-      ORDER BY (SELECT NULL)
+      -- Stable pseudo-random trimming: avoid chronological bias without making
+      -- identical reruns select different baseline measurements.
+      ORDER BY FARM_FINGERPRINT(measurement_id), measurement_id
     ) AS ip_measurement_index
   FROM AllMeasurementsForTrimming am
 ),
@@ -281,7 +289,7 @@ ReAgg AS (
     ip_version,
     COUNT(DISTINCT client_ip) AS unique_ip_count_per_site,
     COUNT(*) AS measurement_count_per_site,
-    ARRAY_AGG(measurement_id) AS keep_ids
+    ARRAY_AGG(measurement_id ORDER BY FARM_FINGERPRINT(measurement_id), measurement_id) AS keep_ids
   FROM TrimmedMeasurements
   GROUP BY src_asn, src_city, src_country, dst_site, ip_version
 ),
@@ -415,8 +423,13 @@ BaselineMetricsAggregated AS (
       PARTITION BY src_asn, src_city, dst_site, ip_version
     ) AS baseline_p95_loss,
 
-    AVG(CASE WHEN loss_rate > 0.01 THEN 1.0 ELSE 0.0 END) OVER (
-      PARTITION BY src_asn, src_city, dst_site, ip_version
+    SAFE_DIVIDE(
+      SUM(CASE WHEN loss_rate > 0.01 THEN 1 ELSE 0 END) OVER (
+        PARTITION BY src_asn, src_city, dst_site, ip_version
+      ),
+      COUNT(loss_rate) OVER (
+        PARTITION BY src_asn, src_city, dst_site, ip_version
+      )
     ) AS baseline_lossy_fraction,
 
     SUM(CASE WHEN loss_rate > 0.01 THEN 1 ELSE 0 END) OVER (
@@ -498,18 +511,21 @@ CombinedRTTs AS (
     c.current_rtt_stddev,
 
     (
-      SELECT APPROX_QUANTILES(val, 100)[OFFSET(50)]
+      SELECT PERCENTILE_CONT(val, 0.50) OVER()
       FROM UNNEST(baseline_rtt_array) AS val
+      LIMIT 1
     ) AS baseline_median_rtt,
 
     (
-      SELECT APPROX_QUANTILES(val, 100)[OFFSET(50)]
+      SELECT PERCENTILE_CONT(val, 0.50) OVER()
       FROM UNNEST(baseline_throughput_array) AS val
+      LIMIT 1
     ) AS baseline_median_throughput,
 
     (
-      SELECT APPROX_QUANTILES(val, 100)[OFFSET(50)]
+      SELECT PERCENTILE_CONT(val, 0.50) OVER()
       FROM UNNEST(baseline_upload_throughput_array) AS val
+      LIMIT 1
     ) AS baseline_median_upload_throughput
 
   FROM CurrentRTTsPerGroup c
@@ -614,23 +630,27 @@ CandidateGroups AS (
   SELECT
     *,
     (
-      SELECT APPROX_QUANTILES(x, 100)[OFFSET(50)]
+      SELECT PERCENTILE_CONT(x, 0.50) OVER()
       FROM UNNEST(current_rtt_array) AS x
+      LIMIT 1
     ) AS current_median_rtt,
 
     (
-      SELECT APPROX_QUANTILES(x, 100)[OFFSET(50)]
+      SELECT PERCENTILE_CONT(x, 0.50) OVER()
       FROM UNNEST(current_throughput_array) AS x
+      LIMIT 1
     ) AS current_median_throughput,
 
     (
-      SELECT APPROX_QUANTILES(x, 100)[OFFSET(50)]
+      SELECT PERCENTILE_CONT(x, 0.50) OVER()
       FROM UNNEST(current_upload_throughput_array) AS x
+      LIMIT 1
     ) AS current_median_upload_throughput,
 
     (
-      SELECT APPROX_QUANTILES(x, 100)[OFFSET(95)]
+      SELECT PERCENTILE_CONT(x, 0.95) OVER()
       FROM UNNEST(current_loss_array) AS x
+      LIMIT 1
     ) AS current_p95_loss,
 
     SAFE_DIVIDE(current_lossy_count, NULLIF(current_loss_total, 0)) AS current_lossy_fraction,
@@ -666,6 +686,12 @@ StatisticalTestsResults AS (
     `hermes.welchs_t_test`(current_rtt_array, baseline_rtt_array) AS t_test_result,
     ARRAY_LENGTH(current_rtt_array) AS current_number_of_measurements,
     ARRAY_LENGTH(baseline_rtt_array) AS baseline_number_of_measurements,
+    -- Upload availability is only ~54% of paired download rows.  The RTT-shaped
+    -- candidate gate above therefore does not guarantee enough upload evidence
+    -- for three distribution tests.  Carry explicit upload counts into the
+    -- verdict CTE and require the measured 10/25 minimum there.
+    ARRAY_LENGTH(current_upload_throughput_array) AS current_upload_sample_count,
+    ARRAY_LENGTH(baseline_upload_throughput_array) AS baseline_upload_sample_count,
     current_rtt_stddev,
 
     `hermes.mann_whitney_u_test`(
@@ -676,7 +702,7 @@ StatisticalTestsResults AS (
       current_throughput_array, baseline_throughput_array
     ) AS t_test_result_throughput,
 
-    `hermes.compute_wasserstein_p_value`(
+    compute_wasserstein_p_value(
       current_throughput_array, baseline_throughput_array, 50
     ) AS wasserstein_throughput_result,
 
@@ -688,7 +714,7 @@ StatisticalTestsResults AS (
       current_upload_throughput_array, baseline_upload_throughput_array
     ) AS t_test_result_upload_throughput,
 
-    `hermes.compute_wasserstein_p_value`(
+    compute_wasserstein_p_value(
       current_upload_throughput_array, baseline_upload_throughput_array, 50
     ) AS wasserstein_upload_throughput_result,
 
@@ -771,7 +797,7 @@ StatisticalTestsResults AS (
   FROM CandidateGroups
 ),
 
-CurrentDayAggregated AS (
+CurrentDayAggregatedBase AS (
   SELECT
     TRUE AS is_consistent,
     ndt.client.Network.ASNumber AS src_asn,
@@ -793,20 +819,27 @@ CurrentDayAggregated AS (
 
     CAST('${DAY}' AS TIMESTAMP) AS current_day_ts,
 
-    APPROX_QUANTILES(ndt.download_min_rtt, 100)[OFFSET(50)] AS median_rtt,
-    APPROX_QUANTILES(ndt.download_throughput_mbps, 100)[OFFSET(50)] AS median_throughput,
-    APPROX_QUANTILES(ndt.upload_throughput_mbps, 100)[OFFSET(50)] AS median_upload_throughput,
-
-    APPROX_QUANTILES(ndt.download_loss_rate, 100)[OFFSET(50)] AS median_loss_rate,
-    APPROX_QUANTILES(ndt.download_loss_rate, 100)[OFFSET(95)] AS current_p95_loss,
-    AVG(CASE WHEN ndt.download_loss_rate > 0.01 THEN 1.0 ELSE 0.0 END) AS current_lossy_fraction,
+    ARRAY_AGG(ndt.download_min_rtt IGNORE NULLS ORDER BY ndt.download_min_rtt)
+      AS current_rtt_values,
+    ARRAY_AGG(ndt.download_throughput_mbps IGNORE NULLS ORDER BY ndt.download_throughput_mbps)
+      AS current_throughput_values,
+    ARRAY_AGG(ndt.upload_throughput_mbps IGNORE NULLS ORDER BY ndt.upload_throughput_mbps)
+      AS current_upload_throughput_values,
+    ARRAY_AGG(ndt.download_loss_rate IGNORE NULLS ORDER BY ndt.download_loss_rate)
+      AS current_loss_values,
+    SAFE_DIVIDE(
+      COUNTIF(ndt.download_loss_rate > 0.01),
+      COUNT(ndt.download_loss_rate)
+    ) AS current_lossy_fraction,
     COUNTIF(ndt.download_loss_rate > 0.01) AS current_lossy_count,
     COUNT(ndt.download_loss_rate) AS current_loss_total,
 
     AVG(ndt.download_min_rtt) AS mean_rtt,
-    APPROX_QUANTILES(ndt.download_min_rtt, 100)[OFFSET(20)] AS current_20th_rtt,
+    -- Exact percentiles are added in CurrentDayAggregated below. BigQuery's
+    -- approximate aggregate changed the loss verdict for boundary groups on
+    -- identical reruns.
 
-    ANY_VALUE(ndt.client_name) AS client_name
+    MIN(ndt.client_name) AS client_name
   FROM MeasurementsWithGroup ndt
   JOIN ConsistentSRCCounts c
     ON ndt.client_ip = c.client_ip
@@ -824,6 +857,27 @@ CurrentDayAggregated AS (
     src_asn, src_city, dst_site, dst_city, dst_asn, dst_country,
     src_country, src_asn_name, is_consistent, src_state, dst_lat, dst_lon,
     ndt.ip_version
+),
+
+CurrentDayAggregated AS (
+  SELECT
+    b.* EXCEPT (
+      current_rtt_values, current_throughput_values,
+      current_upload_throughput_values, current_loss_values
+    ),
+    (SELECT PERCENTILE_CONT(x, 0.50) OVER() FROM UNNEST(current_rtt_values) x LIMIT 1)
+      AS median_rtt,
+    (SELECT PERCENTILE_CONT(x, 0.50) OVER() FROM UNNEST(current_throughput_values) x LIMIT 1)
+      AS median_throughput,
+    (SELECT PERCENTILE_CONT(x, 0.50) OVER()
+     FROM UNNEST(current_upload_throughput_values) x LIMIT 1) AS median_upload_throughput,
+    (SELECT PERCENTILE_CONT(x, 0.50) OVER() FROM UNNEST(current_loss_values) x LIMIT 1)
+      AS median_loss_rate,
+    (SELECT PERCENTILE_CONT(x, 0.95) OVER() FROM UNNEST(current_loss_values) x LIMIT 1)
+      AS current_p95_loss,
+    (SELECT PERCENTILE_CONT(x, 0.20) OVER() FROM UNNEST(current_rtt_values) x LIMIT 1)
+      AS current_20th_rtt
+  FROM CurrentDayAggregatedBase b
 ),
 
 DayLevelAnomaly AS (
@@ -913,7 +967,9 @@ DayLevelAnomaly AS (
     ) AS anomaly_throughput,
 
     IF(
-      st.t_test_result_upload_throughput IS NOT NULL
+      st.current_upload_sample_count >= 10
+      AND st.baseline_upload_sample_count >= 25
+      AND st.t_test_result_upload_throughput IS NOT NULL
       AND st.mann_whitney_upload_throughput IS NOT NULL
       AND st.wasserstein_upload_throughput_result IS NOT NULL
       AND st.t_test_result_upload_throughput.p_value < 0.05
@@ -993,28 +1049,46 @@ AnomalyCounts AS (
     MAX(number_of_unique_src_ips_baseline) AS number_of_unique_src_ips_baseline,
     COUNT(*) AS total_group_rows,
 
-    ANY_VALUE(anomaly_ratio_throughput) AS anomaly_ratio_throughput,
-    ANY_VALUE(anomaly_ratio_upload_throughput) AS anomaly_ratio_upload_throughput,
-    ANY_VALUE(anomaly_ratio_rtt) AS anomaly_ratio_rtt,
-    ANY_VALUE(anomaly_loss_ratio) AS anomaly_loss_ratio,
+    MIN(anomaly_ratio_throughput) AS anomaly_ratio_throughput,
+    MIN(anomaly_ratio_upload_throughput) AS anomaly_ratio_upload_throughput,
+    MIN(anomaly_ratio_rtt) AS anomaly_ratio_rtt,
+    MIN(anomaly_loss_ratio) AS anomaly_loss_ratio,
 
-    ANY_VALUE(difference_latency) AS difference_latency,
-    ANY_VALUE(difference_throughput) AS difference_throughput,
-    ANY_VALUE(difference_upload_throughput) AS difference_upload_throughput,
+    MIN(difference_latency) AS difference_latency,
+    MIN(difference_throughput) AS difference_throughput,
+    MIN(difference_upload_throughput) AS difference_upload_throughput,
 
-    ANY_VALUE(wasserstein_throughput_result) AS wasserstein_throughput_result,
-    ANY_VALUE(wasserstein_upload_throughput_result) AS wasserstein_upload_throughput_result,
+    ARRAY_AGG(
+      wasserstein_throughput_result
+      ORDER BY TO_JSON_STRING(wasserstein_throughput_result) LIMIT 1
+    )[OFFSET(0)] AS wasserstein_throughput_result,
+    ARRAY_AGG(
+      wasserstein_upload_throughput_result
+      ORDER BY TO_JSON_STRING(wasserstein_upload_throughput_result) LIMIT 1
+    )[OFFSET(0)] AS wasserstein_upload_throughput_result,
 
-    ANY_VALUE(mann_whitney_latency) AS mann_whitney_latency,
-    ANY_VALUE(mann_whitney_throughput) AS mann_whitney_throughput,
-    ANY_VALUE(mann_whitney_upload_throughput) AS mann_whitney_upload_throughput,
+    ARRAY_AGG(
+      mann_whitney_latency ORDER BY TO_JSON_STRING(mann_whitney_latency) LIMIT 1
+    )[OFFSET(0)] AS mann_whitney_latency,
+    ARRAY_AGG(
+      mann_whitney_throughput ORDER BY TO_JSON_STRING(mann_whitney_throughput) LIMIT 1
+    )[OFFSET(0)] AS mann_whitney_throughput,
+    ARRAY_AGG(
+      mann_whitney_upload_throughput
+      ORDER BY TO_JSON_STRING(mann_whitney_upload_throughput) LIMIT 1
+    )[OFFSET(0)] AS mann_whitney_upload_throughput,
 
-    ANY_VALUE(z_loss_occurrence) AS     z_loss_occurrence,
-    ANY_VALUE(mann_whitney_loss_severity) AS mann_whitney_loss_severity,
+    MIN(z_loss_occurrence) AS z_loss_occurrence,
+    ARRAY_AGG(
+      mann_whitney_loss_severity
+      ORDER BY TO_JSON_STRING(mann_whitney_loss_severity) LIMIT 1
+    )[OFFSET(0)] AS mann_whitney_loss_severity,
 
-    ANY_VALUE(t_test_latency) AS t_test_latency,
+    ARRAY_AGG(
+      t_test_latency ORDER BY TO_JSON_STRING(t_test_latency) LIMIT 1
+    )[OFFSET(0)] AS t_test_latency,
 
-    ANY_VALUE(client_name) AS client_name,
+    MIN(client_name) AS client_name,
 
     SUM(anomaly_rtt) AS anomaly_rtt_count,
     SUM(anomaly_throughput) AS anomaly_throughput_count,
@@ -1027,7 +1101,7 @@ AnomalyCounts AS (
     -- key grouped on above. The explicit INSERT list makes schema evolution and
     -- rollback safe; these fields remain last for compatibility with the ALTER.
     -- See docs/proposals/2026-08-group-granularity.md.
-    _detection_granularity AS detection_granularity,
+    '${DETECTION_GRANULARITY}' AS detection_granularity,
     src_city AS src_group_label,
     'ipinfo' AS client_geo_source
   FROM DayLevelAnomaly

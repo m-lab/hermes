@@ -18,19 +18,22 @@ source of truth captured from `INFORMATION_SCHEMA.ROUTINES`.
 |------|----------|---------|
 | `welchs_t_test.sql` | `welchs_t_test(baseline ARRAY<FLOAT64>, current_rtt ARRAY<FLOAT64>)` | Welch's t-test (unequal variances) on RTT distributions. |
 | `mann_whitney_u_test.sql` | `mann_whitney_u_test(...)` | Mann–Whitney U rank-sum test. |
-| `compute_wasserstein_p_value.sql` | `compute_wasserstein_p_value(weekly ARRAY<FLOAT64>, daily ARRAY<FLOAT64>, num_permutations INT64)` | 1-D Wasserstein distance + permutation p-value. |
+| `compute_wasserstein_p_value.sql` | `compute_wasserstein_p_value(weekly ARRAY<FLOAT64>, daily ARRAY<FLOAT64>, num_permutations INT64)` | Self-contained deterministic 1-D Wasserstein permutation test used by Step 02. |
 
-All three are JavaScript UDFs (`LANGUAGE js`).
+All three are JavaScript UDFs (`LANGUAGE js`). Welch and Mann–Whitney retain
+their persistent definitions. Wasserstein is a `CREATE TEMP FUNCTION` inlined
+into Step 02 by `@requires-udf`, so every image carries the exact detector it
+runs and a sandbox cannot silently share a different live routine with
+production. Its permutations use a stable seed derived from canonicalized
+input arrays; input row order and repeated execution do not change the result.
 
 ## Deploying / recreating
 
-The `.sql` files are complete `CREATE FUNCTION` statements (fully qualified to
-`mlab-collaboration.hermes`). To (re)create them in that project — or to
-recreate them in a different project after editing the qualified name — run each
-file once:
+The Welch and Mann–Whitney files are complete persistent `CREATE FUNCTION`
+statements qualified to `mlab-collaboration.hermes`. To recreate those two:
 
 ```bash
-for f in welchs_t_test mann_whitney_u_test compute_wasserstein_p_value; do
+for f in welchs_t_test mann_whitney_u_test; do
   bq query --use_legacy_sql=false --project_id=mlab-collaboration < "$f.sql"
 done
 ```
@@ -49,8 +52,6 @@ FROM `mlab-collaboration`.hermes.INFORMATION_SCHEMA.ROUTINES;
 
 Write each `ddl` value to `<routine_name>.sql`.
 
-> Note: a `hermes.sql.loader` exists that can prepend `-- @requires-udf: <name>`
-> UDF files into a query as `CREATE TEMP FUNCTION`s for fully self-contained
-> queries. The detection queries currently use the **persistent** functions
-> above by qualified name, so they do not declare `@requires-udf` directives.
-> The loader is available if a future query wants the inlined/self-contained form.
+> Step 02 declares `-- @requires-udf: compute_wasserstein_p_value`; the SQL
+> loader prepends that temporary function before submitting the query. Do not
+> deploy the Wasserstein file as a persistent routine.

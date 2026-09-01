@@ -3,8 +3,9 @@
 On-demand only: runs against ``mlab-collaboration.hermes`` and is skipped unless
 BigQuery credentials are configured (``GOOGLE_APPLICATION_CREDENTIALS`` set, or
 ``HERMES_BQ_TEST=1``). The expected values in ``golden/udf/stat_udf_cases.json``
-were captured from the live UDFs; only deterministic fields are asserted
-(wasserstein's permutation-randomized ``p_value`` is excluded).
+were captured from the live persistent Welch and Mann–Whitney UDFs. The
+Wasserstein detector is now an image-scoped temporary UDF and has separate
+offline/static determinism contracts.
 
 Run it explicitly with::
 
@@ -57,18 +58,14 @@ def test_persistent_stat_udfs_match_golden(client):
     case = json.loads(CASES.read_text())
     base = _arr(case["input"]["baseline"])
     cur = _arr(case["input"]["current"])
-    nperm = int(case["input"]["num_permutations"])
     exp = case["expected"]
 
     sql = (
         "SELECT "
         f"`{PROJECT}`.hermes.welchs_t_test({base},{cur}) AS welch, "
-        f"`{PROJECT}`.hermes.mann_whitney_u_test({base},{cur}) AS mw, "
-        f"`{PROJECT}`.hermes.compute_wasserstein_p_value({base},{cur},{nperm}) AS ws"
+        f"`{PROJECT}`.hermes.mann_whitney_u_test({base},{cur}) AS mw"
     )
     row = list(client.query(sql).result())[0]
 
     _assert_close(dict(row["welch"]), exp["welch"], "welch")
     _assert_close(dict(row["mw"]), exp["mann_whitney"], "mann_whitney")
-    # wasserstein: only the deterministic distance (p_value is permutation-random)
-    assert math.isclose(dict(row["ws"])["distance"], exp["wasserstein"]["distance"], rel_tol=1e-9)

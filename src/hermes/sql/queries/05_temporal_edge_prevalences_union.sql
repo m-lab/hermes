@@ -9,10 +9,17 @@ WITH meas AS (
     CONCAT(src_asn, ' - ', src_group_label, ' - ', dst_site) AS src_dst_pair,
     ip_version,
     DATE(window_start) >= '${DAY}' AS is_day,
+    -- Directional eligibility is essential here: download throughput describes
+    -- server->client, while upload throughput describes client->server. RTT is
+    -- round-trip evidence and is intentionally eligible in both directions.
     (
       (anomaly_ratio_rtt >= 0.8 AND ndt_rtt > baseline_median_rtt + 5 AND anomaly_rtt_count >= 0.5)
       OR (anomaly_ratio_throughput >= 0.8 AND ndt_throughput < baseline_median_throughput AND anomaly_throughput_count >= 0.5)
-    ) AS is_anomaly,
+    ) AS is_forward_anomaly,
+    (
+      (anomaly_ratio_rtt >= 0.8 AND ndt_rtt > baseline_median_rtt + 5 AND anomaly_rtt_count >= 0.5)
+      OR (anomaly_ratio_upload_throughput >= 0.8 AND median_upload_throughput < baseline_median_upload_throughput AND anomaly_upload_throughput_count >= 0.5)
+    ) AS is_reverse_anomaly,
     forward_updated_node_details AS fwd,
     reverse_updated_node_details AS rev
   FROM `mlab-collaboration.${DS}.events_with_as_and_geoloc`
@@ -22,12 +29,12 @@ WITH meas AS (
 hops AS (
   -- Canonicalize each hop's place to the polygon metro (lat/lon-derived) so a place
   -- isn't split by ISO2-vs-full region naming across geo sources.
-  SELECT id, src_dst_pair, ip_version, is_day, is_anomaly, 'forward' AS direction,
+  SELECT id, src_dst_pair, ip_version, is_day, is_forward_anomaly AS is_anomaly, 'forward' AS direction,
     n.ttl, IFNULL(CONCAT(n.associated_asn, '-', COALESCE(al.canon_metro, n.place)), '*') AS node, n.rtts
   FROM meas, UNNEST(fwd) AS n
   LEFT JOIN `mlab-collaboration.${DS}.place_canonical_metro` al ON al.place = n.place
   UNION ALL
-  SELECT id, src_dst_pair, ip_version, is_day, is_anomaly, 'reverse' AS direction,
+  SELECT id, src_dst_pair, ip_version, is_day, is_reverse_anomaly AS is_anomaly, 'reverse' AS direction,
     n.ttl, IFNULL(CONCAT(n.associated_asn, '-', COALESCE(al.canon_metro, n.place)), '*') AS node, n.rtts
   FROM meas, UNNEST(rev) AS n
   LEFT JOIN `mlab-collaboration.${DS}.place_canonical_metro` al ON al.place = n.place

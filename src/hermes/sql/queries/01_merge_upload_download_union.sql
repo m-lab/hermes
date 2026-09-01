@@ -42,18 +42,21 @@ Downloads AS (
       SELECT cm.Value
       FROM UNNEST(ndt.raw.Download.ClientMetadata) AS cm
       WHERE cm.Name = 'access_token'
+      ORDER BY cm.Value
       LIMIT 1
     ) AS access_token,
     (
       SELECT cm.Value
       FROM UNNEST(ndt.raw.Download.ClientMetadata) AS cm
       WHERE cm.Name = 'metro_rank'
+      ORDER BY cm.Value
       LIMIT 1
     ) AS metro_rank,
     (
       SELECT cm.Value
       FROM UNNEST(ndt.raw.Download.ClientMetadata) AS cm
       WHERE cm.Name = 'client_name'
+      ORDER BY cm.Value
       LIMIT 1
     ) AS client_name
   FROM `measurement-lab.ndt.ndt7_union` ndt
@@ -63,13 +66,16 @@ Downloads AS (
 ),
 
 UploadsCollapsed AS (
-  -- Multiple upload rows can share the same access_token; collapse per day+token.
+  -- Multiple upload rows can share the same access_token. Select one complete
+  -- metric tuple deterministically rather than combining arbitrary ANY_VALUEs.
   SELECT
     date,
     access_token,
-    ANY_VALUE(upload_throughput_mbps) AS upload_throughput_mbps,
-    ANY_VALUE(upload_min_rtt) AS upload_min_rtt,
-    ANY_VALUE(upload_loss_rate) AS upload_loss_rate
+    ARRAY_AGG(
+      STRUCT(upload_throughput_mbps, upload_min_rtt, upload_loss_rate)
+      ORDER BY upload_throughput_mbps, upload_min_rtt, upload_loss_rate
+      LIMIT 1
+    )[OFFSET(0)] AS selected_upload
   FROM UploadsByAccessToken
   GROUP BY date, access_token
 )
@@ -90,9 +96,9 @@ SELECT
   d.download_a.LossRate AS download_loss_rate,
 
   -- Upload metrics
-  u.upload_throughput_mbps,
-  u.upload_min_rtt,
-  u.upload_loss_rate,
+  u.selected_upload.upload_throughput_mbps,
+  u.selected_upload.upload_min_rtt,
+  u.selected_upload.upload_loss_rate,
 
   IF(REGEXP_CONTAINS(d.client_ip, ':'), 'v6', 'v4') AS ip_version,
 
@@ -100,4 +106,3 @@ SELECT
 FROM Downloads d
 LEFT JOIN UploadsCollapsed u
   ON u.date = d.date AND u.access_token = d.access_token;
-

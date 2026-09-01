@@ -160,6 +160,13 @@ def _sanitize_for_json(obj):
     return obj
 
 
+def _deterministic_mode(values: pd.Series):
+    """Return the most frequent value, breaking count ties by value."""
+    counts = values.value_counts()
+    winners = counts[counts == counts.max()].index
+    return sorted(winners)[0]
+
+
 OUTPUT_TABLE = _dataset_table("correlation_hyperedges_tomography_v2")
 
 
@@ -365,8 +372,8 @@ def run_greedy_set_cover(
     edge_meta = (
         edges_df.groupby(["edge", "information_source"])
         .agg(
-            canonical_edge=("canonical_edge", "first"),
-            is_interdomain=("is_interdomain", "first"),
+            canonical_edge=("canonical_edge", "min"),
+            is_interdomain=("is_interdomain", "min"),
         )
         .reset_index()
     )
@@ -498,8 +505,8 @@ def run_greedy_set_cover(
             all_sdps = a_sdps | n_sdps
             anom_in_remaining = a_sdps & remaining_anomalies
             anomalies_explained.append(len(anom_in_remaining))
-            all_sdps_impacted.append(list(all_sdps))
-            anom_sdps_impacted.append(list(anom_in_remaining))
+            all_sdps_impacted.append(sorted(all_sdps))
+            anom_sdps_impacted.append(sorted(anom_in_remaining))
 
         candidates["anomalies_explained_by_edge"] = anomalies_explained
         candidates["src_dst_pairs_impacted"] = all_sdps_impacted
@@ -546,7 +553,9 @@ def run_greedy_set_cover(
 
         # Rank coverage-first, significance as tie-break
         candidates = candidates.sort_values(
-            ["anomalies_explained_by_edge", "p_value", "edge"], ascending=[False, True, True]
+            ["anomalies_explained_by_edge", "p_value", "edge", "information_source"],
+            ascending=[False, True, True, True],
+            kind="mergesort",
         )
         top_n = max(1, int(100 / iteration) + 1)
         top = candidates.head(top_n)
@@ -746,7 +755,7 @@ def compute_hyperedges(
     )
     _ixp_pairs = _ixp_pairs[_ixp_pairs["ixp"] != "None"]
     asn_metro_to_ixp = (
-        _ixp_pairs.groupby("asn_metro")["ixp"].agg(lambda s: s.value_counts().idxmax()).to_dict()
+        _ixp_pairs.groupby("asn_metro")["ixp"].agg(_deterministic_mode).to_dict()
         if len(_ixp_pairs)
         else {}
     )
@@ -944,7 +953,7 @@ def _node_ixp_map(all_edges: pd.DataFrame) -> dict:
         s = (
             all_edges[all_edges[ci] != "None"]
             .groupby(cn)[ci]
-            .agg(lambda x: x.value_counts().idxmax())
+            .agg(_deterministic_mode)
         )
         m.update(s.to_dict())
     return m
@@ -1119,7 +1128,8 @@ def run_mixed_granularity_cover(
         if not remaining or len(remaining) <= (1 - coverage_stop) * total_anomalies:
             break
         best, best_cov, best_pur = None, 0, 0.0
-        for k, d in pool.items():
+        for k in sorted(pool):
+            d = pool[k]
             if a_run[k] < min_support or purity_of(k) < purity_floor:
                 continue
             cov = len(d["anom"] & remaining)
@@ -1151,7 +1161,7 @@ def run_mixed_granularity_cover(
             ) >= accuracy_keep * max(cp for _, cp, _ in child_info)
             if not keep_coarse:
                 if child_info:
-                    _, _, domk = max(child_info, key=lambda t: (t[0], t[1]))
+                    _, _, domk = max(child_info, key=lambda t: (t[0], t[1], t[2]))
                     demoted_from = f"{gran}:{entity}"
                     gran, entity, info = domk
                     covered = pool[domk]["anom"] & remaining
@@ -1178,7 +1188,7 @@ def run_mixed_granularity_cover(
                 "odds_ratio": osel,
                 "support_anomalous": a_sel,
                 "support_healthy": n_sel,
-                "anomalous_src_dst_pairs_impacted": [code_to_sdp[c] for c in covered],
+                "anomalous_src_dst_pairs_impacted": [code_to_sdp[c] for c in sorted(covered)],
             }
         )
         # explain the covered groups: drop them from the universe and decrement running counts

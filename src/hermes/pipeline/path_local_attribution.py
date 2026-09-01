@@ -22,7 +22,10 @@ def _flag_reason(hop: dict) -> str | None:
 
 def localize_on_path(hops: list[dict]) -> dict | None:
     """Return {'from_node','to_node','reason'} for the first flagged segment, else None."""
-    ordered = sorted(hops, key=lambda h: h.get("ttl", 0))
+    ordered = sorted(
+        hops,
+        key=lambda h: (h.get("ttl", 0), h.get("asn_metro", ""), h.get("hop_addr", "")),
+    )
     prev = None
     for hop in ordered:
         reason = _flag_reason(hop)

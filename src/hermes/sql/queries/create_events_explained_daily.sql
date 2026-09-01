@@ -47,6 +47,15 @@ CREATE TABLE IF NOT EXISTS `mlab-collaboration.${DS}.events_explained_daily`
   -- Baseline measurement count for this group, the companion to n_dayof. Last,
   -- because that is where ALTER TABLE ADD COLUMN puts it on an already-created
   -- table; a fresh CREATE has to agree with an altered one.
-  n_baseline INT64
+  n_baseline INT64,
+  -- Upload parity block. Keep this exact append order synchronized with
+  -- add_upload_anomaly_columns.sql and step 07's explicit INSERT list.
+  baseline_median_upload_throughput FLOAT64,
+  median_daily_upload_throughput FLOAT64,
+  mean_daily_upload_throughput FLOAT64,
+  anomaly_ratio_upload_throughput FLOAT64,
+  upload_anomaly_sites INT64,
+  total_anomalous_sites_all_signals INT64,
+  anomaly_signals ARRAY<STRING>
 )
 PARTITION BY partition_date;

@@ -7,7 +7,7 @@ edges the usual route did not use.
 
 
 def divergence(prev_u: dict[str, float], prev_d: dict[str, float]) -> float:
-    edges = set(prev_u) | set(prev_d)
+    edges = sorted(set(prev_u) | set(prev_d))
     return float(sum(max(0.0, prev_d.get(e, 0.0) - prev_u.get(e, 0.0)) for e in edges))
 
 
@@ -15,7 +15,7 @@ def label_edges(
     prev_u: dict[str, float], prev_d: dict[str, float], delta: float = 0.5
 ) -> dict[str, str]:
     out: dict[str, str] = {}
-    for e in set(prev_u) | set(prev_d):
+    for e in sorted(set(prev_u) | set(prev_d)):
         shift = prev_d.get(e, 0.0) - prev_u.get(e, 0.0)
         out[e] = "diverted" if shift >= delta else "abandoned" if shift <= -delta else "stable"
     return out
@@ -149,7 +149,9 @@ def compute_temporal_verdicts(
                     jump=stable["day_hop_rtt"].fillna(0) - stable["base_hop_rtt"].fillna(0)
                 )
                 congested_segment = (
-                    stable.sort_values("jump", ascending=False)["edge"].iloc[0]
+                    stable.sort_values(
+                        ["jump", "edge"], ascending=[False, True], kind="mergesort"
+                    )["edge"].iloc[0]
                     if len(stable)
                     else None
                 )

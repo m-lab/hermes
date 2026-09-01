@@ -114,8 +114,8 @@ def test_04_giga_dedup_uses_the_immutable_identity_with_a_legacy_bridge(step04):
 # Identity originates at 02 and is carried, never synthesised.
 # ---------------------------------------------------------------------------
 def test_02_declares_granularity_and_the_grouping_key(step02):
-    assert "DECLARE _detection_granularity STRING DEFAULT '${DETECTION_GRANULARITY}'" in step02
-    assert re.search(r"_detection_granularity\s+AS\s+detection_granularity", step02)
+    assert "ASSERT '${DETECTION_GRANULARITY}' IN ('city', 'metro')" in step02
+    assert re.search(r"'\$\{DETECTION_GRANULARITY\}'\s+AS\s+detection_granularity", step02)
     assert re.search(r"\bsrc_city\s+AS\s+src_group_label\b", step02)
     assert "'ipinfo' AS client_geo_source" in step02
 
@@ -185,7 +185,10 @@ def test_03_carries_identity_without_synthesising_it(step03):
 # ---------------------------------------------------------------------------
 def test_06_keys_pair_strings_on_the_detection_group(step06):
     """Otherwise Phase D attributes metro-collapsed groups."""
-    assert "CONCAT(fr.src_asn, ' - ', fr.src_group_label, ' - ', fr.dst_site)" in step06
+    assert (
+        "CONCAT(fr.src_asn, ' - ', fr.src_group_label, ' - ', fr.dst_site, ' - ', "
+        "fr.ip_version)" in step06
+    )
     assert "CONCAT(fr.src_asn, ' - ', fr.src_city, ' - ', fr.dst_site)" not in step06
 
 
@@ -193,7 +196,10 @@ def test_path_local_uses_the_same_pair_identity_as_the_main_prepare(
     step06_unexplained,
 ):
     """Python intersects the two query outputs by exact src_dst_pair string."""
-    assert "CONCAT(src_asn, ' - ', src_group_label, ' - ', dst_site)" in step06_unexplained
+    assert (
+        "CONCAT(src_asn, ' - ', src_group_label, ' - ', dst_site, ' - ', ip_version)"
+        in step06_unexplained
+    )
     assert "CONCAT(src_asn, ' - ', src_city, ' - ', dst_site)" not in step06_unexplained
 
 
@@ -255,8 +261,10 @@ def test_07_accepts_hyperedges_keyed_either_way(step07):
 
 def test_07_unresolved_mirrors_the_two_way_match(step07):
     """Else a pair matched on the metro form appears in BOTH branches."""
-    assert step07.count("CONCAT(src_asn, ' - ', src_group_label, ' - ', dst_site) NOT IN") == 1
-    assert step07.count("CONCAT(src_asn, ' - ', src_metro, ' - ', dst_site) NOT IN") == 1
+    assert "WHERE NOT EXISTS (" in step07
+    assert "= src_group_label" in step07
+    assert "= src_metro" in step07
+    assert "ocd.pair_ip_version = ip_version" in step07
 
 
 def test_07_resolved_takes_the_label_from_the_matched_row(step07):
@@ -267,15 +275,15 @@ def test_07_resolved_takes_the_label_from_the_matched_row(step07):
     every resolved row -- indistinguishable from the join not matching at all.
     """
     assert re.search(
-        r"COALESCE\(ta\.src_group_label,\s*\n?\s*SPLIT\(src_dst_str, ' - '\)"
-        r"\[SAFE_OFFSET\(1\)\]\) AS src_group_label",
+        r"COALESCE\(ta\.src_group_label,\s*\n?\s*ocd\.pair_src_group_label\) "
+        r"AS src_group_label",
         step07,
     )
 
 
 def test_07_records_which_source_label_vocabulary_matched(step07):
     assert re.search(
-        r"IF\(SPLIT\(src_dst_str, ' - '\)\[SAFE_OFFSET\(1\)\] = ta\.src_group_label,"
+        r"IF\(ocd\.pair_src_group_label = ta\.src_group_label,"
         r"\s*ta\.detection_granularity, 'metro'\) AS src_match_granularity",
         step07,
     )
