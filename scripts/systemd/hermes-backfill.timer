@@ -1,0 +1,17 @@
+[Unit]
+Description=Daily hermes_union backfill, sized to the day's leftover budget
+
+[Timer]
+# 17:00 UTC = 10:00 PT. Two things have to be true at once:
+#   * the day run (15:00 UTC, ~50 min) has finished, so the single 28 GB container
+#     slot is free and its cost is already visible to the budget check;
+#   * we are past 07:00 UTC, so this bills against the same PT quota day as that
+#     run -- which is the whole point, since the backfill is spending what the day
+#     run left rather than borrowing from tomorrow.
+# Persistent=false is deliberate: a missed day should be skipped, not run at a
+# random catch-up hour where it could collide with the next day run.
+OnCalendar=*-*-* 17:00:00 UTC
+Persistent=false
+
+[Install]
+WantedBy=timers.target
