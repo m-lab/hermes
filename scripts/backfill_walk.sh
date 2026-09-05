@@ -53,7 +53,9 @@ NIGHTLY_GUARD_MIN="${NIGHTLY_GUARD_MIN:-240}"  # refuse to start within this of 
 MAX_SNAPSHOT_GAP_DAYS="${MAX_SNAPSHOT_GAP_DAYS:-45}"
 
 STATE="${STATE:-$HOME/.hermes-backfill}"
-SKIPS="$STATE/skip-dates.txt"
+# Per-granularity: a date retired for a metro run may be perfectly fillable at
+# maxmind_city, so one shared list would leak a refusal across regimes.
+SKIPS="$STATE/skip-dates-$GRANULARITY.txt"
 LOG="${LOG:-$HOME/logs/backfill_walk.log}"
 STATUS="${STATUS:-$HOME/logs/backfill_status.txt}"
 

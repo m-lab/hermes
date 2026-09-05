@@ -85,17 +85,42 @@ def granularity_blocked(client: bigquery.Client, granularity: str) -> set[date]:
     Excluding them here is deliberate: filling them at ``metro`` would mean
     deleting published pre-cutover partitions and rebuilding them under a
     different methodology, which is a decision for a human, not a nightly driver.
+
+    A date with NO rows at all is the harder case, and the one that bit us second.
+    Its granularity is undetermined, so it sails through a check that only looks at
+    what is present -- and the 2025-08-26..08-31 hole sits exactly between two
+    maxmind_city blocks (2025-08-01..08-25 and 2025-09-01..2026-07-31). Filling it
+    at metro would embed a six-day metro island inside a 359-day maxmind_city era:
+    worse than the hole, because a gap is visible in coverage and an island is not.
+    So an empty date inherits the granularity of its nearest dated neighbour, and is
+    blocked when that disagrees with the run.
+
+    The walk window is the case this must NOT block: 2025-01-25..2025-06-12 has no
+    rows either, but its nearest neighbour is 2025-06-13 (metro), so a metro run is
+    correctly allowed to proceed.
     """
     sql = f"""
-        SELECT partition_date AS d
+        SELECT partition_date AS d,
+               STRING_AGG(DISTINCT COALESCE(detection_granularity, '<NULL>')) AS g
         FROM `{DATASET}.anomaly_counts_union`
         GROUP BY d
-        HAVING LOGICAL_OR(COALESCE(detection_granularity, '<NULL>') != @g)
     """
-    cfg = bigquery.QueryJobConfig(
-        query_parameters=[bigquery.ScalarQueryParameter("g", "STRING", granularity)]
-    )
-    return {row.d for row in client.query(sql, job_config=cfg).result()}
+    known = {row.d: row.g for row in client.query(sql).result()}
+    if not known:
+        return set()
+
+    blocked = {d for d, g in known.items() if g != granularity}
+
+    def nearest_granularity(d: date) -> str:
+        return known[min(known, key=lambda k: (abs((k - d).days), k))]
+
+    # Empty dates anywhere in the span the driver might touch, plus a year of
+    # margin either side, inherit from their nearest neighbour.
+    lo, hi = min(known) - timedelta(days=365), max(known) + timedelta(days=365)
+    blocked |= {
+        d for d in _days(lo, hi) if d not in known and nearest_granularity(d) != granularity
+    }
+    return blocked
 
 
 def read_skips(path: str | None) -> set[date]:
@@ -149,11 +174,19 @@ def main() -> int:
     skips = read_skips(args.skip_file)
 
     blocked = granularity_blocked(client, args.granularity)
-    if blocked:
+    # Only worth reporting the ones that would otherwise have been picked; the set
+    # itself spans every date in the wrong era and is not interesting.
+    relevant = sorted((set(_days(args.repair_from, args.repair_to)) | set(_days(args.floor, args.ceil))) - final)
+    noteworthy = [d for d in relevant if d in blocked]
+    if noteworthy:
         print(
-            f"note: {len(blocked)} date(s) hold a granularity other than "
-            f"{args.granularity} and are excluded; they cannot be filled without "
-            "deleting their published partitions first",
+            f"note: excluding {len(noteworthy)} missing date(s) from the "
+            f"{noteworthy[0]}..{noteworthy[-1]} span, which belongs to a granularity "
+            f"era other than {args.granularity}. These are NOT repairable in place: "
+            "the pipeline only emits 'city' or 'metro', so the legacy 'maxmind_city' "
+            "label cannot be reproduced, and the guard at union.py:580 refuses to mix "
+            "regimes in one partition. Repairing them means deleting the published "
+            "partitions and rebuilding under current methodology -- a human decision.",
             file=sys.stderr,
         )
     skips |= blocked
