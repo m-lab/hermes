@@ -35,6 +35,9 @@ CEIL="${CEIL:-2025-06-12}"     # day before current contiguous coverage starts
 # of headroom for ad-hoc work and for the nightly overrunning its usual ~1.45 TiB.
 TARGET_TIB="${TARGET_TIB:-12.0}"
 TIB_PER_DATE="${TIB_PER_DATE:-1.38}"
+# One source of truth: passed to the picker AND to the pipeline, so the dates it
+# selects can never be written at a granularity the run then refuses.
+GRANULARITY="${GRANULARITY:-metro}"
 MIN_CHUNK="${MIN_CHUNK:-2}"    # below this, wait for tomorrow rather than dribble
 MAX_CHUNK="${MAX_CHUNK:-10}"   # ~7 h at the measured rate; keeps us clear of 15:00
 # DRY_RUN=1 exercises every refusal, the budget arithmetic, the picker and the
@@ -101,7 +104,8 @@ log "budget: ${Q} TiB used, ${REMAIN} TiB left of ${TARGET_TIB} -> ${CHUNK} date
 
 # --- pick the work -------------------------------------------------------------
 ITEM=$($VENV_PY "$REPO/scripts/backfill_next_chunk.py" \
-        --floor "$FLOOR" --ceil "$CEIL" --chunk "$CHUNK" --skip-file "$SKIPS" 2>>"$LOG")
+        --floor "$FLOOR" --ceil "$CEIL" --chunk "$CHUNK" --skip-file "$SKIPS" \
+        --granularity "$GRANULARITY" 2>>"$LOG")
 if [ -z "$ITEM" ]; then say "ABORT: chunk picker produced nothing (see $LOG)"; exit 1; fi
 set -- $ITEM
 MODE=$1; shift
@@ -165,7 +169,7 @@ docker run --rm --name hermes-backfill --memory=28g --memory-swap=28g \
   -v "$CACHE":/app/cache \
   -v "$HOME/.config/gcloud/application_default_credentials.json":/app/credentials.json:ro \
   "$IMAGE" \
-  --target prod --detection-granularity metro \
+  --target prod --detection-granularity "$GRANULARITY" \
   --start-date "$S" --end-date "$E" --tomography-workers 1 $EXTRA >>"$LOG" 2>&1
 RC=$?
 

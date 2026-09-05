@@ -67,6 +67,37 @@ def _days(lo: date, hi: date) -> list[date]:
     return [lo + timedelta(i) for i in range((hi - lo).days + 1)]
 
 
+def granularity_blocked(client: bigquery.Client, granularity: str) -> set[date]:
+    """Dates that can never be filled at ``granularity`` without deleting them first.
+
+    ``union.py:580`` refuses to append one detection granularity to a date that
+    already holds another: mixing them in one partition would silently blend two
+    client-grouping regimes. So a date whose ``anomaly_counts_union`` was written
+    at ``maxmind_city`` is unfillable by a ``metro`` run, no matter how many times
+    it is retried.
+
+    This is not hypothetical. Launching without this check, the driver picked
+    2025-10-29 and 2026-03-01..03 (all in the maxmind_city era) as Phase-E repairs
+    on three consecutive days, failed identically each time, and only stopped
+    because the two-strike retirement caught it -- two days of the queue spent
+    discovering something one 1.4 GiB query answers up front.
+
+    Excluding them here is deliberate: filling them at ``metro`` would mean
+    deleting published pre-cutover partitions and rebuilding them under a
+    different methodology, which is a decision for a human, not a nightly driver.
+    """
+    sql = f"""
+        SELECT partition_date AS d
+        FROM `{DATASET}.anomaly_counts_union`
+        GROUP BY d
+        HAVING LOGICAL_OR(COALESCE(detection_granularity, '<NULL>') != @g)
+    """
+    cfg = bigquery.QueryJobConfig(
+        query_parameters=[bigquery.ScalarQueryParameter("g", "STRING", granularity)]
+    )
+    return {row.d for row in client.query(sql, job_config=cfg).result()}
+
+
 def read_skips(path: str | None) -> set[date]:
     """Dates the driver has given up on, so the walk does not retry forever.
 
@@ -104,11 +135,28 @@ def main() -> int:
         "are merely not due yet as holes and spend a chunk re-running them.",
     )
     ap.add_argument("--project", default="mlab-collaboration")
+    ap.add_argument(
+        "--granularity",
+        default="metro",
+        help="Detection granularity the driver will run at. Dates already written "
+        "at a different one are excluded, since the pipeline refuses to mix them.",
+    )
     args = ap.parse_args()
 
-    cov = coverage(bigquery.Client(project=args.project))
+    client = bigquery.Client(project=args.project)
+    cov = coverage(client)
     final = cov.get(FINAL, set())
     skips = read_skips(args.skip_file)
+
+    blocked = granularity_blocked(client, args.granularity)
+    if blocked:
+        print(
+            f"note: {len(blocked)} date(s) hold a granularity other than "
+            f"{args.granularity} and are excluded; they cannot be filled without "
+            "deleting their published partitions first",
+            file=sys.stderr,
+        )
+    skips |= blocked
 
     # 1) Phase-E-only repairs anywhere in existing history.
     upstream_ok = set.intersection(*(cov.get(t, set()) for t in UPSTREAM))
