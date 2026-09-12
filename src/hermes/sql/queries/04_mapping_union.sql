@@ -192,6 +192,19 @@ hop_prefixes AS (
     ON ix.ipv4 = REGEXP_EXTRACT(hop.id, r'_([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)$')
   WHERE date BETWEEN DATE_SUB(DATE('${DAY}'), INTERVAL 1 MONTH) AND '${DAY}'
 ),
+-- Keep only the snapshot closest to ${DAY} FOR EACH PREFIX. These tables are an
+-- append-only pile of RouteViews + IXP snapshots taken at irregular intervals
+-- (39 distinct dates for v4, 7 for v6 as of 2026-09-12, several of them partial
+-- runs, and ~1.07M v4 rows carry no date at all), so reading
+-- them unfiltered let a year-old origin compete with a current one on equal
+-- footing: 93,342 v4 and 9,466 v6 prefixes carry more than one distinct ASN
+-- across snapshots. That is how 2402:8100::/32 kept a 2025-07 Google origin long
+-- after RouteViews had corrected it to Vodafone Idea in 2025-11.
+--
+-- DENSE_RANK, not ROW_NUMBER: a MOAS/AS_SET prefix legitimately contributes
+-- several rows to the winning snapshot and all of them must survive as
+-- candidates for the cone tiebreak below. Date ties prefer the PAST snapshot,
+-- matching _closest_as_metadata / _closest_rdns / ixp_ranked above.
 unified_data_v4 AS (
   SELECT
     ip_prefix,
@@ -199,7 +212,29 @@ unified_data_v4 AS (
     NET.IP_FROM_STRING(REGEXP_EXTRACT(ip_prefix, r'(.*)/')) AS network_bin,
     CAST(REGEXP_EXTRACT(ip_prefix, r'/(.*)') AS INT64) AS mask,
     IFNULL(ixp, 'None') AS ixp
-  FROM `mlab-collaboration.hermes.unified_ip_to_as`
+  FROM (
+    SELECT
+      *,
+      DENSE_RANK() OVER (
+        PARTITION BY ip_prefix
+        ORDER BY
+          -- Undated rows sort LAST, never first. BigQuery puts NULLs FIRST on an
+          -- ASC sort, so without this guard ABS(DATE_DIFF(NULL, ...)) outranked
+          -- every real snapshot: 1,067,707 of 1,420,484 v4 prefixes (75%) were
+          -- won by a NULL-partition_date row, discarding 14.7M dated RouteViews
+          -- rows. They are kept as candidates by the WHERE below instead.
+          (CASE WHEN partition_date IS NULL THEN 1 ELSE 0 END) ASC,
+          ABS(DATE_DIFF(partition_date, DATE '${DAY}', DAY)) ASC,
+          (CASE WHEN partition_date <= DATE '${DAY}' THEN 0 ELSE 1 END) ASC,
+          partition_date DESC
+      ) AS snapshot_rank
+    FROM `mlab-collaboration.hermes.unified_ip_to_as`
+  )
+  -- snapshot_rank = 1 is the closest DATED snapshot; undated rows (source 'IXPs'
+  -- and ~1M undated RouteViews rows) carry no vintage to compare, so they stay
+  -- candidates the way they were before date-scoping and are decided by the
+  -- mask/cone tiebreak downstream.
+  WHERE snapshot_rank = 1 OR partition_date IS NULL
 ),
 extracted_prefixes_v4 AS (
   SELECT
@@ -215,6 +250,7 @@ extracted_prefixes_v4 AS (
     ON ed.network_bin = ud.network_bin
    AND ed.mask = ud.mask
 ),
+-- Same closest-snapshot rule as unified_data_v4 above; see that comment.
 extracted_prefixes_v6 AS (
   SELECT
     ip_prefix,
@@ -224,7 +260,27 @@ extracted_prefixes_v6 AS (
     IFNULL(ixp, 'None') AS ixp,
     CAST(NULL AS DATE) AS ixp_partition_date,
     'v6' AS ip_version
-  FROM `mlab-collaboration.hermes.unified_ip_to_as_ipv6`
+  FROM (
+    SELECT
+      *,
+      DENSE_RANK() OVER (
+        PARTITION BY ip_prefix
+        ORDER BY
+          -- Undated rows sort LAST, never first. BigQuery puts NULLs FIRST on an
+          -- ASC sort, so without this guard ABS(DATE_DIFF(NULL, ...)) outranked
+          -- every real snapshot: 1,067,707 of 1,420,484 v4 prefixes (75%) were
+          -- won by a NULL-partition_date row, discarding 14.7M dated RouteViews
+          -- rows. They are kept as candidates by the WHERE below instead.
+          (CASE WHEN partition_date IS NULL THEN 1 ELSE 0 END) ASC,
+          ABS(DATE_DIFF(partition_date, DATE '${DAY}', DAY)) ASC,
+          (CASE WHEN partition_date <= DATE '${DAY}' THEN 0 ELSE 1 END) ASC,
+          partition_date DESC
+      ) AS snapshot_rank
+    FROM `mlab-collaboration.hermes.unified_ip_to_as_ipv6`
+  )
+  -- Same rule as unified_data_v4; v6 has no undated rows today, but the guard
+  -- must not depend on that staying true.
+  WHERE snapshot_rank = 1 OR partition_date IS NULL
 )
 SELECT * FROM extracted_prefixes_v4
 UNION ALL
@@ -363,7 +419,13 @@ masked_ip_addresses_v4 AS (
           -- prefix overlap (two same-length prefixes, e.g. MOAS): prefer the
           -- network with the largest CAIDA customer cone, then the smallest ASN,
           -- so the pick is stable/deterministic instead of an arbitrary tie.
-          cam.cone.numberAsns DESC,
+          -- numberPrefixes, NOT numberAsns: numberAsns is 1 for nearly every
+          -- leaf network, so it tied constantly and threw the decision to the
+          -- smallest-ASN fallback. That is how 2402:8100::/32 (Vodafone Idea,
+          -- cone 747 prefixes) lost to Google's AS36040 (cone 80) on 36040 <
+          -- 38266. This is still a heuristic -- "bigger network wins" -- but it
+          -- discriminates, where numberAsns did not.
+          cam.cone.numberPrefixes DESC,
           SAFE_CAST(m.asn AS INT64) ASC
       ) AS rn
     FROM (
@@ -390,7 +452,7 @@ masked_ip_addresses_v6 AS (
         PARTITION BY m.ip
         ORDER BY
           m.mask DESC,
-          cam.cone.numberAsns DESC,        -- overlap tie: largest customer cone
+          cam.cone.numberPrefixes DESC,    -- overlap tie: largest customer cone
           SAFE_CAST(m.asn AS INT64) ASC    -- then smallest ASN (deterministic)
       ) AS rn
     FROM (
@@ -590,7 +652,7 @@ reverse_masked_ip_addresses_v4 AS (
         PARTITION BY m.ip
         ORDER BY
           m.mask DESC,
-          cam.cone.numberAsns DESC,        -- overlap tie: largest customer cone
+          cam.cone.numberPrefixes DESC,    -- overlap tie: largest customer cone
           SAFE_CAST(m.asn AS INT64) ASC    -- then smallest ASN (deterministic)
       ) AS rn
     FROM (
@@ -617,7 +679,7 @@ reverse_masked_ip_addresses_v6 AS (
         PARTITION BY m.ip
         ORDER BY
           m.mask DESC,
-          cam.cone.numberAsns DESC,        -- overlap tie: largest customer cone
+          cam.cone.numberPrefixes DESC,    -- overlap tie: largest customer cone
           SAFE_CAST(m.asn AS INT64) ASC    -- then smallest ASN (deterministic)
       ) AS rn
     FROM (

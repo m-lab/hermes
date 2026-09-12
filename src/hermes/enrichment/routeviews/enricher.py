@@ -6,6 +6,7 @@ from typing import Any
 
 import requests
 
+from hermes.enrichment.routeviews.pfx2as import parse_origin_asns
 from hermes.enrichment.utils.common import BaseEnrichment, logger
 
 
@@ -157,39 +158,41 @@ class RouteViewsEnricher(BaseEnrichment):
                 if len(parts) >= 3:
                     prefix = parts[0]
                     mask = parts[1]
-                    asn = parts[2].split(",")[0]  # Take first ASN if multiple
 
-                    # Skip private ASNs
-                    try:
-                        asn_int = int(asn)
-                        if (64512 <= asn_int <= 65534) or (4200000000 <= asn_int):
-                            continue
-                    except ValueError:
-                        continue
-
-                    rows_to_insert.append(
-                        {
-                            "ip_prefix": f"{prefix}/{mask}",
-                            "asn": asn_int,
-                            "source": "RouteViews",
-                            "ixp": None,
-                            "partition_date": date,
-                        }
-                    )
+                    # One row per origin. MOAS and AS_SET prefixes genuinely have
+                    # several, and 04_mapping_union.sql picks between equally
+                    # specific candidates by customer cone -- keeping only the
+                    # first here handed that decision to CAIDA's sort order.
+                    for asn_int in parse_origin_asns(parts[2]):
+                        rows_to_insert.append(
+                            {
+                                "ip_prefix": f"{prefix}/{mask}",
+                                "asn": asn_int,
+                                "source": "RouteViews",
+                                "ixp": None,
+                                "partition_date": date,
+                            }
+                        )
 
         return rows_to_insert
 
-    def upload_to_bigquery(self, data: list[dict[str, Any]]) -> None:
+    def upload_to_bigquery(self, data: list[dict[str, Any]]) -> bool:
         """Upload processed RouteViews data to BigQuery.
 
         Args:
             data: List of dictionaries containing data to upload
+
+        Returns:
+            True if every batch was accepted, False otherwise. Callers must not
+            treat a partial upload as success -- a half-written snapshot still
+            satisfies the "does this date have rows" guard downstream.
         """
         if not data:
             logger.info("No data to upload")
-            return
+            return False
 
         # Insert in batches
+        ok = True
         batch_size = 10000
         for i in range(0, len(data), batch_size):
             batch = data[i : i + batch_size]
@@ -200,10 +203,12 @@ class RouteViewsEnricher(BaseEnrichment):
                 logger.info(f"Batch {i // batch_size + 1} inserted successfully")
             else:
                 logger.error(f"Batch {i // batch_size + 1} encountered errors: {errors}")
+                ok = False
+        return ok
 
     def process_date(
         self, date: str, dst_dir: str | None = None, max_days_lookback: int = 7
-    ) -> None:
+    ) -> bool:
         """Process RouteViews data for a specific date, falling back to closest available date.
 
         Args:
@@ -221,7 +226,7 @@ class RouteViewsEnricher(BaseEnrichment):
         result = self.download_routeviews_dataset(date, max_days_lookback)
         if not result:
             logger.error(f"Failed to download RouteViews data for {date} or nearby dates")
-            return
+            return False
 
         file_path, actual_date = result
 
@@ -233,4 +238,4 @@ class RouteViewsEnricher(BaseEnrichment):
         data = self.process_routeviews_data(file_path, actual_date)
 
         # Upload to BigQuery
-        self.upload_to_bigquery(data)
+        return self.upload_to_bigquery(data)

@@ -950,11 +950,7 @@ def _node_ixp_map(all_edges: pd.DataFrame) -> dict:
     """Map each ⟨AS,metro⟩ node to its most common non-'None' IXP."""
     m: dict = {}
     for cn, ci in [("from_asn_metro", "from_ixp"), ("to_asn_metro", "to_ixp")]:
-        s = (
-            all_edges[all_edges[ci] != "None"]
-            .groupby(cn)[ci]
-            .agg(_deterministic_mode)
-        )
+        s = all_edges[all_edges[ci] != "None"].groupby(cn)[ci].agg(_deterministic_mode)
         m.update(s.to_dict())
     return m
 

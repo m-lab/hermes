@@ -149,9 +149,9 @@ def compute_temporal_verdicts(
                     jump=stable["day_hop_rtt"].fillna(0) - stable["base_hop_rtt"].fillna(0)
                 )
                 congested_segment = (
-                    stable.sort_values(
-                        ["jump", "edge"], ascending=[False, True], kind="mergesort"
-                    )["edge"].iloc[0]
+                    stable.sort_values(["jump", "edge"], ascending=[False, True], kind="mergesort")[
+                        "edge"
+                    ].iloc[0]
                     if len(stable)
                     else None
                 )
