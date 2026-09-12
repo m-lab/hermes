@@ -63,14 +63,29 @@ logger = logging.getLogger("refresh_topology_tables")
 
 
 def refresh_bgp(date: str, project_id: str, do_v4: bool, do_v6: bool) -> None:
-    """Refresh hermes.unified_ip_to_as[_ipv6] from RouteViews for `date`."""
+    """Refresh hermes.unified_ip_to_as[_ipv6] from RouteViews for `date`.
+
+    Raises:
+        RuntimeError: if a requested address family did not refresh. Previously
+            a failure here was only logged, so the caller exited 0 and reported
+            "All requested topology-table refreshes completed successfully" --
+            which is how the IPv6 table silently stopped updating for months
+            while the scheduled job looked healthy every time.
+    """
+    failed = []
+
     if do_v4:
         logger.info("[BGP] Refreshing unified_ip_to_as (IPv4) for %s", date)
-        RouteViewsEnricher(project_id).process_date(date)
+        if not RouteViewsEnricher(project_id).process_date(date):
+            failed.append("IPv4")
 
     if do_v6:
         logger.info("[BGP] Refreshing unified_ip_to_as_ipv6 for %s", date)
-        RouteViewsEnricherIPv6(project_id).process_date(date)
+        if not RouteViewsEnricherIPv6(project_id).process_date(date):
+            failed.append("IPv6")
+
+    if failed:
+        raise RuntimeError(f"BGP refresh failed for {', '.join(failed)} on {date}")
 
 
 def _latest_merged_members_file(output_dir: str, ipv6: bool) -> str | None:

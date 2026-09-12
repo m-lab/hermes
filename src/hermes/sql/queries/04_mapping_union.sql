@@ -193,8 +193,9 @@ hop_prefixes AS (
   WHERE date BETWEEN DATE_SUB(DATE('${DAY}'), INTERVAL 1 MONTH) AND '${DAY}'
 ),
 -- Keep only the snapshot closest to ${DAY} FOR EACH PREFIX. These tables are an
--- append-only pile of RouteViews snapshots taken at irregular intervals (25 dates
--- for v4, 7 for v6 as of 2026-09-12, several of them partial runs), so reading
+-- append-only pile of RouteViews + IXP snapshots taken at irregular intervals
+-- (39 distinct dates for v4, 7 for v6 as of 2026-09-12, several of them partial
+-- runs, and ~1.07M v4 rows carry no date at all), so reading
 -- them unfiltered let a year-old origin compete with a current one on equal
 -- footing: 93,342 v4 and 9,466 v6 prefixes carry more than one distinct ASN
 -- across snapshots. That is how 2402:8100::/32 kept a 2025-07 Google origin long
@@ -217,13 +218,23 @@ unified_data_v4 AS (
       DENSE_RANK() OVER (
         PARTITION BY ip_prefix
         ORDER BY
+          -- Undated rows sort LAST, never first. BigQuery puts NULLs FIRST on an
+          -- ASC sort, so without this guard ABS(DATE_DIFF(NULL, ...)) outranked
+          -- every real snapshot: 1,067,707 of 1,420,484 v4 prefixes (75%) were
+          -- won by a NULL-partition_date row, discarding 14.7M dated RouteViews
+          -- rows. They are kept as candidates by the WHERE below instead.
+          (CASE WHEN partition_date IS NULL THEN 1 ELSE 0 END) ASC,
           ABS(DATE_DIFF(partition_date, DATE '${DAY}', DAY)) ASC,
           (CASE WHEN partition_date <= DATE '${DAY}' THEN 0 ELSE 1 END) ASC,
           partition_date DESC
       ) AS snapshot_rank
     FROM `mlab-collaboration.hermes.unified_ip_to_as`
   )
-  WHERE snapshot_rank = 1
+  -- snapshot_rank = 1 is the closest DATED snapshot; undated rows (source 'IXPs'
+  -- and ~1M undated RouteViews rows) carry no vintage to compare, so they stay
+  -- candidates the way they were before date-scoping and are decided by the
+  -- mask/cone tiebreak downstream.
+  WHERE snapshot_rank = 1 OR partition_date IS NULL
 ),
 extracted_prefixes_v4 AS (
   SELECT
@@ -255,13 +266,21 @@ extracted_prefixes_v6 AS (
       DENSE_RANK() OVER (
         PARTITION BY ip_prefix
         ORDER BY
+          -- Undated rows sort LAST, never first. BigQuery puts NULLs FIRST on an
+          -- ASC sort, so without this guard ABS(DATE_DIFF(NULL, ...)) outranked
+          -- every real snapshot: 1,067,707 of 1,420,484 v4 prefixes (75%) were
+          -- won by a NULL-partition_date row, discarding 14.7M dated RouteViews
+          -- rows. They are kept as candidates by the WHERE below instead.
+          (CASE WHEN partition_date IS NULL THEN 1 ELSE 0 END) ASC,
           ABS(DATE_DIFF(partition_date, DATE '${DAY}', DAY)) ASC,
           (CASE WHEN partition_date <= DATE '${DAY}' THEN 0 ELSE 1 END) ASC,
           partition_date DESC
       ) AS snapshot_rank
     FROM `mlab-collaboration.hermes.unified_ip_to_as_ipv6`
   )
-  WHERE snapshot_rank = 1
+  -- Same rule as unified_data_v4; v6 has no undated rows today, but the guard
+  -- must not depend on that staying true.
+  WHERE snapshot_rank = 1 OR partition_date IS NULL
 )
 SELECT * FROM extracted_prefixes_v4
 UNION ALL

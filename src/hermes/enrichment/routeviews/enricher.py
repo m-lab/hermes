@@ -176,17 +176,23 @@ class RouteViewsEnricher(BaseEnrichment):
 
         return rows_to_insert
 
-    def upload_to_bigquery(self, data: list[dict[str, Any]]) -> None:
+    def upload_to_bigquery(self, data: list[dict[str, Any]]) -> bool:
         """Upload processed RouteViews data to BigQuery.
 
         Args:
             data: List of dictionaries containing data to upload
+
+        Returns:
+            True if every batch was accepted, False otherwise. Callers must not
+            treat a partial upload as success -- a half-written snapshot still
+            satisfies the "does this date have rows" guard downstream.
         """
         if not data:
             logger.info("No data to upload")
-            return
+            return False
 
         # Insert in batches
+        ok = True
         batch_size = 10000
         for i in range(0, len(data), batch_size):
             batch = data[i : i + batch_size]
@@ -197,10 +203,12 @@ class RouteViewsEnricher(BaseEnrichment):
                 logger.info(f"Batch {i // batch_size + 1} inserted successfully")
             else:
                 logger.error(f"Batch {i // batch_size + 1} encountered errors: {errors}")
+                ok = False
+        return ok
 
     def process_date(
         self, date: str, dst_dir: str | None = None, max_days_lookback: int = 7
-    ) -> None:
+    ) -> bool:
         """Process RouteViews data for a specific date, falling back to closest available date.
 
         Args:
@@ -218,7 +226,7 @@ class RouteViewsEnricher(BaseEnrichment):
         result = self.download_routeviews_dataset(date, max_days_lookback)
         if not result:
             logger.error(f"Failed to download RouteViews data for {date} or nearby dates")
-            return
+            return False
 
         file_path, actual_date = result
 
@@ -230,4 +238,4 @@ class RouteViewsEnricher(BaseEnrichment):
         data = self.process_routeviews_data(file_path, actual_date)
 
         # Upload to BigQuery
-        self.upload_to_bigquery(data)
+        return self.upload_to_bigquery(data)
