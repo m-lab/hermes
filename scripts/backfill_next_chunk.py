@@ -39,9 +39,22 @@ from google.cloud import bigquery
 
 DATASET = "mlab-collaboration.hermes_union"
 
-#: Written by Phase C/D. A date having these but not ``events_explained_daily``
-#: needs only Phase E, not a full re-run.
-UPSTREAM = ("events_with_as_and_geoloc", "correlation_hyperedges_tomography_v2")
+#: Written by Phase C. A date having this but not ``events_explained_daily`` needs
+#: only Phase E, not a full re-run.
+#:
+#: Deliberately does NOT include ``correlation_hyperedges_tomography_v2``, even
+#: though Phase D writes it and Phase E reads it. That table is written with
+#: ``insert_rows_json``, and streaming writes are invisible to
+#: INFORMATION_SCHEMA.PARTITIONS for a while after they land -- observed
+#: 2026-09-05, when all seven freshly-written dates read as absent from the
+#: metadata while a direct table read returned 1,009-1,239 rows each. Gating on it
+#: would misclassify a just-completed date as needing a full re-run.
+#:
+#: Nothing is lost by omitting it: the pipeline has its own D->E gate, and
+#: ``--fill-missing`` already counts a 100%-unattributed partition as missing, so a
+#: date whose Phase D genuinely failed is still caught -- by the component that can
+#: see the truth rather than by lagging metadata.
+UPSTREAM = ("events_with_as_and_geoloc",)
 FINAL = "events_explained_daily"
 
 
