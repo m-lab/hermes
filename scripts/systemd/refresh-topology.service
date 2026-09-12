@@ -1,0 +1,29 @@
+# /etc/systemd/system/refresh-topology.service
+# Refreshes hermes.unified_ip_to_as[_ipv6] from RouteViews (BGP only; IXP and
+# as_metadata are left alone). These tables are NOT written by the union
+# pipeline -- step 04 just reads whatever rows exist -- so without this they
+# only ever change when someone runs the refresh by hand.
+[Unit]
+Description=HERMES topology refresh (RouteViews BGP -> unified_ip_to_as[_ipv6])
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=oneshot
+User=ec2-user
+Group=ec2-user
+Environment=HOME=/home/ec2-user
+ExecStartPre=-/usr/bin/docker rm -f topology-refresh
+# --memory=4g: the enricher holds the parsed prefix list in memory (~1.05M rows
+# for v4). Deliberately small so it can never contend with the 28g union
+# container; the timer is also scheduled 9h away from union-pipeline.timer.
+# --entrypoint: docker-entrypoint.sh hardcodes `exec hermes-pipeline`, so the
+# refresh console script has to be invoked directly. The cache subdirectories it
+# needs are created by the enricher itself (os.makedirs(exist_ok=True)).
+ExecStart=/bin/bash -lc '/usr/bin/docker run --rm --name topology-refresh --memory=4g --memory-swap=4g --entrypoint hermes-refresh-topology --env-file /etc/hermes/hermes.env -e GOOGLE_APPLICATION_CREDENTIALS=/app/credentials.json -v /home/ec2-user/hermes-docker-cache:/app/cache -v /home/ec2-user/.config/gcloud/application_default_credentials.json:/app/credentials.json:ro hermes-pipeline:latest --date $(date -u +%%F) --ip-version both --skip-ixp >> /home/ec2-user/logs/refresh_topology_$(date -u +%%Y%%m%%d).log 2>&1'
+TimeoutStartSec=0
+TimeoutStopSec=3600
+
+[Install]
+WantedBy=multi-user.target

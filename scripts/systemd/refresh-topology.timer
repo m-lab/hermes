@@ -1,0 +1,14 @@
+# /etc/systemd/system/refresh-topology.timer
+# Every two weeks, on the 1st and 15th at 06:00 UTC -- 9h clear of
+# union-pipeline.timer (15:00 UTC) so the 4g and 28g containers never overlap
+# on a 30g host. systemd has no native "every 2 weeks", and fixed days keep the
+# cadence predictable across months.
+[Unit]
+Description=Refresh HERMES RouteViews BGP tables every 2 weeks
+
+[Timer]
+OnCalendar=*-*-01,15 06:00:00 UTC
+Persistent=true
+
+[Install]
+WantedBy=timers.target
