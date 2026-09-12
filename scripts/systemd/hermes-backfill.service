@@ -16,7 +16,12 @@ Environment=CEIL=2025-06-12
 # admin quota is ~15 TiB/user/PT-day and exceeding it 403s every subsequent query
 # that day -- including tomorrow's day run and every dashboard. The margin is the
 # point.
+# Measured over six consecutive 7-date chunks (2026-09-05..09-11): 10.08-10.27 TiB
+# each, i.e. 1.45 TiB/date, not the 1.38 first assumed. Sizing with the low figure
+# picked 7 dates whenever ~10.46 TiB was free and they cost ~10.2 -- it held, but
+# with only ~0.26 TiB of slack.
 Environment=TARGET_TIB=12.0
+Environment=TIB_PER_DATE=1.45
 # A chunk takes ~41 min/date; this bounds a wedged run so it cannot still hold the
 # host when the next day run fires.
 TimeoutStartSec=9h
