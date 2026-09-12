@@ -8,6 +8,7 @@ from typing import Any
 import requests
 from google.cloud import bigquery
 
+from hermes.enrichment.routeviews.pfx2as import parse_origin_asns
 from hermes.enrichment.utils.common import BaseEnrichment, logger
 
 
@@ -121,31 +122,28 @@ class RouteViewsEnricherIPv6(BaseEnrichment):
                 if len(parts) >= 3:
                     prefix = parts[0]
                     mask = parts[1]
-                    asn = parts[2].split(",")[0]  # Take first ASN if multiple
-
-                    # Skip private ASNs
-                    try:
-                        asn_int = int(asn)
-                        if (64512 <= asn_int <= 65534) or (4200000000 <= asn_int):
-                            continue
-                    except ValueError:
-                        continue
 
                     # Only process IPv6 prefixes
                     if not self.is_ipv6_prefix(prefix):
                         continue
 
-                    rows_to_insert.append(
-                        {
-                            "ip_prefix": f"{prefix}/{mask}",
-                            "asn": asn_int,
-                            "source": "RouteViews",
-                            "ixp": None,
-                            "partition_date": date,
-                        }
-                    )
+                    # One row per origin. MOAS and AS_SET prefixes genuinely have
+                    # several, and 04_mapping_union.sql picks between equally
+                    # specific candidates by customer cone -- keeping only the
+                    # first here handed that decision to CAIDA's sort order.
+                    for asn_int in parse_origin_asns(parts[2]):
+                        rows_to_insert.append(
+                            {
+                                "ip_prefix": f"{prefix}/{mask}",
+                                "asn": asn_int,
+                                "source": "RouteViews",
+                                "ixp": None,
+                                "partition_date": date,
+                            }
+                        )
 
-        logger.info(f"Processed {len(rows_to_insert)} IPv6 prefixes from RouteViews")
+        # Rows, not prefixes: a MOAS/AS_SET prefix contributes one row per origin.
+        logger.info(f"Processed {len(rows_to_insert)} IPv6 prefix-origin rows from RouteViews")
         return rows_to_insert
 
     def upload_to_bigquery(self, data: list[dict[str, Any]]) -> None:

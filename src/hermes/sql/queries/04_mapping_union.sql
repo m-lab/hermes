@@ -192,6 +192,18 @@ hop_prefixes AS (
     ON ix.ipv4 = REGEXP_EXTRACT(hop.id, r'_([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)$')
   WHERE date BETWEEN DATE_SUB(DATE('${DAY}'), INTERVAL 1 MONTH) AND '${DAY}'
 ),
+-- Keep only the snapshot closest to ${DAY} FOR EACH PREFIX. These tables are an
+-- append-only pile of RouteViews snapshots taken at irregular intervals (25 dates
+-- for v4, 7 for v6 as of 2026-09-12, several of them partial runs), so reading
+-- them unfiltered let a year-old origin compete with a current one on equal
+-- footing: 93,342 v4 and 9,466 v6 prefixes carry more than one distinct ASN
+-- across snapshots. That is how 2402:8100::/32 kept a 2025-07 Google origin long
+-- after RouteViews had corrected it to Vodafone Idea in 2025-11.
+--
+-- DENSE_RANK, not ROW_NUMBER: a MOAS/AS_SET prefix legitimately contributes
+-- several rows to the winning snapshot and all of them must survive as
+-- candidates for the cone tiebreak below. Date ties prefer the PAST snapshot,
+-- matching _closest_as_metadata / _closest_rdns / ixp_ranked above.
 unified_data_v4 AS (
   SELECT
     ip_prefix,
@@ -199,7 +211,19 @@ unified_data_v4 AS (
     NET.IP_FROM_STRING(REGEXP_EXTRACT(ip_prefix, r'(.*)/')) AS network_bin,
     CAST(REGEXP_EXTRACT(ip_prefix, r'/(.*)') AS INT64) AS mask,
     IFNULL(ixp, 'None') AS ixp
-  FROM `mlab-collaboration.hermes.unified_ip_to_as`
+  FROM (
+    SELECT
+      *,
+      DENSE_RANK() OVER (
+        PARTITION BY ip_prefix
+        ORDER BY
+          ABS(DATE_DIFF(partition_date, DATE '${DAY}', DAY)) ASC,
+          (CASE WHEN partition_date <= DATE '${DAY}' THEN 0 ELSE 1 END) ASC,
+          partition_date DESC
+      ) AS snapshot_rank
+    FROM `mlab-collaboration.hermes.unified_ip_to_as`
+  )
+  WHERE snapshot_rank = 1
 ),
 extracted_prefixes_v4 AS (
   SELECT
@@ -215,6 +239,7 @@ extracted_prefixes_v4 AS (
     ON ed.network_bin = ud.network_bin
    AND ed.mask = ud.mask
 ),
+-- Same closest-snapshot rule as unified_data_v4 above; see that comment.
 extracted_prefixes_v6 AS (
   SELECT
     ip_prefix,
@@ -224,7 +249,19 @@ extracted_prefixes_v6 AS (
     IFNULL(ixp, 'None') AS ixp,
     CAST(NULL AS DATE) AS ixp_partition_date,
     'v6' AS ip_version
-  FROM `mlab-collaboration.hermes.unified_ip_to_as_ipv6`
+  FROM (
+    SELECT
+      *,
+      DENSE_RANK() OVER (
+        PARTITION BY ip_prefix
+        ORDER BY
+          ABS(DATE_DIFF(partition_date, DATE '${DAY}', DAY)) ASC,
+          (CASE WHEN partition_date <= DATE '${DAY}' THEN 0 ELSE 1 END) ASC,
+          partition_date DESC
+      ) AS snapshot_rank
+    FROM `mlab-collaboration.hermes.unified_ip_to_as_ipv6`
+  )
+  WHERE snapshot_rank = 1
 )
 SELECT * FROM extracted_prefixes_v4
 UNION ALL
@@ -363,7 +400,13 @@ masked_ip_addresses_v4 AS (
           -- prefix overlap (two same-length prefixes, e.g. MOAS): prefer the
           -- network with the largest CAIDA customer cone, then the smallest ASN,
           -- so the pick is stable/deterministic instead of an arbitrary tie.
-          cam.cone.numberAsns DESC,
+          -- numberPrefixes, NOT numberAsns: numberAsns is 1 for nearly every
+          -- leaf network, so it tied constantly and threw the decision to the
+          -- smallest-ASN fallback. That is how 2402:8100::/32 (Vodafone Idea,
+          -- cone 747 prefixes) lost to Google's AS36040 (cone 80) on 36040 <
+          -- 38266. This is still a heuristic -- "bigger network wins" -- but it
+          -- discriminates, where numberAsns did not.
+          cam.cone.numberPrefixes DESC,
           SAFE_CAST(m.asn AS INT64) ASC
       ) AS rn
     FROM (
@@ -390,7 +433,7 @@ masked_ip_addresses_v6 AS (
         PARTITION BY m.ip
         ORDER BY
           m.mask DESC,
-          cam.cone.numberAsns DESC,        -- overlap tie: largest customer cone
+          cam.cone.numberPrefixes DESC,    -- overlap tie: largest customer cone
           SAFE_CAST(m.asn AS INT64) ASC    -- then smallest ASN (deterministic)
       ) AS rn
     FROM (
@@ -590,7 +633,7 @@ reverse_masked_ip_addresses_v4 AS (
         PARTITION BY m.ip
         ORDER BY
           m.mask DESC,
-          cam.cone.numberAsns DESC,        -- overlap tie: largest customer cone
+          cam.cone.numberPrefixes DESC,    -- overlap tie: largest customer cone
           SAFE_CAST(m.asn AS INT64) ASC    -- then smallest ASN (deterministic)
       ) AS rn
     FROM (
@@ -617,7 +660,7 @@ reverse_masked_ip_addresses_v6 AS (
         PARTITION BY m.ip
         ORDER BY
           m.mask DESC,
-          cam.cone.numberAsns DESC,        -- overlap tie: largest customer cone
+          cam.cone.numberPrefixes DESC,    -- overlap tie: largest customer cone
           SAFE_CAST(m.asn AS INT64) ASC    -- then smallest ASN (deterministic)
       ) AS rn
     FROM (
