@@ -1,0 +1,12 @@
+[Unit]
+Description=Daily sweep of expired IPInfo snapshot loans
+
+[Timer]
+# 13:00 UTC: after hermes-wrapper (11:30) and before union-pipeline (15:00),
+# so a reap never races the nightly run. reap also self-defers if a
+# hermes-pipeline container is up.
+OnCalendar=*-*-* 13:00:00 UTC
+Persistent=true
+
+[Install]
+WantedBy=timers.target

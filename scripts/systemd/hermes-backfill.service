@@ -1,0 +1,28 @@
+[Unit]
+Description=Spend the day's leftover BigQuery budget backfilling hermes_union
+Documentation=file:///home/ec2-user/hermes-backfill/scripts/backfill_walk.sh
+# Never alongside the day run: the host has 30 GB and each container is capped at
+# 28 GB, so a second one meets the OOM killer rather than a queue. The script
+# re-checks this itself, since Conflicts only covers the systemd-started case.
+Conflicts=union-pipeline.service
+After=union-pipeline.service
+
+[Service]
+Type=oneshot
+User=ec2-user
+Environment=FLOOR=2025-01-25
+Environment=CEIL=2025-06-12
+# Ceiling for everything this box bills in one PT day, not the quota itself. The
+# admin quota is ~15 TiB/user/PT-day and exceeding it 403s every subsequent query
+# that day -- including tomorrow's day run and every dashboard. The margin is the
+# point.
+Environment=TARGET_TIB=12.0
+# A chunk takes ~41 min/date; this bounds a wedged run so it cannot still hold the
+# host when the next day run fires.
+TimeoutStartSec=9h
+# Its own clone, deliberately NOT ~/hermes-build-gate: that one tracks main and is
+# what `docker build` reads, so parking it on a feature branch would bake the
+# branch into the next production image. Repoint both to the build gate once
+# these scripts land on main.
+Environment=REPO=/home/ec2-user/hermes-backfill
+ExecStart=/home/ec2-user/hermes-backfill/scripts/backfill_walk.sh

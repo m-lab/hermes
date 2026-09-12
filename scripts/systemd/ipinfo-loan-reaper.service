@@ -1,0 +1,10 @@
+[Unit]
+Description=Delete expired IPInfo Deep Archive loans from the pipeline cache
+Documentation=file:///home/ec2-user/hermes-build-gate/scripts/ipinfo_restore_from_glacier.sh
+
+[Service]
+Type=oneshot
+User=ec2-user
+Environment=BUCKET=hermes-ipinfo-archive-627275104670
+Environment=REGION=us-east-2
+ExecStart=/home/ec2-user/hermes-build-gate/scripts/ipinfo_restore_from_glacier.sh reap

@@ -89,7 +89,11 @@ LEFT JOIN reverse_agg AS ra ON fr.id = ra.id;
 WITH path_with_anomaly AS (
   SELECT
     fr.id,
-    CONCAT(fr.src_asn, ' - ', fr.src_group_label, ' - ', fr.dst_site) AS src_dst_pair,
+    -- ip_version is part of the tested population. Omitting it merged IPv4 and
+    -- IPv6 evidence under one opaque Python key and could assign a forward
+    -- hyperedge from one family to an upload-only event in the other.
+    CONCAT(fr.src_asn, ' - ', fr.src_group_label, ' - ', fr.dst_site, ' - ', fr.ip_version)
+      AS src_dst_pair,
     pp.forward_as_path,
     pp.reverse_as_path,
     (

@@ -1,4 +1,4 @@
-CREATE FUNCTION `mlab-collaboration`.hermes.compute_wasserstein_p_value(weekly_data ARRAY<FLOAT64>, daily_data ARRAY<FLOAT64>, num_permutations INT64) RETURNS STRUCT<distance FLOAT64, p_value FLOAT64> LANGUAGE js
+CREATE TEMP FUNCTION compute_wasserstein_p_value(weekly_data ARRAY<FLOAT64>, daily_data ARRAY<FLOAT64>, num_permutations INT64) RETURNS STRUCT<distance FLOAT64, p_value FLOAT64> LANGUAGE js
 AS
 r"""
 'use strict';
@@ -80,7 +80,7 @@ function wassersteinDistanceCDF(arrA, arrB) {
 }
 
 /**
- * Randomly shuffles the array in place using Fisher-Yates.
+ * Shuffles the array in place using Fisher-Yates and a deterministic PRNG.
  */
 function shuffleInPlace(array, rng) {
   for (let i = array.length - 1; i > 0; i--) {
@@ -92,12 +92,27 @@ function shuffleInPlace(array, rng) {
 }
 
 /**
- * Generates a basic pseudo-random number generator for consistency.
- * For demonstration we just use Math.random(), though that is not
- * reproducible across runs.
+ * FNV-1a hashes canonical input data to a stable unsigned 32-bit seed.
  */
-function getRng() {
-  return Math.random;
+function fnv1a(text) {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < text.length; i++) {
+    hash ^= text.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return hash >>> 0;
+}
+
+/** Mulberry32: a compact deterministic generator with a 32-bit state. */
+function seededRng(seed) {
+  let state = seed >>> 0;
+  return function() {
+    state = (state + 0x6D2B79F5) >>> 0;
+    let z = state;
+    z = Math.imul(z ^ (z >>> 15), z | 1);
+    z ^= z + Math.imul(z ^ (z >>> 7), z | 61);
+    return ((z ^ (z >>> 14)) >>> 0) / 4294967296;
+  };
 }
 
 /**
@@ -116,9 +131,14 @@ function computeWassersteinPValue(weeklyData, dailyData, numPerms) {
   const observedDistance = wassersteinDistanceCDF(weeklyData, dailyData);
 
   // 2) Build combined array and do permutations
-  const combined = weeklyData.concat(dailyData);
+  // Canonicalize before seeding and shuffling. BigQuery ARRAY_AGG order is not
+  // guaranteed, so equal empirical distributions must seed equal permutations.
+  const canonicalWeekly = weeklyData.slice().sort((a, b) => a - b);
+  const canonicalDaily = dailyData.slice().sort((a, b) => a - b);
+  const combined = canonicalWeekly.concat(canonicalDaily);
   const nWeekly = weeklyData.length;
-  const rng = getRng();
+  const seedMaterial = JSON.stringify([canonicalWeekly, canonicalDaily, numPerms]);
+  const rng = seededRng(fnv1a(seedMaterial));
 
   let countGeObserved = 0;
   for (let i = 0; i < numPerms; i++) {

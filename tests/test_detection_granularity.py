@@ -41,7 +41,11 @@ def test_supported_modes_separate_grouping_shape_from_provider():
 def test_detection_steps_resolve_the_mode_placeholder(step, granularity):
     sql = loader.load_query(step, {**PARAMS, "DETECTION_GRANULARITY": granularity})
     assert "${DETECTION_GRANULARITY}" not in sql
-    assert f"DEFAULT '{granularity}'" in sql
+    if step.startswith("02_"):
+        assert f"ASSERT '{granularity}' IN ('city', 'metro')" in sql
+        assert f"'{granularity}' AS detection_granularity" in sql
+    else:
+        assert f"DEFAULT '{granularity}'" in sql
 
 
 def test_run_sql_steps_passes_metro_to_loader(monkeypatch):

@@ -25,6 +25,16 @@ def test_n_baseline_migration_is_bootstrapped_after_the_create():
     ) < bootstrap_tables.DDL_FILES.index("add_n_baseline_column.sql")
 
 
+def test_upload_migration_is_bootstrapped_before_the_public_view():
+    assert "add_upload_anomaly_columns.sql" in bootstrap_tables.DDL_FILES
+    assert bootstrap_tables.DDL_FILES.index(
+        "create_events_explained_daily.sql"
+    ) < bootstrap_tables.DDL_FILES.index("add_upload_anomaly_columns.sql")
+    assert bootstrap_tables.DDL_FILES.index(
+        "add_upload_anomaly_columns.sql"
+    ) < bootstrap_tables.DDL_FILES.index("create_events_enriched.sql")
+
+
 def test_bootstrap_runs_each_ddl(monkeypatch):
     loaded = []
     monkeypatch.setattr(

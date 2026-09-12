@@ -26,6 +26,9 @@ DDL_FILES = [
     # create_events_explained_daily.sql above is CREATE TABLE IF NOT EXISTS, so on the
     # already-created production table it is a no-op and cannot add the column.
     "add_n_baseline_column.sql",
+    # Upload-throughput public metrics and explicit signal identity. This must
+    # precede step 07 and uses the same append order as the fresh-table DDL.
+    "add_upload_anomaly_columns.sql",
     # Stable nested compatibility interface over the legacy physical table.
     "create_events_enriched.sql",
 ]

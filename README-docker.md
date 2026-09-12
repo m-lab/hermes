@@ -2,6 +2,22 @@
 
 Run the HERMES union pipeline (IPv4+IPv6 anomaly detection) in a Docker container.
 
+## VM deployment source of truth
+
+On the HERMES VM, the authoritative production model is the union pipeline
+packaged in the `hermes-pipeline` Docker image. Daily invocations use
+`docker run --rm`, so the container is removed after the run; an empty
+`docker ps` does not mean the union pipeline is undeployed. Confirm the image
+ID/tag and inspect the dated `union_pipeline_docker_YYYYMMDD.log` before
+drawing conclusions from the host process list.
+
+The host also retains a separate legacy `hermes-wrapper` systemd pipeline under
+`/home/ec2-user/hermes-code`. It can run and fail independently, but it is not
+the source of truth for the Dockerized union model or the `hermes_union`
+tables. Deployment audits and feature-parity reviews must inspect the files
+inside `hermes-pipeline:latest` (under `/app/src/hermes/`) rather than treating
+the legacy wrapper as the deployed version of this repository.
+
 ## Prerequisites
 
 - Docker Engine 20.10+
@@ -15,6 +31,36 @@ Run the HERMES union pipeline (IPv4+IPv6 anomaly detection) in a Docker containe
 ```bash
 docker build -t hermes-pipeline:latest .
 ```
+
+For a release, build and validate a uniquely tagged candidate in the sandbox.
+Promote that exact image with the repository helper instead of rebuilding or
+retagging production by hand:
+
+```bash
+python scripts/promote_docker_image.py hermes-pipeline:candidate-YYYYMMDD
+```
+
+The helper updates `hermes-pipeline:sandbox` first, then
+`hermes-pipeline:latest`, and verifies that both tags resolve to the candidate's
+immutable image ID. This is the promotion invariant: production must never
+contain code that is absent from sandbox. Dated candidate tags remain available
+for audit and rollback.
+
+The upload-anomaly cutover followed this path on 2026-08-31. Sandbox, production,
+and the dated candidate tag all resolve to immutable image
+`sha256:476add544008c9d03a8a2267a97d7e9736f924b769615dca31183c4594277927`.
+See `docs/reference/upload-vs-download-signals.md` for the schema migration,
+multi-date comparison, and dashboard-consumer verification.
+
+Before promotion, the detector can be rerun and content-hashed against itself in
+the staging dataset:
+
+```bash
+python scripts/verify_sandbox_repeatability.py --day YYYY-MM-DD
+python scripts/compare_sandbox_prod.py --day YYYY-MM-DD
+```
+
+The repeatability helper refuses any dataset other than `hermes_staging`.
 
 ### 2. One-time VM setup
 

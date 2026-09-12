@@ -16,7 +16,10 @@ INSERT INTO `mlab-collaboration.${DS}.events_explained_daily`
    max_baseline_forward_distance, max_daily_reverse_distance,
    max_baseline_reverse_distance, attribution_method, confidence_tier,
    detection_granularity, src_metro, src_group_label, n_dayof,
-   src_match_granularity, client_geo_source, n_baseline)
+   src_match_granularity, client_geo_source, n_baseline,
+   baseline_median_upload_throughput, median_daily_upload_throughput,
+   mean_daily_upload_throughput, anomaly_ratio_upload_throughput,
+   upload_anomaly_sites, total_anomalous_sites_all_signals, anomaly_signals)
 -- Rebuild the total set of anomalous src-dst pairs
 WITH
   -- Data-sufficiency gate: only consider user groups with >= 10 measurements on
@@ -51,8 +54,8 @@ WITH
   -- See docs/proposals/2026-08-group-granularity.md.
   group_identity AS (
     SELECT src_asn, src_group_label, dst_site, ip_version,
-      ANY_VALUE(detection_granularity) AS detection_granularity,
-      ANY_VALUE(client_geo_source) AS client_geo_source
+      MIN(detection_granularity) AS detection_granularity,
+      MIN(client_geo_source) AS client_geo_source
     FROM `mlab-collaboration.${DS}.events_with_as_and_geoloc`
     WHERE partition_date = '${DAY}'
     GROUP BY src_asn, src_group_label, dst_site, ip_version
@@ -73,14 +76,15 @@ WITH
   -- Step 1: Recompute all anomalous src-dst pairs based on original logic
   total_anomalous_src_dst_pairs AS (
     SELECT DISTINCT
-      CONCAT(fr.src_asn, ' - ', fr.src_group_label, ' - ', fr.dst_site) AS src_dst_pair,
+      CONCAT(fr.src_asn, ' - ', fr.src_group_label, ' - ', fr.dst_site, ' - ', fr.ip_version)
+        AS src_dst_pair,
       fr.src_asn,
       fr.src_group_label,
-      ANY_VALUE(fr.detection_granularity) AS detection_granularity,
-      ANY_VALUE(fr.src_city) AS src_city,
-      ANY_VALUE(fr.src_metro) AS src_metro,
-      ANY_VALUE(dc.n_dayof) AS n_dayof,
-      ANY_VALUE(dc.n_baseline) AS n_baseline,
+      MIN(fr.detection_granularity) AS detection_granularity,
+      MIN(fr.src_city) AS src_city,
+      MIN(fr.src_metro) AS src_metro,
+      MIN(dc.n_dayof) AS n_dayof,
+      MIN(dc.n_baseline) AS n_baseline,
       fr.src_state,
       fr.src_country,
       fr.dst_site,
@@ -88,26 +92,44 @@ WITH
       dst_city,
       dst_country,
       fr.ip_version,
-      ARRAY_AGG(DISTINCT fr.src) AS observed_ips,
-      ANY_VALUE(baseline_median_rtt) AS baseline_median_rtt,
-      ANY_VALUE(baseline_median_throughput) AS baseline_median_throughput,
+      ARRAY_AGG(DISTINCT fr.src ORDER BY fr.src) AS observed_ips,
+      MIN(baseline_median_rtt) AS baseline_median_rtt,
+      MIN(baseline_median_throughput) AS baseline_median_throughput,
+      MIN(baseline_median_upload_throughput) AS baseline_median_upload_throughput,
       APPROX_QUANTILES(fr.ndt_rtt, 100)[OFFSET(50)] AS median_daily_rtt,
       APPROX_QUANTILES(fr.ndt_throughput, 100)[OFFSET(50)] AS median_daily_throughput,
+      APPROX_QUANTILES(mdu.upload_throughput_mbps, 100)[OFFSET(50)] AS median_daily_upload_throughput,
       AVG(ndt_rtt) AS mean_daily_rtt,
       AVG(ndt_throughput) AS mean_daily_throughput,
-      ANY_VALUE(fr.anomaly_ratio_rtt) AS anomaly_ratio_rtt,
-      ANY_VALUE(fr.anomaly_ratio_throughput) AS anomaly_ratio_throughput
+      AVG(mdu.upload_throughput_mbps) AS mean_daily_upload_throughput,
+      MIN(fr.anomaly_ratio_rtt) AS anomaly_ratio_rtt,
+      MIN(fr.anomaly_ratio_throughput) AS anomaly_ratio_throughput,
+      MIN(fr.anomaly_ratio_upload_throughput) AS anomaly_ratio_upload_throughput,
+      ARRAY_CONCAT(
+        IF(LOGICAL_OR(fr.anomaly_ratio_rtt >= 0.8
+          AND fr.ndt_rtt > fr.baseline_median_rtt + 5
+          AND fr.anomaly_rtt_count >= 0.5), ['latency'], []),
+        IF(LOGICAL_OR(fr.anomaly_ratio_throughput >= 0.8
+          AND fr.ndt_throughput < fr.baseline_median_throughput
+          AND fr.anomaly_throughput_count >= 0.5), ['download'], []),
+        IF(LOGICAL_OR(fr.anomaly_ratio_upload_throughput >= 0.8
+          AND fr.median_upload_throughput < fr.baseline_median_upload_throughput
+          AND fr.anomaly_upload_throughput_count >= 0.5), ['upload'], [])
+      ) AS anomaly_signals
     FROM
       `mlab-collaboration.${DS}.events_with_as_and_geoloc` AS fr
     JOIN group_counts dc
       ON dc.src_asn = fr.src_asn AND dc.src_group_label = fr.src_group_label
          AND dc.dst_site = fr.dst_site AND dc.ip_version = fr.ip_version
+    LEFT JOIN `mlab-collaboration.${DS}.merged_download_upload` AS mdu
+      ON mdu.id = fr.id AND mdu.partition_date = DATE '${DAY}'
     WHERE
-      partition_date = '${DAY}'
+      fr.partition_date = '${DAY}'
       AND DATE(fr.window_start) >= '${DAY}'
       AND dc.n_dayof >= 10
       AND ((fr.ndt_rtt > fr.baseline_median_rtt + 5 AND fr.anomaly_ratio_rtt >= 0.8 AND fr.anomaly_rtt_count >= 0.5) OR
-      (fr.ndt_throughput < fr.baseline_median_throughput AND fr.anomaly_throughput_count >= 0.5 AND fr.anomaly_ratio_throughput >= 0.8))
+      (fr.ndt_throughput < fr.baseline_median_throughput AND fr.anomaly_throughput_count >= 0.5 AND fr.anomaly_ratio_throughput >= 0.8) OR
+      (fr.median_upload_throughput < fr.baseline_median_upload_throughput AND fr.anomaly_upload_throughput_count >= 0.5 AND fr.anomaly_ratio_upload_throughput >= 0.8))
     GROUP BY fr.src_asn, fr.src_group_label, fr.dst_site, fr.dst_asn, fr.src_country, fr.src_state, dst_city, dst_country, fr.ip_version
   ),
   closest_metadata AS (
@@ -121,6 +143,49 @@ WITH
         FROM `hermes.as_metadata`
       )
       WHERE rn = 1
+  ),
+  -- Phase D stores pair identities as strings. Read the immutable components
+  -- from both ends because a source label itself may contain the historical
+  -- ` - ` delimiter (for example, "Er Rachidia-Meknès - Tafilalet-MA").
+  -- New rows end in ip_version; historical three-component rows do not.
+  correlation_pair_parts AS (
+    SELECT
+      ocd.*,
+      src_dst_str,
+      SPLIT(src_dst_str, ' - ') AS pair_parts
+    FROM `mlab-collaboration.${DS}.correlation_hyperedges_tomography_v2` AS ocd
+    CROSS JOIN UNNEST(ocd.anomalous_src_dst_pairs_impacted) AS src_dst_str
+    WHERE ocd.partition_date = '${DAY}'
+  ),
+  correlation_pairs AS (
+    SELECT
+      * EXCEPT (pair_parts),
+      pair_parts[SAFE_OFFSET(0)] AS pair_src_asn,
+      ARRAY_TO_STRING(
+        ARRAY_SLICE(
+          pair_parts,
+          1,
+          ARRAY_LENGTH(pair_parts) - IF(
+            pair_parts[SAFE_OFFSET(ARRAY_LENGTH(pair_parts) - 1)] IN ('v4', 'v6'),
+            3,
+            2
+          )
+        ),
+        ' - '
+      ) AS pair_src_group_label,
+      pair_parts[SAFE_OFFSET(
+        ARRAY_LENGTH(pair_parts) - IF(
+          pair_parts[SAFE_OFFSET(ARRAY_LENGTH(pair_parts) - 1)] IN ('v4', 'v6'),
+          2,
+          1
+        )
+      )] AS pair_dst_site,
+      IF(
+        pair_parts[SAFE_OFFSET(ARRAY_LENGTH(pair_parts) - 1)] IN ('v4', 'v6'),
+        pair_parts[SAFE_OFFSET(ARRAY_LENGTH(pair_parts) - 1)],
+        NULL
+      ) AS pair_ip_version
+    FROM correlation_pair_parts
   ),
   -- Step 2: Resolved anomalies from expanded query, enriched with observed_ips
   -- resolved AS (
@@ -159,13 +224,13 @@ WITH
   resolved AS (
     SELECT
     DISTINCT
-      SPLIT(src_dst_str, ' - ')[SAFE_OFFSET(0)] AS src_asn,
+      ocd.pair_src_asn AS src_asn,
       -- Take the label from the matched event row, NOT from the pair string:
       -- a metro-keyed hyperedge would otherwise put a METRO in this column, and
       -- the INNER JOIN to anomaly_summary (keyed on real labels) would silently
       -- drop every resolved row.
       COALESCE(ta.src_group_label,
-               SPLIT(src_dst_str, ' - ')[SAFE_OFFSET(1)]) AS src_group_label,
+               ocd.pair_src_group_label) AS src_group_label,
       ta.src_city,
       ta.src_metro,
       ta.n_dayof,
@@ -173,9 +238,9 @@ WITH
       -- Which source vocabulary matched. When the exact tested label matched,
       -- report the detection regime itself; the metro fallback remains for
       -- historical city-detected partitions with metro-keyed Phase-D output.
-      IF(SPLIT(src_dst_str, ' - ')[SAFE_OFFSET(1)] = ta.src_group_label,
+      IF(ocd.pair_src_group_label = ta.src_group_label,
          ta.detection_granularity, 'metro') AS src_match_granularity,
-      SPLIT(src_dst_str, ' - ')[SAFE_OFFSET(2)] AS dst_site,
+      ocd.pair_dst_site AS dst_site,
       dst_asn,
       src_state,
       src_country,
@@ -193,20 +258,24 @@ WITH
       ocd.cumulative_anomalies_explained,
       ta.baseline_median_rtt,
       ta.baseline_median_throughput,
+      ta.baseline_median_upload_throughput,
       median_daily_rtt,
       median_daily_throughput,
+      median_daily_upload_throughput,
       mean_daily_rtt,
       mean_daily_throughput,
+      mean_daily_upload_throughput,
       ta.anomaly_ratio_throughput,
       ta.anomaly_ratio_rtt,
+      ta.anomaly_ratio_upload_throughput,
+      ta.anomaly_signals,
       ta.observed_ips,
       ocd.attribution_method,
       ocd.confidence_tier
     FROM
-      `mlab-collaboration.${DS}.correlation_hyperedges_tomography_v2` AS ocd
-    CROSS JOIN UNNEST(ocd.anomalous_src_dst_pairs_impacted) AS src_dst_str
+      correlation_pairs AS ocd
     FULL OUTER JOIN total_anomalous_src_dst_pairs AS ta
-      ON SPLIT(src_dst_str, ' - ')[SAFE_OFFSET(0)] = CAST(ta.src_asn AS STRING)
+      ON ocd.pair_src_asn = CAST(ta.src_asn AS STRING)
       -- Hyperedges built BEFORE this change key their pair strings on the metro
       -- src_city; those built after key on src_group_label. A hyperedge's own
       -- content (from_asn/to_asn/edge_asn_metro) is an intermediary hop pair and
@@ -215,9 +284,26 @@ WITH
       -- re-run is needed. For metro-keyed hyperedges one edge then matches every
       -- city group in that metro, i.e. attribution stays metro-level for those
       -- partitions, which is exactly what they have always meant.
-      AND (SPLIT(src_dst_str, ' - ')[SAFE_OFFSET(1)] = ta.src_group_label
-        OR SPLIT(src_dst_str, ' - ')[SAFE_OFFSET(1)] = ta.src_metro)
-      AND SPLIT(src_dst_str, ' - ')[SAFE_OFFSET(2)] = ta.dst_site
+      AND (ocd.pair_src_group_label = ta.src_group_label
+        OR ocd.pair_src_group_label = ta.src_metro)
+      AND ocd.pair_dst_site = ta.dst_site
+      -- New hyperedges carry ip_version as the fourth identity component. Keep
+      -- three-component historical rows readable when reformatting old dates.
+      AND (ocd.pair_ip_version IS NULL
+        OR ocd.pair_ip_version = ta.ip_version)
+      -- Defense in depth: an attributed path direction must be supported by at
+      -- least one signal eligible for that direction. This also contains any
+      -- legacy three-component pair collision.
+      AND (
+        (ocd.information_source = 'forward' AND (
+          'latency' IN UNNEST(ta.anomaly_signals)
+          OR 'download' IN UNNEST(ta.anomaly_signals)
+        ))
+        OR (ocd.information_source = 'reverse' AND (
+          'latency' IN UNNEST(ta.anomaly_signals)
+          OR 'upload' IN UNNEST(ta.anomaly_signals)
+        ))
+      )
     JOIN closest_metadata metadata_left
       ON
       CAST(ocd.from_asn AS STRING) = CAST(metadata_left.asn AS STRING)
@@ -256,33 +342,48 @@ WITH
       CAST(NULL AS FLOAT64) AS cumulative_fraction_anomalies_explained_so_far,
       baseline_median_rtt,
       baseline_median_throughput,
+      baseline_median_upload_throughput,
       median_daily_rtt,
       median_daily_throughput,
+      median_daily_upload_throughput,
       mean_daily_rtt,
       mean_daily_throughput,
+      mean_daily_upload_throughput,
       anomaly_ratio_rtt,
       anomaly_ratio_throughput,
+      anomaly_ratio_upload_throughput,
+      anomaly_signals,
       observed_ips,
       CAST(NULL AS STRING) AS attribution_method,
       CAST(NULL AS STRING) AS confidence_tier
     FROM total_anomalous_src_dst_pairs
-    -- Must mirror the two-way match in `resolved`, or a pair matched on the
-    -- metro form would appear in BOTH branches.
-    WHERE CONCAT(src_asn, ' - ', src_group_label, ' - ', dst_site) NOT IN (
-      SELECT DISTINCT src_dst_str
-      FROM `mlab-collaboration.${DS}.correlation_hyperedges_tomography_v2`,
-      UNNEST(anomalous_src_dst_pairs_impacted) AS src_dst_str
-      WHERE partition_date = '${DAY}'
-    )
-    AND CONCAT(src_asn, ' - ', src_metro, ' - ', dst_site) NOT IN (
-      SELECT DISTINCT src_dst_str
-      FROM `mlab-collaboration.${DS}.correlation_hyperedges_tomography_v2`,
-      UNNEST(anomalous_src_dst_pairs_impacted) AS src_dst_str
-      WHERE partition_date = '${DAY}'
+    -- Mirror every identity and direction condition in `resolved`, or a pair
+    -- rejected there would disappear instead of becoming unresolved.
+    WHERE NOT EXISTS (
+      SELECT 1
+      FROM correlation_pairs AS ocd
+      WHERE ocd.pair_src_asn = CAST(src_asn AS STRING)
+        AND (ocd.pair_src_group_label = src_group_label
+          OR ocd.pair_src_group_label = src_metro)
+        AND ocd.pair_dst_site = dst_site
+        AND (ocd.pair_ip_version IS NULL
+          OR ocd.pair_ip_version = ip_version)
+        AND (
+          (ocd.information_source = 'forward' AND (
+            'latency' IN UNNEST(anomaly_signals)
+            OR 'download' IN UNNEST(anomaly_signals)
+          ))
+          OR (ocd.information_source = 'reverse' AND (
+            'latency' IN UNNEST(anomaly_signals)
+            OR 'upload' IN UNNEST(anomaly_signals)
+          ))
+        )
     )
   ),
 anomalies AS (
-      SELECT DISTINCT CONCAT(fr.src_asn, ' - ', fr.src_group_label, ' - ', fr.dst_site) AS src_dst_pair
+      SELECT DISTINCT CONCAT(
+        fr.src_asn, ' - ', fr.src_group_label, ' - ', fr.dst_site, ' - ', fr.ip_version
+      ) AS src_dst_pair
       FROM `mlab-collaboration.${DS}.events_with_as_and_geoloc` AS fr
         WHERE
       -- revtr_stop_reason = 'REACHES'
@@ -295,6 +396,10 @@ anomalies AS (
           (fr.anomaly_ratio_throughput >= 0.8
             AND fr.ndt_throughput < fr.baseline_median_throughput
             AND fr.anomaly_throughput_count >= 0.5)
+          OR
+          (fr.anomaly_ratio_upload_throughput >= 0.8
+            AND fr.median_upload_throughput < fr.baseline_median_upload_throughput
+            AND fr.anomaly_upload_throughput_count >= 0.5)
         )
       AND NOT EXISTS (
         SELECT 1
@@ -328,12 +433,17 @@ combined AS (
     partition_date,
     baseline_median_rtt,
     baseline_median_throughput,
+    baseline_median_upload_throughput,
     median_daily_rtt,
     median_daily_throughput,
+    median_daily_upload_throughput,
     mean_daily_rtt,
     mean_daily_throughput,
+    mean_daily_upload_throughput,
     anomaly_ratio_rtt,
     anomaly_ratio_throughput,
+    anomaly_ratio_upload_throughput,
+    anomaly_signals,
     observed_ips,
     source_events,
     source_events_org,
@@ -365,12 +475,17 @@ combined AS (
     partition_date,
     baseline_median_rtt,
     baseline_median_throughput,
+    baseline_median_upload_throughput,
     median_daily_rtt,
     median_daily_throughput,
+    median_daily_upload_throughput,
     mean_daily_rtt,
     mean_daily_throughput,
+    mean_daily_upload_throughput,
     anomaly_ratio_rtt,
     anomaly_ratio_throughput,
+    anomaly_ratio_upload_throughput,
+    anomaly_signals,
     observed_ips,
     source_events,
     source_events_org,
@@ -407,12 +522,17 @@ combined_with_AS_meta AS (
     partition_date,
     baseline_median_rtt,
     baseline_median_throughput,
+    baseline_median_upload_throughput,
     median_daily_rtt,
     median_daily_throughput,
+    median_daily_upload_throughput,
     mean_daily_rtt,
     mean_daily_throughput,
+    mean_daily_upload_throughput,
     anomaly_ratio_rtt,
     anomaly_ratio_throughput,
+    anomaly_ratio_upload_throughput,
+    anomaly_signals,
     observed_ips,
     -- Transform source_events to use " --- " instead of " - " and map ASNs to their AS Names
     ARRAY_TO_STRING(
@@ -448,7 +568,13 @@ anomaly_data AS (
     -- Latency anomaly flag
     CASE WHEN MAX(anomaly_ratio_rtt) >= 0.8 AND MAX(anomaly_rtt_count) > 0.5 THEN 1 ELSE 0 END AS is_latency_anomaly,
     -- Throughput anomaly flag
-    CASE WHEN MAX(anomaly_ratio_throughput) >= 0.8 AND MAX(anomaly_throughput_count) > 0.5 THEN 1 ELSE 0 END AS is_throughput_anomaly
+    CASE WHEN MAX(anomaly_ratio_throughput) >= 0.8 AND MAX(anomaly_throughput_count) > 0.5 THEN 1 ELSE 0 END AS is_throughput_anomaly,
+    -- The count is zero unless step 02's 10-current/25-baseline upload gate
+    -- passed, so this cannot promote a low-power upload comparison.
+    CASE WHEN MAX(anomaly_ratio_upload_throughput) >= 0.8
+      AND MAX(anomaly_upload_throughput_count) > 0.5
+      AND MAX(median_upload_throughput) < MAX(baseline_median_upload_throughput)
+      THEN 1 ELSE 0 END AS is_upload_anomaly
   FROM
     `mlab-collaboration.${DS}.events_with_as_and_geoloc`
   WHERE partition_date = '${DAY}'
@@ -464,7 +590,12 @@ anomaly_summary AS (
     partition_date,
     COUNTIF(is_latency_anomaly = 1) AS latency_anomaly_sites,
     COUNTIF(is_throughput_anomaly = 1) AS throughput_anomaly_sites,
+    COUNTIF(is_upload_anomaly = 1) AS upload_anomaly_sites,
+    -- Compatibility denominator: intentionally excludes upload so historical
+    -- fraction_anomalies_explained_by_edge remains comparable across rollout.
     COUNTIF(is_latency_anomaly = 1 OR is_throughput_anomaly = 1) AS total_anomalous_sites,
+    COUNTIF(is_latency_anomaly = 1 OR is_throughput_anomaly = 1 OR is_upload_anomaly = 1)
+      AS total_anomalous_sites_all_signals,
     COUNT(*) AS total_sites,
   FROM
     anomaly_data
@@ -476,6 +607,8 @@ combined_with_anomaly_summary AS (
   SELECT
     combined.*,
     summary.total_anomalous_sites,
+    summary.upload_anomaly_sites,
+    summary.total_anomalous_sites_all_signals,
     total_sites,
     -- Per-group path-distance extents (day-of vs baseline max forward/reverse km).
     -- Identity joins use the immutable label. src_city remains display metadata
@@ -593,7 +726,15 @@ final_result AS (
     client_geo_source,
     -- Appended after client_geo_source, matching the position ALTER TABLE ADD
     -- COLUMN gives it on the live table. Do not reorder to sit beside n_dayof.
-    n_baseline
+    n_baseline,
+    -- Upload parity block, appended in migration order.
+    baseline_median_upload_throughput,
+    median_daily_upload_throughput,
+    mean_daily_upload_throughput,
+    anomaly_ratio_upload_throughput,
+    upload_anomaly_sites,
+    total_anomalous_sites_all_signals,
+    anomaly_signals
   FROM
     combined_with_anomaly_summary
 )
