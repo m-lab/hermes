@@ -36,6 +36,39 @@ class BaseEnrichment:
         )
         os.makedirs(self.cache_dir, exist_ok=True)
 
+    def has_rows_for_date(self, table: str, date: str, source: str | None = None) -> bool:
+        """Whether `table` already holds rows for `date`, optionally from one source.
+
+        A re-run guard. The RouteViews enrichers append with ``insert_rows_json``
+        and do no dedup, so processing the same date twice simply doubles it --
+        which is what happened on 2026-09-12, leaving 1,131,314 duplicate rows in
+        the IPv4 table after the refresh ran twice in one evening.
+
+        Deliberately a ``COUNT(*)`` query and **not**
+        ``INFORMATION_SCHEMA.PARTITIONS``: these tables are streamed into, and
+        PARTITIONS cannot see rows still in the streaming buffer. It reports an
+        empty partition for up to ~90 minutes after a perfectly successful
+        upload, so using it here would wave a duplicate straight through --
+        precisely the case this guard exists to stop.
+
+        Args:
+            table: Fully-qualified table name, ``project.dataset.table``.
+            date: Partition date to check, ``YYYY-MM-DD``.
+            source: Optional ``source`` column value to restrict the check to.
+
+        Returns:
+            True if at least one matching row already exists.
+        """
+        where = "partition_date = @date"
+        params = [bigquery.ScalarQueryParameter("date", "DATE", date)]
+        if source is not None:
+            where += " AND source = @source"
+            params.append(bigquery.ScalarQueryParameter("source", "STRING", source))
+
+        query = f"SELECT COUNT(*) AS n FROM `{table}` WHERE {where}"  # noqa: S608
+        job = self.client.query(query, job_config=bigquery.QueryJobConfig(query_parameters=params))
+        return next(iter(job.result())).n > 0
+
     def get_unique_ips(self, date: str) -> list:
         """Get unique IPs from the transient events table for the previous month before the given date."""
         start_timer = time.time()

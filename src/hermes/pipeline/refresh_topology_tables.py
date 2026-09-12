@@ -62,7 +62,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger("refresh_topology_tables")
 
 
-def refresh_bgp(date: str, project_id: str, do_v4: bool, do_v6: bool) -> None:
+def refresh_bgp(date: str, project_id: str, do_v4: bool, do_v6: bool, force: bool = False) -> None:
     """Refresh hermes.unified_ip_to_as[_ipv6] from RouteViews for `date`.
 
     Raises:
@@ -76,12 +76,12 @@ def refresh_bgp(date: str, project_id: str, do_v4: bool, do_v6: bool) -> None:
 
     if do_v4:
         logger.info("[BGP] Refreshing unified_ip_to_as (IPv4) for %s", date)
-        if not RouteViewsEnricher(project_id).process_date(date):
+        if not RouteViewsEnricher(project_id).process_date(date, force=force):
             failed.append("IPv4")
 
     if do_v6:
         logger.info("[BGP] Refreshing unified_ip_to_as_ipv6 for %s", date)
-        if not RouteViewsEnricherIPv6(project_id).process_date(date):
+        if not RouteViewsEnricherIPv6(project_id).process_date(date, force=force):
             failed.append("IPv6")
 
     if failed:
@@ -292,6 +292,13 @@ def main() -> int:
         help="Also refresh hermes.as_metadata (run ~monthly; generates inputs + uploads)",
     )
     parser.add_argument("--skip-bgp", action="store_true", help="Skip the RouteViews/BGP refresh")
+    parser.add_argument(
+        "--force-bgp",
+        action="store_true",
+        help="Re-upload BGP rows even if the resolved date already has them. The "
+        "enrichers APPEND, so use this only after deleting the existing rows for "
+        "that date -- otherwise it doubles the snapshot.",
+    )
     parser.add_argument("--skip-ixp", action="store_true", help="Skip the IXP refresh")
     parser.add_argument(
         "--refresh-ixp-snapshot",
@@ -337,7 +344,7 @@ def main() -> int:
 
     if not args.skip_bgp:
         try:
-            refresh_bgp(args.date, args.project, do_v4, do_v6)
+            refresh_bgp(args.date, args.project, do_v4, do_v6, force=args.force_bgp)
         except Exception as err:
             logger.error("BGP refresh failed: %s", err)
             failures.append("bgp")
