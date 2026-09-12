@@ -235,7 +235,11 @@ class RouteViewsEnricherIPv6(BaseEnrichment):
         return ok
 
     def process_date(
-        self, date: str, dst_dir: str | None = None, max_days_lookback: int = 7
+        self,
+        date: str,
+        dst_dir: str | None = None,
+        max_days_lookback: int = 7,
+        force: bool = False,
     ) -> bool:
         """Process RouteViews IPv6 data for a date, falling back to the closest available.
 
@@ -244,9 +248,13 @@ class RouteViewsEnricherIPv6(BaseEnrichment):
             dst_dir: Optional directory to store downloaded files. If not provided,
                     uses the default cache directory.
             max_days_lookback: How many days either side to search (default 7).
+            force: Upload even if the resolved date already has rows. Only for a
+                deliberate re-ingest after the existing rows have been deleted --
+                without the delete this doubles the snapshot.
 
         Returns:
-            True if a snapshot was downloaded, parsed and fully uploaded.
+            True if a snapshot was uploaded, or was already present (nothing to
+            do is success, not failure).
         """
         # Set the destination directory
         if dst_dir is not None:
@@ -262,6 +270,18 @@ class RouteViewsEnricherIPv6(BaseEnrichment):
         file_path, actual_date = result
         if actual_date != date:
             logger.warning(f"Using RouteViews IPv6 data from {actual_date} (requested: {date})")
+
+        # Re-run guard: uploading is an append with no dedup, so a second run for
+        # the same date doubles it. Checked on actual_date, which is what gets
+        # stamped -- checking the requested date would miss a fallback collision.
+        table = f"{self.project_id}.hermes.unified_ip_to_as_ipv6"
+        if not force and self.has_rows_for_date(table, actual_date, source="RouteViews"):
+            logger.info(
+                "IPv6 RouteViews rows already exist for %s -- skipping upload "
+                "(pass force=True only after deleting them)",
+                actual_date,
+            )
+            return True
 
         # Stamp the date the data actually came from, not the one requested, so
         # the closest-snapshot rule in 04_mapping_union.sql compares real vintage.

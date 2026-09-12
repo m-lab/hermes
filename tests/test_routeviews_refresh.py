@@ -96,6 +96,10 @@ def test_v6_process_date_stamps_the_date_the_data_came_from(monkeypatch):
         lambda self, path, date: seen.setdefault("date", date) and [],
     )
     monkeypatch.setattr(RouteViewsEnricherIPv6, "upload_to_bigquery", lambda self, data: True)
+    monkeypatch.setattr(
+        RouteViewsEnricherIPv6, "has_rows_for_date", lambda self, t, d, source=None: False
+    )
+    e.project_id = "proj"
     e.process_date("2026-09-12")
     # Must be the file's date, not the requested one -- the closest-snapshot rule
     # in 04_mapping_union.sql compares partition_date against ${DAY}.
@@ -114,7 +118,7 @@ class _Enricher:
     def __call__(self, _project_id):
         return self
 
-    def process_date(self, _date):
+    def process_date(self, _date, force=False):
         return self._result
 
 
@@ -151,3 +155,72 @@ def test_refresh_bgp_ignores_families_not_requested(monkeypatch):
 def test_empty_upload_is_not_success():
     # An empty parse must not be reported as a successful refresh.
     assert RouteViewsEnricherIPv6.upload_to_bigquery(_bare_v6(), []) is False
+
+
+# --- re-run guard ---------------------------------------------------------------
+
+
+def _guarded_v6(has_rows: bool, uploaded: list):
+    """A v6 enricher whose date resolves fine and whose upload is recorded."""
+    e = _bare_v6()
+    e.project_id = "proj"
+    e.has_rows_for_date = lambda table, date, source=None: has_rows  # type: ignore[method-assign]
+    e.download_routeviews_dataset = lambda d, m=7: ("/tmp/rv6", "2026-09-11")  # type: ignore[method-assign]
+    e.process_routeviews_data = lambda path, date: [{"ip_prefix": "x", "asn": 1}]  # type: ignore[method-assign]
+    e.upload_to_bigquery = lambda data: uploaded.append(data) or True  # type: ignore[method-assign,func-returns-value]
+    return e
+
+
+def test_existing_date_is_skipped_not_re_uploaded():
+    # The 2026-09-12 incident: running the refresh twice in one evening appended
+    # a second copy of the same snapshot (1,131,314 duplicate v4 rows).
+    uploaded: list = []
+    assert _guarded_v6(has_rows=True, uploaded=uploaded).process_date("2026-09-12") is True
+    assert uploaded == [], "must not upload when the date already has rows"
+
+
+def test_missing_date_is_uploaded():
+    uploaded: list = []
+    assert _guarded_v6(has_rows=False, uploaded=uploaded).process_date("2026-09-12") is True
+    assert len(uploaded) == 1
+
+
+def test_force_overrides_the_guard():
+    uploaded: list = []
+    e = _guarded_v6(has_rows=True, uploaded=uploaded)
+    assert e.process_date("2026-09-12", force=True) is True
+    assert len(uploaded) == 1, "force=True must re-upload (for a deliberate re-ingest)"
+
+
+def test_guard_is_checked_on_the_resolved_date_not_the_requested_one(monkeypatch):
+    # The fallback means requested != stamped. Guarding on the requested date
+    # would miss a collision with the snapshot actually being written.
+    seen = {}
+    e = _bare_v6()
+    e.project_id = "proj"
+    e.has_rows_for_date = lambda table, date, source=None: seen.setdefault("date", date) and False  # type: ignore[method-assign]
+    e.download_routeviews_dataset = lambda d, m=7: ("/tmp/rv6", "2026-09-11")  # type: ignore[method-assign]
+    e.process_routeviews_data = lambda path, date: []  # type: ignore[method-assign]
+    e.upload_to_bigquery = lambda data: True  # type: ignore[method-assign]
+    e.process_date("2026-09-12")
+    assert seen["date"] == "2026-09-11"
+
+
+def test_guard_restricts_to_the_routeviews_source():
+    # The tables also hold IXP rows for the same dates; the guard must not treat
+    # an IXP row as proof the BGP snapshot is present.
+    seen = {}
+    e = _bare_v6()
+    e.project_id = "proj"
+    e.has_rows_for_date = lambda table, date, source=None: (
+        seen.update(  # type: ignore[method-assign]
+            {"source": source, "table": table}
+        )
+        or False
+    )
+    e.download_routeviews_dataset = lambda d, m=7: ("/tmp/rv6", "2026-09-11")  # type: ignore[method-assign]
+    e.process_routeviews_data = lambda path, date: []  # type: ignore[method-assign]
+    e.upload_to_bigquery = lambda data: True  # type: ignore[method-assign]
+    e.process_date("2026-09-12")
+    assert seen["source"] == "RouteViews"
+    assert seen["table"] == "proj.hermes.unified_ip_to_as_ipv6"

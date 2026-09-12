@@ -207,7 +207,11 @@ class RouteViewsEnricher(BaseEnrichment):
         return ok
 
     def process_date(
-        self, date: str, dst_dir: str | None = None, max_days_lookback: int = 7
+        self,
+        date: str,
+        dst_dir: str | None = None,
+        max_days_lookback: int = 7,
+        force: bool = False,
     ) -> bool:
         """Process RouteViews data for a specific date, falling back to closest available date.
 
@@ -216,6 +220,13 @@ class RouteViewsEnricher(BaseEnrichment):
             dst_dir: Optional directory to store downloaded files. If not provided,
                     uses the default cache directory.
             max_days_lookback: Maximum number of days to look back/forward for available data (default: 7)
+            force: Upload even if the resolved date already has rows. Only for a
+                deliberate re-ingest after the existing rows have been deleted --
+                without the delete this doubles the snapshot.
+
+        Returns:
+            True if a snapshot was uploaded, or was already present (nothing to
+            do is success, not failure).
         """
         # Set the destination directory
         if dst_dir is not None:
@@ -233,6 +244,18 @@ class RouteViewsEnricher(BaseEnrichment):
         # Log if we used a different date than requested
         if actual_date != date:
             logger.warning(f"Using RouteViews data from {actual_date} (requested: {date})")
+
+        # Re-run guard: uploading is an append with no dedup, so a second run for
+        # the same date doubles it. Checked on actual_date, which is what gets
+        # stamped -- checking the requested date would miss a fallback collision.
+        table = f"{self.project_id}.hermes.unified_ip_to_as"
+        if not force and self.has_rows_for_date(table, actual_date, source="RouteViews"):
+            logger.info(
+                "RouteViews rows already exist for %s -- skipping upload "
+                "(pass force=True only after deleting them)",
+                actual_date,
+            )
+            return True
 
         # Process the data (using the actual date found, not the requested date)
         data = self.process_routeviews_data(file_path, actual_date)
