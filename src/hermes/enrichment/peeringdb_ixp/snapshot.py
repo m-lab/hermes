@@ -146,28 +146,42 @@ def _rows(dump: dict[str, Any], table: str) -> list[dict[str, Any]]:
 
 def peeringdb_records(
     dump_path: str,
-) -> tuple[list[tuple[str, list[str], list[str]]], list[tuple[str, str, list[str], list[str]]]]:
-    """Derive IXP prefixes and members from a PeeringDB bulk dump.
+) -> tuple[
+    list[tuple[str, list[str], list[str]]],
+    list[tuple[str, str, list[str], list[str]]],
+    dict[int, str],
+]:
+    """Derive IXP prefixes, members and the IX id->name index from a PeeringDB dump.
 
     Replaces ``PeeringDB_Crawler.generating_IXP_prefixes`` /
     ``generating_IXP_networks`` plus the two scripts that reformatted their CSVs.
 
     Returns:
-        ``(prefix_records, member_records)`` where a prefix record is
-        ``(ixp_name, v4_prefixes, v6_prefixes)`` and a member record is
-        ``(ixp_name, asn, v4_ips, v6_ips)``.
+        ``(prefix_records, member_records, ix_names)`` where a prefix record is
+        ``(ixp_name, v4_prefixes, v6_prefixes)``, a member record is
+        ``(ixp_name, asn, v4_ips, v6_ips)``, and ``ix_names`` maps PeeringDB
+        ``ix.id`` to its name. The index is returned so EuroIX can adopt
+        PeeringDB's naming directly rather than being reconciled by prefix
+        overlap afterwards -- see `euroix_records`.
     """
     with open(dump_path) as f:
         dump = json.load(f)
 
     ixlan_to_ix = {row["id"]: row.get("ix_id") for row in _rows(dump, "ixlan")}
-    ix_name = {row["id"]: row.get("name") for row in _rows(dump, "ix")}
+    # Only real (id, name) pairs: a nameless or unidentified ix cannot serve as a
+    # canonical name, and letting None in would silently blank an IXP's label.
+    ix_name: dict[int, str] = {
+        row["id"]: row["name"]
+        for row in _rows(dump, "ix")
+        if isinstance(row.get("id"), int) and isinstance(row.get("name"), str) and row["name"]
+    }
 
     # Prefixes: ixpfx -> ixlan -> ix, then ONE v4 and ONE v6 per IXP name.
     # "First wins" per name, matching the upstream groupby(...).agg('first').
     by_name: OrderedDict[str, dict[str, str]] = OrderedDict()
     for row in _rows(dump, "ixpfx"):
-        name = ix_name.get(ixlan_to_ix.get(row.get("ixlan_id")))
+        ix_id = ixlan_to_ix.get(row.get("ixlan_id"))
+        name = ix_name.get(ix_id) if isinstance(ix_id, int) else None
         prefix = row.get("prefix")
         if not name or not prefix:
             continue
@@ -200,7 +214,7 @@ def peeringdb_records(
         len(prefix_records),
         len(member_records),
     )
-    return prefix_records, member_records
+    return prefix_records, member_records, ix_name
 
 
 # --------------------------------------------------------------------------
@@ -330,6 +344,7 @@ def euroix_records(
     session: requests.Session | None = None,
     timeout: float = 15.0,
     max_workers: int = 16,
+    pdb_ix_names: dict[int, str] | None = None,
 ) -> tuple[list[tuple[str, list[str], list[str]]], list[tuple[str, str, list[str], list[str]]]]:
     """Fetch IXP prefixes and members from EuroIX's IXPDB and IX-F exports.
 
@@ -384,7 +399,18 @@ def euroix_records(
             if not isinstance(ixpdb_id, int):
                 unmatched += 1
                 continue
-            pfx, members = _ixf_extract(doc, ixpdb_id, str(prov.get("name") or ""))
+            # Adopt PeeringDB's name when IXPDB tells us which IX this is. The
+            # prefix-overlap name map can only reconcile sources that publish a
+            # shared prefix, and EuroIX publishes prefixes for just 308 of 391
+            # IXPs -- so without this, EuroIX names win by precedence and the same
+            # exchange is labelled differently depending on which source happened
+            # to supply the interface. pdb_id is an explicit cross-reference and
+            # resolves 382 of 391, which removes ~90% of the relabelling.
+            name = str(prov.get("name") or "")
+            pdb_id = prov.get("pdb_id")
+            if pdb_ix_names and isinstance(pdb_id, int):
+                name = pdb_ix_names.get(pdb_id) or name
+            pfx, members = _ixf_extract(doc, ixpdb_id, name)
             if pfx is None:
                 unmatched += 1
                 continue
@@ -599,14 +625,14 @@ def generate_snapshot(
         return None
     dump_path, actual_date = downloaded
 
-    pdb_prefixes, pdb_members = peeringdb_records(dump_path)
+    pdb_prefixes, pdb_members, pdb_ix_names = peeringdb_records(dump_path)
     pch_prefixes, pch_members = pch_records(delay=pch_delay)
 
     euroix_prefixes: list[tuple[str, list[str], list[str]]] = []
     euroix_members: list[tuple[str, str, list[str], list[str]]] = []
     if include_euroix:
         try:
-            euroix_prefixes, euroix_members = euroix_records()
+            euroix_prefixes, euroix_members = euroix_records(pdb_ix_names=pdb_ix_names)
         except Exception as err:
             # Additive source: losing it degrades coverage but must not lose the
             # whole snapshot, which PeeringDB and PCH already carry.

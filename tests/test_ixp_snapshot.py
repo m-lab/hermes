@@ -186,7 +186,7 @@ def test_ixp_names_containing_commas_survive(tmp_path):
         ixpfx=[{"ixlan_id": 10, "prefix": "103.168.98.0/23", "protocol": "IPv4"}],
         netixlan=[],
     )
-    prefixes, _ = peeringdb_records(path)
+    prefixes, _, _ = peeringdb_records(path)
     assert prefixes == [("CNIX (Qianhai, Shenzhen)", ["103.168.98.0/23"], [])]
 
 
@@ -203,7 +203,7 @@ def test_only_the_first_prefix_per_family_is_kept(tmp_path):
         ],
         netixlan=[],
     )
-    prefixes, _ = peeringdb_records(path)
+    prefixes, _, _ = peeringdb_records(path)
     assert prefixes == [("IX", ["192.0.2.0/24"], ["2001:db9::/64"])]
 
 
@@ -218,14 +218,14 @@ def test_members_come_straight_from_netixlan(tmp_path):
             {"name": "IX", "asn": 3356, "ipaddr4": None, "ipaddr6": None},
         ],
     )
-    _, members = peeringdb_records(path)
+    _, members, _ = peeringdb_records(path)
     assert members == [("IX", "15169", ["192.0.2.1"], ["2001:db9::1"]), ("IX", "3356", [], [])]
 
 
 def test_missing_tables_do_not_crash(tmp_path):
     path = tmp_path / "empty.json"
     path.write_text(json.dumps({}))
-    assert peeringdb_records(str(path)) == ([], [])
+    assert peeringdb_records(str(path)) == ([], [], {})
 
 
 def test_comma_in_an_ixp_name_does_not_break_the_name_map():
@@ -417,3 +417,115 @@ def test_pch_still_outranks_peeringdb_where_euroix_is_absent():
     pch = interfaces_from_records([("PCH IX", "222", ["80.81.192.1"], [])])
     merged = merge_interfaces(pdb, pch, name_map={}, euroix_members={})
     assert merged["80.81.192.1"] == ("222", "PCH_IX")
+
+
+# --- canonical naming across sources -------------------------------------------
+
+
+def test_peeringdb_records_exposes_the_ix_name_index(tmp_path):
+    path = _dump(
+        tmp_path,
+        ix=[{"id": 26, "name": "AMS-IX"}, {"id": 74, "name": "DE-CIX Hamburg"}],
+        ixlan=[],
+        ixpfx=[],
+        netixlan=[],
+    )
+    _, _, names = peeringdb_records(path)
+    assert names == {26: "AMS-IX", 74: "DE-CIX Hamburg"}
+
+
+def test_ix_name_index_skips_nameless_and_unidentified_entries(tmp_path):
+    # A None name must not land in the index, or it would blank an IXP's label.
+    path = _dump(
+        tmp_path,
+        ix=[
+            {"id": 1, "name": "Good IX"},
+            {"id": 2, "name": None},
+            {"id": 3, "name": ""},
+            {"name": "no id"},
+        ],
+        ixlan=[],
+        ixpfx=[],
+        netixlan=[],
+    )
+    _, _, names = peeringdb_records(path)
+    assert names == {1: "Good IX"}
+
+
+def test_euroix_adopts_the_peeringdb_name_for_the_same_exchange(monkeypatch):
+    """The same exchange must carry one name whichever source supplied the hop.
+
+    IXPDB calls it "AKL-IX (New Zealand Internet Exchange, Auckland)" and
+    PeeringDB "AKL-IX (Auckland NZ)". Without the pdb_id cross-reference, EuroIX's
+    label wins by precedence and the exchange is named inconsistently depending on
+    which source happened to have the interface -- 327 of 382 resolvable IXPs
+    disagree this way, which drove ~47k relabelled rows.
+    """
+    from hermes.enrichment.peeringdb_ixp import snapshot as s
+
+    providers = [
+        {
+            "id": 500,
+            "name": "AKL-IX (New Zealand Internet Exchange, Auckland)",
+            "pdb_id": 61,
+            "apis": {"ixfexport": "https://example.invalid/e.json"},
+        }
+    ]
+    doc = {
+        "ixp_list": [{"ixp_id": 1, "ixf_id": 500}],
+        "member_list": [
+            {
+                "asnum": 15169,
+                "connection_list": [
+                    {"ixp_id": 1, "vlan_list": [{"ipv4": {"address": "80.81.192.1"}}]}
+                ],
+            }
+        ],
+    }
+
+    class _Resp:
+        def json(self_inner):
+            return providers
+
+    monkeypatch.setattr(s.requests.Session, "get", lambda *a, **k: _Resp())
+    monkeypatch.setattr(s, "_fetch_json", lambda url, timeout: (url, doc))
+
+    _, members = s.euroix_records(pdb_ix_names={61: "AKL-IX (Auckland NZ)"})
+    assert members == [("AKL-IX (Auckland NZ)", "15169", ["80.81.192.1"], [])]
+
+    # With no index supplied, it keeps IXPDB's own label.
+    _, members = s.euroix_records()
+    assert members[0][0] == "AKL-IX (New Zealand Internet Exchange, Auckland)"
+
+
+def test_euroix_keeps_its_own_name_when_pdb_id_is_unresolvable(monkeypatch):
+    from hermes.enrichment.peeringdb_ixp import snapshot as s
+
+    providers = [
+        {
+            "id": 500,
+            "name": "Obscure IX",
+            "pdb_id": 9999,
+            "apis": {"ixfexport": "https://example.invalid/e.json"},
+        }
+    ]
+    doc = {
+        "ixp_list": [{"ixp_id": 1, "ixf_id": 500}],
+        "member_list": [
+            {
+                "asnum": 1,
+                "connection_list": [
+                    {"ixp_id": 1, "vlan_list": [{"ipv4": {"address": "80.81.192.1"}}]}
+                ],
+            }
+        ],
+    }
+
+    class _Resp:
+        def json(self_inner):
+            return providers
+
+    monkeypatch.setattr(s.requests.Session, "get", lambda *a, **k: _Resp())
+    monkeypatch.setattr(s, "_fetch_json", lambda url, timeout: (url, doc))
+    _, members = s.euroix_records(pdb_ix_names={61: "Something Else"})
+    assert members[0][0] == "Obscure IX"
