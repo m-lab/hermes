@@ -7,6 +7,8 @@ from datetime import datetime
 from google.cloud import bigquery
 from tqdm import tqdm
 
+from hermes.enrichment.peeringdb_ixp.paths import resolve_ixp_paths
+
 # Set up logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -18,6 +20,7 @@ class IXPCollectorIPv6:
         project_id: str = "mlab-collaboration",
         python_executable: str | None = None,
         output_dir: str | None = None,
+        wrapper_script_path: str | None = None,
         batch_size: int = 1000,
     ):
         """
@@ -27,35 +30,24 @@ class IXPCollectorIPv6:
             project_id (str): Google Cloud project ID
             python_executable (str): Path to Python executable
             output_dir (str): Directory for output files
+            wrapper_script_path (str): Path to the wrapper script
             batch_size (int): Number of rows to insert in each batch
         """
         self.project_id = project_id
         self.batch_size = batch_size
         self.client = bigquery.Client(project=project_id)
 
-        self.wrapper_script_path = os.path.join(
-            os.path.expanduser("~"),
-            "Documents",
-            "GitHub",
-            "missing-peering-links",
-            "scripts",
-            "wrapper.py",
+        # Resolved from the constructor args, then HERMES_IXP_* env vars, then the
+        # historical laptop defaults. These were hardcoded, which is why the IXP
+        # refresh could only ever run on one machine. Deliberately NOT creating
+        # output_dir here: doing so littered a phantom, empty
+        # ~/Documents/GitHub/missing-peering-links/scripts/data tree onto any host
+        # that merely imported this class. run_wrapper_script creates it instead.
+        self.wrapper_script_path, self.python_executable, self.output_dir = resolve_ixp_paths(
+            python_executable=python_executable,
+            output_dir=output_dir,
+            wrapper_script_path=wrapper_script_path,
         )
-
-        self.python_executable = os.path.join(
-            os.path.expanduser("~"), "miniforge3", "envs", "missing-peering-links", "bin", "python"
-        )
-
-        self.output_dir = os.path.join(
-            os.path.expanduser("~"),
-            "Documents",
-            "GitHub",
-            "missing-peering-links",
-            "scripts",
-            "data",
-        )
-        # Create output directory if it doesn't exist
-        os.makedirs(self.output_dir, exist_ok=True)
 
         # Define BigQuery tables for IPv6
         self.members_table = f"{project_id}.ix_data.ixp_members_ipv6"
@@ -115,6 +107,7 @@ class IXPCollectorIPv6:
             return True
 
         try:
+            os.makedirs(self.output_dir, exist_ok=True)
             logger.info(f"Running wrapper script for IPv6: {self.wrapper_script_path}")
             result = subprocess.run(
                 [self.python_executable, self.wrapper_script_path],
