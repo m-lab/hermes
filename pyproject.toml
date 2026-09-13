@@ -32,6 +32,10 @@ dependencies = [
     "google-auth>=2.56.3",
     "pandas>=3.0.5",
     "requests>=2.34.2",
+    # Longest-prefix trie for IXP prefix->name mapping in
+    # peeringdb_ixp/snapshot.py. Same library the companion repo's
+    # merge-all-prefixes.py used, kept so the name-map semantics match.
+    "py-radix>=0.10",
     "geopy>=2.5.0",
     "tqdm>=4.70.0",
     "maxminddb>=3.1.1",

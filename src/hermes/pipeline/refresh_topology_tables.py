@@ -51,6 +51,7 @@ from pathlib import Path
 from hermes.enrichment.as_metadata.enricher import update_as_metadata
 from hermes.enrichment.peeringdb_ixp.ixp_collector import IXPCollector
 from hermes.enrichment.peeringdb_ixp.ixp_collector_ipv6 import IXPCollectorIPv6
+from hermes.enrichment.peeringdb_ixp.snapshot import generate_snapshot
 from hermes.enrichment.routeviews import RouteViewsEnricher
 from hermes.enrichment.routeviews.enricher_ipv6 import RouteViewsEnricherIPv6
 
@@ -126,26 +127,32 @@ def _ingest_ixp_snapshot(collector, ipv6: bool) -> None:
         raise RuntimeError(f"{label} IXP: BigQuery insert failed")
 
 
-def refresh_ixp(do_v4: bool, do_v6: bool, refresh_snapshot: bool) -> None:
+def refresh_ixp(date: str, do_v4: bool, do_v6: bool, refresh_snapshot: bool) -> None:
     """Load the current IXP membership snapshot into the IXP tables.
 
     By default this ingests the latest already-generated merged-members file with
-    its true (filename) date — no backfill, no date coupling to the BGP --date.
-    With `refresh_snapshot`, regenerate a fresh snapshot via wrapper.py first
-    (one run produces both the IPv4 and IPv6 files; this can take ~an hour).
+    its true (filename) date. With `refresh_snapshot`, generate a fresh snapshot
+    first.
+
+    Generation is in-process (``peeringdb_ixp.snapshot.generate_snapshot``), not
+    the old ``wrapper.py`` subprocess: PeeringDB comes from CAIDA's archived
+    daily bulk dump and PCH from its public API, so this needs no companion repo,
+    no separate interpreter and no laptop-specific paths -- which is what kept
+    IXP membership from ever being refreshed on the VM. It still takes roughly an
+    hour, almost entirely PCH's per-IXP rate limit.
     """
     v4 = IXPCollector()
 
-    # wrapper.py produces both the IPv4 and IPv6 snapshot files in one run, so
-    # generation is keyed on the IPv4 file regardless of which versions we ingest.
+    # One generation run produces both the IPv4 and IPv6 files, so the check is
+    # keyed on the IPv4 file regardless of which versions we ingest.
     have_snapshot = _latest_merged_members_file(v4.output_dir, ipv6=False) is not None
     if refresh_snapshot or not have_snapshot:
         reason = "forced refresh" if refresh_snapshot else "no existing snapshot found"
         logger.info(
-            "[IXP] Generating fresh IXP snapshot via wrapper.py (%s) — may take ~an hour", reason
+            "[IXP] Generating fresh IXP snapshot for %s (%s) — may take ~an hour", date, reason
         )
-        if not v4.run_wrapper_script():
-            raise RuntimeError("IXP wrapper.py failed to generate a snapshot")
+        if generate_snapshot(date, v4.output_dir) is None:
+            raise RuntimeError(f"IXP snapshot generation failed for {date}")
 
     if do_v4:
         _ingest_ixp_snapshot(v4, ipv6=False)
@@ -351,7 +358,7 @@ def main() -> int:
 
     if not args.skip_ixp:
         try:
-            refresh_ixp(do_v4, do_v6, args.refresh_ixp_snapshot)
+            refresh_ixp(args.date, do_v4, do_v6, args.refresh_ixp_snapshot)
         except Exception as err:
             logger.error("IXP refresh failed: %s", err)
             failures.append("ixp")
