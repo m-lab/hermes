@@ -1,0 +1,21 @@
+# /etc/systemd/system/as-metadata.timer
+# Monthly, on the 2nd at 06:00 UTC.
+#
+# Monthly rather than the biweekly cadence refresh-topology uses, because the
+# PeeringDB inputs are keyed by <year>-<month>: running on the 1st and the 15th
+# would regenerate identical inputs and write a duplicate partition, and
+# as_metadata has no re-run guard.
+#
+# The 2nd, not the 1st, so it cannot overlap refresh-topology.timer -- that
+# fires on the 1st and 15th at 06:00 and takes roughly an hour, almost all of it
+# PCH's per-IXP delay. Separating the days removes the question entirely rather
+# than relying on one finishing before the other starts.
+[Unit]
+Description=Refresh HERMES as_metadata monthly
+
+[Timer]
+OnCalendar=*-*-02 06:00:00 UTC
+Persistent=true
+
+[Install]
+WantedBy=timers.target

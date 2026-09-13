@@ -1,0 +1,40 @@
+# /etc/systemd/system/as-metadata.service
+# Refreshes hermes.as_metadata. Separate from refresh-topology.service because
+# the cadence genuinely differs: BGP and IXP are worth refreshing every two
+# weeks, but as_metadata's inputs are monthly by construction -- the two
+# PeeringDB CSVs are keyed by <year>-<month>, so a second run inside the same
+# month regenerates identical inputs and writes a duplicate partition. There is
+# no re-run guard on as_metadata.
+#
+# This is not a peripheral table. It supplies cone.numberPrefixes, which decides
+# the prefix-overlap tiebreak in step 04, and organization.OrgName, which is
+# every hop's associated_org. It sat at its 2026-07-01 snapshot for 74 days
+# because the generators lived in a private repo that was never on this host, so
+# newly-allocated ASNs carried no organisation at all.
+#
+# Inputs are now built in-process (as_metadata/sources.py): CAIDA AS Rank over
+# GraphQL for the ~121k ASN records, and two CSVs derived from the same CAIDA
+# PeeringDB dump the IXP snapshot already downloads. No companion repo, no conda
+# environment, no geocoding.
+[Unit]
+Description=HERMES as_metadata refresh (CAIDA AS Rank + PeeringDB -> hermes.as_metadata)
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=oneshot
+User=ec2-user
+Group=ec2-user
+Environment=HOME=/home/ec2-user
+ExecStartPre=-/usr/bin/docker rm -f as-metadata-refresh
+# --memory=6g: the AS Rank file is ~121k JSON records and the PeeringDB dump is
+# ~110 MB, both held while the augmented file is written. Still far below the
+# 28g union container, and this runs on a day those never fire.
+# --skip-bgp --skip-ixp: refresh-topology.service owns those.
+ExecStart=/bin/bash -lc '/usr/bin/docker run --rm --name as-metadata-refresh --memory=6g --memory-swap=6g --entrypoint hermes-refresh-topology --env-file /etc/hermes/hermes.env -e GOOGLE_APPLICATION_CREDENTIALS=/app/credentials.json -e HERMES_AS_METADATA_DIR=/app/cache/as_metadata -v /home/ec2-user/hermes-docker-cache:/app/cache -v /home/ec2-user/.config/gcloud/application_default_credentials.json:/app/credentials.json:ro hermes-pipeline:latest --date $(date -u +%%F) --as-metadata --skip-bgp --skip-ixp >> /home/ec2-user/logs/as_metadata_$(date -u +%%Y%%m%%d).log 2>&1'
+TimeoutStartSec=0
+TimeoutStopSec=7200
+
+[Install]
+WantedBy=multi-user.target
