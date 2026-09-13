@@ -1,0 +1,4 @@
+interface:
+  display_name: "Validate Data Pipeline Changes"
+  short_description: "Audit warehouse pipeline changes before production"
+  default_prompt: "Use $validate-data-pipeline-changes to plan and validate this warehouse pipeline change."

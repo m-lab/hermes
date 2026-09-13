@@ -1,0 +1,4 @@
+interface:
+  display_name: "Publish GitHub Follow-ups"
+  short_description: "Rebuild follow-up PRs after rewritten merge history"
+  default_prompt: "Use $github-publish-followups to publish follow-up commits without replaying already-merged history."
