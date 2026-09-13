@@ -304,3 +304,104 @@ def test_pch_still_wins_when_it_has_a_real_asn():
     pdb = interfaces_from_records([("PDB IX", "111", ["80.81.192.1"], [])])
     pch = interfaces_from_records([("PCH IX", "222", ["80.81.192.1"], [])])
     assert merge_interfaces(pdb, pch, name_map={})["80.81.192.1"] == ("222", "PCH_IX")
+
+
+# --- EuroIX / IX-F exports -----------------------------------------------------
+
+from hermes.enrichment.peeringdb_ixp.snapshot import _ixf_extract  # noqa: E402
+
+MEGAPORT_STYLE = {
+    # One document serving two IXPs, as lg.megaport.com does for 35 of them.
+    "ixp_list": [
+        {
+            "ixp_id": 14,
+            "ixf_id": 608,
+            "shortname": "IX-ASH",
+            "vlan": [{"ipv4": {"prefix": "206.53.172.0", "mask_length": 24}}],
+        },
+        {
+            "ixp_id": 1,
+            "ixf_id": 570,
+            "shortname": "IX-SYD",
+            "vlan": [{"ipv6": {"prefix": "2001:dead::", "mask_length": 64}}],
+        },
+    ],
+    "member_list": [
+        {
+            "asnum": 15169,
+            "connection_list": [
+                {"ixp_id": 14, "vlan_list": [{"ipv4": {"address": "206.53.172.1"}}]},
+                {"ixp_id": 1, "vlan_list": [{"ipv6": {"address": "2001:dead::1"}}]},
+            ],
+        },
+        {
+            "asnum": 3356,
+            "connection_list": [
+                {"ixp_id": 1, "vlan_list": [{"ipv6": {"address": "2001:dead::2"}}]}
+            ],
+        },
+    ],
+}
+
+
+def test_multi_ixp_export_is_scoped_to_the_requested_ixp():
+    """The trap that made one IXP look 27x bigger than it is.
+
+    lg.megaport.com publishes 35 IXPs in one document. Counting all of it against
+    a single IXP read Megaport Ashburn as 3,408 interfaces instead of 124, and
+    made two unrelated IXPs report identical totals.
+    """
+    pfx, members = _ixf_extract(MEGAPORT_STYLE, 608, "IX-ASH")
+    assert pfx == ("IX-ASH", ["206.53.172.0/24"], [])
+    assert members == [("IX-ASH", "15169", ["206.53.172.1"], [])]
+
+    pfx, members = _ixf_extract(MEGAPORT_STYLE, 570, "IX-SYD")
+    assert pfx == ("IX-SYD", [], ["2001:dead::/64"])
+    assert {m[1] for m in members} == {"15169", "3356"}
+
+
+def test_unmatched_ixf_id_returns_nothing():
+    assert _ixf_extract(MEGAPORT_STYLE, 99999, "Nope") == (None, [])
+
+
+def test_export_with_members_but_no_addresses_yields_no_interfaces():
+    """IX.br's shape: members present, connection_list carries only ixp_id.
+
+    Verified live -- 106 members, 106 connections, zero IP addresses anywhere in
+    the document. Their data, not a parse failure, so it must come back empty
+    rather than raising.
+    """
+    doc = {
+        "ixp_list": [{"ixp_id": 18, "ixf_id": 160, "shortname": "IX.br Salvador"}],
+        "member_list": [{"asnum": 263009, "connection_list": [{"ixp_id": 18}]}],
+    }
+    pfx, members = _ixf_extract(doc, 160, "IX.br Salvador")
+    assert pfx == ("IX.br Salvador", [], [])
+    assert members == []
+
+
+def test_prefix_requires_both_prefix_and_mask():
+    doc = {
+        "ixp_list": [
+            {
+                "ixp_id": 1,
+                "ixf_id": 7,
+                "vlan": [
+                    {"ipv4": {"prefix": "185.1.210.0"}},  # no mask_length
+                    {"ipv4": {"prefix": "185.1.211.0", "mask_length": 23}},
+                ],
+            }
+        ],
+        "member_list": [],
+    }
+    pfx, _ = _ixf_extract(doc, 7, "IX")
+    assert pfx == ("IX", ["185.1.211.0/23"], [])
+
+
+def test_euroix_is_additive_and_cannot_override(monkeypatch):
+    # EuroIX runs last, so an IP another source already claimed keeps its owner.
+    pdb = interfaces_from_records([("PDB IX", "111", ["80.81.192.1"], [])])
+    eu = interfaces_from_records([("EU IX", "999", ["80.81.192.1"], ["2001:7f8::9"])])
+    merged = merge_interfaces(pdb, {}, name_map={}, euroix_members=eu)
+    assert merged["80.81.192.1"] == ("111", "PDB_IX"), "EuroIX must not override"
+    assert merged["2001:7f8::9"] == ("999", "EU_IX"), "but must fill gaps"

@@ -59,6 +59,9 @@ logger = logging.getLogger(__name__)
 
 CAIDA_PEERINGDB_BASE = "https://publicdata.caida.org/datasets/peeringdb-v2/"
 PCH_BASE_URL = "https://www.pch.net/api/ixp"
+#: EuroIX IXP Database. Note api.euro-ix.net does not exist; this is the host
+#: the IXPDB API documentation actually points at.
+IXPDB_PROVIDER_LIST = "https://api.ixpdb.net/v1/provider/list"
 
 #: Seconds between PCH per-IXP calls. Upstream uses 3; keep it unless you have
 #: cleared a faster rate with PCH -- there are ~1000 active IXPs behind this.
@@ -259,6 +262,131 @@ def pch_records(
 
 
 # --------------------------------------------------------------------------
+# EuroIX: IXPDB directory + per-IXP IX-F member exports
+# --------------------------------------------------------------------------
+
+
+def _ixf_cidrs(vlan: dict[str, Any], family: str) -> str | None:
+    """``{"prefix": "185.1.210.0", "mask_length": 23}`` -> ``185.1.210.0/23``."""
+    entry = vlan.get(family) or {}
+    prefix, mask = entry.get("prefix"), entry.get("mask_length")
+    return f"{prefix}/{mask}" if prefix and mask is not None else None
+
+
+def _ixf_extract(
+    doc: dict[str, Any], ixpdb_id: int, name: str
+) -> tuple[tuple[str, list[str], list[str]] | None, list[tuple[str, str, list[str], list[str]]]]:
+    """Pull one IXP's prefixes and members out of an IX-F export document.
+
+    Scoping matters: a single export can serve many IXPs -- lg.megaport.com
+    publishes 35 in one document -- so connections must be filtered to the
+    ``ixp_list`` entry whose ``ixf_id`` is this IXP's IXPDB id. Counting the
+    whole document against one IXP inflates its apparent contribution wildly
+    (Megaport's Ashburn read as 3,408 interfaces instead of 124).
+    """
+    entries = [e for e in doc.get("ixp_list", []) if e.get("ixf_id") == ixpdb_id]
+    if not entries:
+        return None, []
+    local_ids = {e.get("ixp_id") for e in entries}
+
+    v4_pfx, v6_pfx = [], []
+    for entry in entries:
+        for vlan in entry.get("vlan") or []:
+            if c := _ixf_cidrs(vlan, "ipv4"):
+                v4_pfx.append(c)
+            if c := _ixf_cidrs(vlan, "ipv6"):
+                v6_pfx.append(c)
+
+    members = []
+    for member in doc.get("member_list", []):
+        asn = member.get("asnum")
+        v4, v6 = [], []
+        for conn in member.get("connection_list") or []:
+            if conn.get("ixp_id") not in local_ids:
+                continue
+            for vlan in conn.get("vlan_list") or []:
+                if addr := (vlan.get("ipv4") or {}).get("address"):
+                    v4.append(addr)
+                if addr := (vlan.get("ipv6") or {}).get("address"):
+                    v6.append(addr)
+        if asn is not None and (v4 or v6):
+            members.append((name, str(asn), v4, v6))
+
+    return (name, v4_pfx, v6_pfx), members
+
+
+def euroix_records(
+    session: requests.Session | None = None, timeout: float = 45.0
+) -> tuple[list[tuple[str, list[str], list[str]]], list[tuple[str, str, list[str], list[str]]]]:
+    """Fetch IXP prefixes and members from EuroIX's IXPDB and IX-F exports.
+
+    IXPDB lists ~1130 IXPs; 391 publish an IX-F member export, and those sit
+    behind only ~273 distinct URLs because one document often covers a whole
+    operator's IXPs. Each URL is fetched once.
+
+    Only ~5 of those IXPs are absent from PeeringDB, so this is not about new
+    IXPs -- it is about interface depth at IXPs PeeringDB already lists, from
+    exports the IXPs publish themselves. A 10-IXP sample found ~26% of IX-F
+    interfaces missing from PeeringDB.
+
+    Not every export carries addresses: IX.br publishes members with an empty
+    ``connection_list`` (106 members, 106 connections, zero IPs anywhere in the
+    document). That is their data, not a parse failure, so it is logged as
+    "no interfaces" rather than passing silently as zero.
+    """
+    http = session or requests.Session()
+    providers = http.get(IXPDB_PROVIDER_LIST, timeout=timeout).json()
+
+    by_url: dict[str, list[dict[str, Any]]] = {}
+    for prov in providers:
+        url = (prov.get("apis") or {}).get("ixfexport")
+        if url:
+            by_url.setdefault(url, []).append(prov)
+
+    prefix_records: list[tuple[str, list[str], list[str]]] = []
+    member_records: list[tuple[str, str, list[str], list[str]]] = []
+    failed = no_interfaces = unmatched = 0
+
+    logger.info(
+        "EuroIX: %d IXPs behind %d export URLs", sum(map(len, by_url.values())), len(by_url)
+    )
+    for url, provs in by_url.items():
+        try:
+            doc = http.get(url, timeout=timeout).json()
+        except Exception as err:
+            failed += 1
+            logger.warning("EuroIX export %s unavailable: %s", url, type(err).__name__)
+            continue
+        if not isinstance(doc, dict):
+            failed += 1
+            continue
+        for prov in provs:
+            ixpdb_id = prov.get("id")
+            if not isinstance(ixpdb_id, int):
+                unmatched += 1
+                continue
+            pfx, members = _ixf_extract(doc, ixpdb_id, str(prov.get("name") or ""))
+            if pfx is None:
+                unmatched += 1
+                continue
+            if not members:
+                no_interfaces += 1
+            prefix_records.append(pfx)
+            member_records.extend(members)
+
+    logger.info(
+        "EuroIX: %d prefix records, %d member records "
+        "(%d exports unreachable, %d IXPs publish no interfaces, %d unmatched)",
+        len(prefix_records),
+        len(member_records),
+        failed,
+        no_interfaces,
+        unmatched,
+    )
+    return prefix_records, member_records
+
+
+# --------------------------------------------------------------------------
 # Merge (ported from merge-all-prefixes.py and merge-ixp-ips.py)
 # --------------------------------------------------------------------------
 
@@ -370,14 +498,21 @@ def merge_interfaces(
     pdb_members: dict[str, tuple[str, str]],
     pch_members: dict[str, tuple[str, str]],
     name_map: dict[str, str],
+    euroix_members: dict[str, tuple[str, str]] | None = None,
 ) -> dict[str, tuple[str, str]]:
     """Merge sources into ``ip -> (asn, canonical IXP name)``.
 
     PCH is processed before PeeringDB and the first source to claim an IP keeps
     it -- upstream ordering, preserved.
+
+    EuroIX is applied LAST, so it only fills in interfaces neither other source
+    has and cannot change an existing attribution. It is arguably the most
+    authoritative source, being published by the IXPs themselves, so promoting it
+    ahead of PCH is defensible -- but that would silently rewrite existing rows,
+    which is a data decision rather than a code one. Additive by default.
     """
     merged: dict[str, tuple[str, str]] = {}
-    for source in (pch_members, pdb_members):
+    for source in (pch_members, pdb_members, euroix_members or {}):
         for ip, (asn, raw_name) in source.items():
             if ip in merged:
                 continue
@@ -427,6 +562,7 @@ def generate_snapshot(
     output_dir: str,
     cache_dir: str | None = None,
     pch_delay: float = PCH_REQUEST_DELAY,
+    include_euroix: bool = True,
 ) -> tuple[str, str] | None:
     """Produce ``merged-members-gen-<YYYYMMDD>{,_ipv6}.txt`` for `date`.
 
@@ -444,11 +580,24 @@ def generate_snapshot(
     pdb_prefixes, pdb_members = peeringdb_records(dump_path)
     pch_prefixes, pch_members = pch_records(delay=pch_delay)
 
-    name_map = build_ixp_name_map([("pdb", pdb_prefixes), ("pch", pch_prefixes)])
+    euroix_prefixes: list[tuple[str, list[str], list[str]]] = []
+    euroix_members: list[tuple[str, str, list[str], list[str]]] = []
+    if include_euroix:
+        try:
+            euroix_prefixes, euroix_members = euroix_records()
+        except Exception as err:
+            # Additive source: losing it degrades coverage but must not lose the
+            # whole snapshot, which PeeringDB and PCH already carry.
+            logger.warning("EuroIX source failed, continuing without it: %s", err)
+
+    name_map = build_ixp_name_map(
+        [("pdb", pdb_prefixes), ("pch", pch_prefixes), ("euroix", euroix_prefixes)]
+    )
     merged = merge_interfaces(
         interfaces_from_records(pdb_members),
         interfaces_from_records(pch_members),
         name_map,
+        euroix_members=interfaces_from_records(euroix_members),
     )
 
     stamp = actual_date.replace("-", "")
