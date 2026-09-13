@@ -1,8 +1,20 @@
 # /etc/systemd/system/refresh-topology.service
-# Refreshes hermes.unified_ip_to_as[_ipv6] from RouteViews (BGP only; IXP and
-# as_metadata are left alone). These tables are NOT written by the union
-# pipeline -- step 04 just reads whatever rows exist -- so without this they
-# only ever change when someone runs the refresh by hand.
+# Refreshes hermes.unified_ip_to_as[_ipv6] from RouteViews (BGP) AND the IXP
+# membership tables. as_metadata is left alone -- it is opt-in via --as-metadata
+# and wants a monthly cadence, not this one. None of these tables are written by
+# the union pipeline -- step 04 just reads whatever rows exist -- so without this
+# they only ever change when someone runs the refresh by hand, which is how
+# ixp_members went 96 days stale.
+#
+# IXP was --skip-ixp until 2026-09-13 because it could not run here at all: the
+# snapshot came from a private companion repo with laptop-hardcoded paths. It is
+# now built in-process from PeeringDB (CAIDA archive), PCH and EuroIX, so the flag
+# is gone.
+#
+# Budget roughly an hour per run, almost entirely PCH's deliberate 3s-per-IXP
+# delay across ~1000 IXPs. That is why this sits at 06:00 -- nine hours clear of
+# union-pipeline (15:00) and eleven of hermes-backfill (17:00), so the 4g and 28g
+# containers never overlap on a 30g host.
 [Unit]
 Description=HERMES topology refresh (RouteViews BGP -> unified_ip_to_as[_ipv6])
 After=network-online.target docker.service
@@ -21,7 +33,7 @@ ExecStartPre=-/usr/bin/docker rm -f topology-refresh
 # --entrypoint: docker-entrypoint.sh hardcodes `exec hermes-pipeline`, so the
 # refresh console script has to be invoked directly. The cache subdirectories it
 # needs are created by the enricher itself (os.makedirs(exist_ok=True)).
-ExecStart=/bin/bash -lc '/usr/bin/docker run --rm --name topology-refresh --memory=4g --memory-swap=4g --entrypoint hermes-refresh-topology --env-file /etc/hermes/hermes.env -e GOOGLE_APPLICATION_CREDENTIALS=/app/credentials.json -v /home/ec2-user/hermes-docker-cache:/app/cache -v /home/ec2-user/.config/gcloud/application_default_credentials.json:/app/credentials.json:ro hermes-pipeline:latest --date $(date -u +%%F) --ip-version both --skip-ixp >> /home/ec2-user/logs/refresh_topology_$(date -u +%%Y%%m%%d).log 2>&1'
+ExecStart=/bin/bash -lc '/usr/bin/docker run --rm --name topology-refresh --memory=4g --memory-swap=4g --entrypoint hermes-refresh-topology --env-file /etc/hermes/hermes.env -e GOOGLE_APPLICATION_CREDENTIALS=/app/credentials.json -v /home/ec2-user/hermes-docker-cache:/app/cache -v /home/ec2-user/.config/gcloud/application_default_credentials.json:/app/credentials.json:ro hermes-pipeline:latest --date $(date -u +%%F) --ip-version both >> /home/ec2-user/logs/refresh_topology_$(date -u +%%Y%%m%%d).log 2>&1'
 TimeoutStartSec=0
 TimeoutStopSec=3600
 
