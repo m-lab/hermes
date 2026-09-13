@@ -317,17 +317,38 @@ def build_ixp_name_map(
     return name_map
 
 
+def usable_asn(raw: str | int | None) -> str | None:
+    """Return `raw` as a bare ASN string, or None if it is not usable.
+
+    PCH returns an empty ASN for a substantial share of its interfaces. Upstream
+    kept those rows, and because PCH wins the merge they overrode PeeringDB --
+    then died at the far end, where ``process_data_file`` does ``int(asn)``,
+    logs "Invalid row" and skips. Measured on the 2026-09 data: **37,863 of
+    166,484 merged rows (22.7%) were discarded that way**, and PeeringDB held a
+    valid ASN for 5,208 of them. Rejecting them here instead lets the merge fall
+    through to a source that knows the ASN.
+    """
+    text = str(raw or "").strip().removeprefix("AS")
+    return text if text.isdigit() and int(text) > 0 else None
+
+
 def interfaces_from_records(
     records: list[tuple[str, str, list[str], list[str]]],
 ) -> dict[str, tuple[str, str]]:
     """Flatten member records to ``ip -> (asn, ixp_name)``, dropping private IPs.
 
-    Ported from ``read_ixp_interfaces``. Within one source the LAST record for
-    an IP wins, matching the upstream dict assignment.
+    Ported from ``read_ixp_interfaces``, with one deliberate correction: records
+    whose ASN is missing or non-numeric are skipped rather than carried forward
+    as a blank (see `usable_asn`). Within one source the LAST record for an IP
+    wins, matching the upstream dict assignment.
     """
     ip_data: dict[str, tuple[str, str]] = {}
+    skipped = 0
     for ixp_name, asn, v4, v6 in records:
-        clean_asn = str(asn).strip().replace("AS", "")
+        clean_asn = usable_asn(asn)
+        if clean_asn is None:
+            skipped += 1
+            continue
         for raw in (*v4, *v6):
             raw = (raw or "").strip()
             if not raw:
@@ -340,6 +361,8 @@ def interfaces_from_records(
             if parsed.is_private:
                 continue
             ip_data[str(parsed)] = (clean_asn, ixp_name)
+    if skipped:
+        logger.info("Skipped %d member records with no usable ASN", skipped)
     return ip_data
 
 

@@ -15,6 +15,7 @@ from hermes.enrichment.peeringdb_ixp.snapshot import (
     interfaces_from_records,
     merge_interfaces,
     peeringdb_records,
+    usable_asn,
     write_snapshot,
 )
 
@@ -259,3 +260,47 @@ def test_comma_in_an_ixp_name_does_not_break_the_name_map():
     )
     assert name_map["DE-CIX_ASEAN"] == "DE-CIX_ASEAN"
     assert name_map["DE-CIX_ASEAN_(Singapore,_Malaysia,_Brunei)"] == "DE-CIX_ASEAN"
+
+
+# --- unusable ASNs (PCH blanks) ------------------------------------------------
+
+
+def test_usable_asn_accepts_plain_and_as_prefixed():
+    assert usable_asn("15169") == "15169"
+    assert usable_asn("AS15169") == "15169"
+    assert usable_asn(15169) == "15169"
+    assert usable_asn(" 15169 ") == "15169"
+
+
+def test_usable_asn_rejects_blanks_and_junk():
+    for raw in ("", " ", None, "AS", "n/a", "abc", "12.5", "1_2", "0", "-1"):
+        assert usable_asn(raw) is None, raw
+
+
+def test_blank_asn_records_are_skipped_entirely():
+    got = interfaces_from_records([("IX", "", ["80.81.192.1"], [])])
+    assert got == {}, "a record with no ASN is unusable, not a blank-ASN row"
+
+
+def test_peeringdb_fills_in_where_pch_has_no_asn():
+    """The 22.7% data loss this fixes.
+
+    PCH returns an empty ASN for many interfaces. Upstream kept those rows, and
+    since PCH wins the merge they overrode PeeringDB -- then died at
+    ``process_data_file``, which does int(asn), logs "Invalid row" and skips.
+    Measured on 2026-09 data: 37,863 of 166,484 merged rows (22.7%) discarded,
+    PeeringDB holding a valid ASN for 5,208 of them. Dropping the unusable record
+    lets the merge fall through, recovering +5,341 ingestable interfaces.
+    """
+    pdb = interfaces_from_records([("PDB IX", "8728", ["37.9.49.10"], [])])
+    pch = interfaces_from_records([("PCH IX", "", ["37.9.49.10"], [])])
+    assert pch == {}
+    merged = merge_interfaces(pdb, pch, name_map={})
+    assert merged["37.9.49.10"] == ("8728", "PDB_IX")
+
+
+def test_pch_still_wins_when_it_has_a_real_asn():
+    # The fix must not change precedence where PCH actually knows the ASN.
+    pdb = interfaces_from_records([("PDB IX", "111", ["80.81.192.1"], [])])
+    pch = interfaces_from_records([("PCH IX", "222", ["80.81.192.1"], [])])
+    assert merge_interfaces(pdb, pch, name_map={})["80.81.192.1"] == ("222", "PCH_IX")
