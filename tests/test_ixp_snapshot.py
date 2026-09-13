@@ -225,3 +225,37 @@ def test_missing_tables_do_not_crash(tmp_path):
     path = tmp_path / "empty.json"
     path.write_text(json.dumps({}))
     assert peeringdb_records(str(path)) == ([], [])
+
+
+def test_comma_in_an_ixp_name_does_not_break_the_name_map():
+    """A comma inside an IXP name must not stop the sources being tied together.
+
+    Upstream serialises the per-prefix names into one comma-joined field and then
+    re-splits on "," -- so a name containing a comma produces extra fields and
+    the ``pdb_`` entry moves off index 2 and is never found:
+
+        n/a,pch_DE-CIX_ASEAN_(Singapore,_Malaysia,_Brunei),pdb_DE-CIX_ASEAN
+        -> ['n/a', 'pch_DE-CIX_ASEAN_(Singapore', '_Malaysia', '_Brunei)',
+            'pdb_DE-CIX_ASEAN']
+
+    The map then never learns that PCH's name and PeeringDB's are the same IXP,
+    and 456 rows keep the un-normalised PCH variant. Real case, verified against
+    the 2026-09 dump.
+    """
+    name_map = build_ixp_name_map(
+        [
+            ("pdb", [("DE-CIX ASEAN", ["103.162.254.0/24"], ["2001:df6:480::/64"])]),
+            (
+                "pch",
+                [
+                    (
+                        "DE-CIX ASEAN (Singapore, Malaysia, Brunei)",
+                        ["103.162.254.0/24"],
+                        ["2001:DF6:480::/64"],
+                    )
+                ],
+            ),
+        ]
+    )
+    assert name_map["DE-CIX_ASEAN"] == "DE-CIX_ASEAN"
+    assert name_map["DE-CIX_ASEAN_(Singapore,_Malaysia,_Brunei)"] == "DE-CIX_ASEAN"
