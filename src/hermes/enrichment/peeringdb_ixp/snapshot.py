@@ -48,6 +48,7 @@ import shutil
 import struct
 import time
 from collections import OrderedDict, defaultdict
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from socket import inet_aton
 from typing import Any
@@ -315,8 +316,20 @@ def _ixf_extract(
     return (name, v4_pfx, v6_pfx), members
 
 
+def _fetch_json(url: str, timeout: float) -> tuple[str, dict[str, Any] | None]:
+    """Fetch one export, returning ``(url, doc_or_None)``. Never raises."""
+    try:
+        doc = requests.get(url, timeout=timeout).json()
+    except Exception as err:
+        logger.warning("EuroIX export %s unavailable: %s", url, type(err).__name__)
+        return url, None
+    return url, doc if isinstance(doc, dict) else None
+
+
 def euroix_records(
-    session: requests.Session | None = None, timeout: float = 45.0
+    session: requests.Session | None = None,
+    timeout: float = 15.0,
+    max_workers: int = 16,
 ) -> tuple[list[tuple[str, list[str], list[str]]], list[tuple[str, str, list[str], list[str]]]]:
     """Fetch IXP prefixes and members from EuroIX's IXPDB and IX-F exports.
 
@@ -350,14 +363,20 @@ def euroix_records(
     logger.info(
         "EuroIX: %d IXPs behind %d export URLs", sum(map(len, by_url.values())), len(by_url)
     )
+    # Fetched concurrently, unlike PCH. PCH is ~1000 requests to ONE host, so it
+    # needs a serial delay to be polite; these are ~273 requests to ~273
+    # DIFFERENT operators, one each, so concurrency adds no per-host load. It
+    # matters: serially with a generous timeout the dead endpoints dominate --
+    # a measured ~29% of them time out, which at 45s each is about an hour of
+    # doing nothing. 15s across 16 workers turns that into minutes.
+    docs: dict[str, dict[str, Any] | None] = {}
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        for url, doc in pool.map(lambda u: _fetch_json(u, timeout), list(by_url)):
+            docs[url] = doc
+
     for url, provs in by_url.items():
-        try:
-            doc = http.get(url, timeout=timeout).json()
-        except Exception as err:
-            failed += 1
-            logger.warning("EuroIX export %s unavailable: %s", url, type(err).__name__)
-            continue
-        if not isinstance(doc, dict):
+        doc = docs.get(url)
+        if doc is None:
             failed += 1
             continue
         for prov in provs:
