@@ -32,6 +32,9 @@ dependencies = [
     "google-auth>=2.56.3",
     "pandas>=3.0.5",
     "requests>=2.34.2",
+    # Imported directly by peeringdb_ixp/snapshot.py to build the EuroIX CA
+    # bundle; arrives via requests too, but pin it since we use it by name.
+    "certifi>=2026.7.22",
     # Longest-prefix trie for IXP prefix->name mapping in
     # peeringdb_ixp/snapshot.py. Same library the companion repo's
     # merge-all-prefixes.py used, kept so the name-map semantics match.

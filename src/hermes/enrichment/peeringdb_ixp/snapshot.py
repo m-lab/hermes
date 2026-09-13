@@ -46,13 +46,17 @@ import logging
 import os
 import shutil
 import struct
+import tempfile
 import time
 from collections import OrderedDict, defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
+from functools import lru_cache
+from pathlib import Path
 from socket import inet_aton
 from typing import Any
 
+import certifi
 import radix
 import requests
 
@@ -316,10 +320,41 @@ def _ixf_extract(
     return (name, v4_pfx, v6_pfx), members
 
 
+#: Cross-signed ISRG Root YR, shipped beside this module. See the header inside
+#: the file for provenance and for when to delete it.
+_EXTRA_CA = Path(__file__).with_name("isrg-root-yr-cross-signed.pem")
+
+
+@lru_cache(maxsize=1)
+def _ca_bundle() -> str:
+    """certifi plus the cross-signed ISRG Root YR, for EuroIX fetches only.
+
+    AMS-IX's export is served under a Let's Encrypt chain terminating at ISRG
+    Root YR, which certifi does not yet carry (verified against 2026.7.22, the
+    latest release) -- so the fetch fails verification even though AMS-IX's
+    configuration is correct. That single URL covers 14 AMS-IX exchanges and
+    1,207 participants.
+
+    The certificate added is the CROSS-SIGNED form, issued by ISRG Root X1,
+    which certifi already trusts -- so it is verifiable rather than asserted.
+    Scoped to this fetcher; nothing else in hermes uses this bundle, and
+    verification is never disabled. Remove once certifi ships the root.
+    """
+    if not _EXTRA_CA.is_file():
+        return certifi.where()
+    fd, path = tempfile.mkstemp(prefix="hermes-ixp-ca-", suffix=".pem")
+    with os.fdopen(fd, "w") as out:
+        out.write(Path(certifi.where()).read_text())
+        out.write("\n")
+        out.write(_EXTRA_CA.read_text())
+    logger.debug("EuroIX CA bundle: certifi + %s -> %s", _EXTRA_CA.name, path)
+    return path
+
+
 def _fetch_json(url: str, timeout: float) -> tuple[str, dict[str, Any] | None]:
     """Fetch one export, returning ``(url, doc_or_None)``. Never raises."""
     try:
-        doc = requests.get(url, timeout=timeout).json()
+        doc = requests.get(url, timeout=timeout, verify=_ca_bundle()).json()
     except Exception as err:
         logger.warning("EuroIX export %s unavailable: %s", url, type(err).__name__)
         return url, None

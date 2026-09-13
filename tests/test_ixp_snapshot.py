@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import pathlib
 
 from hermes.enrichment.peeringdb_ixp.snapshot import (
     build_ixp_name_map,
@@ -417,3 +418,40 @@ def test_pch_still_outranks_peeringdb_where_euroix_is_absent():
     pch = interfaces_from_records([("PCH IX", "222", ["80.81.192.1"], [])])
     merged = merge_interfaces(pdb, pch, name_map={}, euroix_members={})
     assert merged["80.81.192.1"] == ("222", "PCH_IX")
+
+
+# --- EuroIX CA bundle (AMS-IX) -------------------------------------------------
+
+
+def test_extra_ca_is_the_cross_signed_root_not_a_bare_anchor():
+    """The shipped certificate must be issued by a root certifi already trusts.
+
+    AMS-IX's chain ends at ISRG Root YR, absent from certifi 2026.7.22 and from
+    the macOS system store. We ship the CROSS-SIGNED form (issuer ISRG Root X1)
+    so its provenance is verifiable rather than asserted -- a self-signed Root YR
+    would be a new trust anchor taken on faith.
+    """
+    from cryptography import x509
+
+    from hermes.enrichment.peeringdb_ixp.snapshot import _EXTRA_CA
+
+    assert _EXTRA_CA.is_file(), "cross-signed root must ship with the package"
+    cert = x509.load_pem_x509_certificate(_EXTRA_CA.read_bytes())
+    assert "Root YR" in cert.subject.rfc4514_string()
+    assert "ISRG Root X1" in cert.issuer.rfc4514_string(), "must be the cross-signed form"
+
+
+def test_ca_bundle_contains_certifi_and_the_extra_root():
+
+    from hermes.enrichment.peeringdb_ixp.snapshot import _EXTRA_CA, _ca_bundle
+
+    bundle = pathlib.Path(_ca_bundle()).read_text()
+    assert bundle.count("BEGIN CERTIFICATE") > 100, "certifi's roots must still be present"
+    extra = _EXTRA_CA.read_text().split("-----BEGIN CERTIFICATE-----")[1]
+    assert extra in bundle, "the cross-signed root must be appended, not replace certifi"
+
+
+def test_ca_bundle_is_built_once():
+    from hermes.enrichment.peeringdb_ixp.snapshot import _ca_bundle
+
+    assert _ca_bundle() == _ca_bundle()
