@@ -502,17 +502,20 @@ def merge_interfaces(
 ) -> dict[str, tuple[str, str]]:
     """Merge sources into ``ip -> (asn, canonical IXP name)``.
 
-    PCH is processed before PeeringDB and the first source to claim an IP keeps
-    it -- upstream ordering, preserved.
+    Precedence, highest first: **EuroIX, then PCH, then PeeringDB**. The first
+    source to claim an IP keeps it.
 
-    EuroIX is applied LAST, so it only fills in interfaces neither other source
-    has and cannot change an existing attribution. It is arguably the most
-    authoritative source, being published by the IXPs themselves, so promoting it
-    ahead of PCH is defensible -- but that would silently rewrite existing rows,
-    which is a data decision rather than a code one. Additive by default.
+    EuroIX leads because IX-F exports are first-party -- published by the IXP
+    about its own fabric -- where PeeringDB's netixlan entries are self-reported
+    by members and PCH's are observed. PCH ahead of PeeringDB preserves the
+    upstream ordering this was ported from.
+
+    This is a deliberate data decision, not merely additive: EuroIX now
+    overrides interfaces the other two also know, so ASNs and IXP labels can
+    change for IPs that were previously attributed from PCH or PeeringDB.
     """
     merged: dict[str, tuple[str, str]] = {}
-    for source in (pch_members, pdb_members, euroix_members or {}):
+    for source in (euroix_members or {}, pch_members, pdb_members):
         for ip, (asn, raw_name) in source.items():
             if ip in merged:
                 continue

@@ -398,10 +398,22 @@ def test_prefix_requires_both_prefix_and_mask():
     assert pfx == ("IX", ["185.1.211.0/23"], [])
 
 
-def test_euroix_is_additive_and_cannot_override(monkeypatch):
-    # EuroIX runs last, so an IP another source already claimed keeps its owner.
+def test_euroix_outranks_pch_and_peeringdb():
+    """Precedence is EuroIX > PCH > PeeringDB.
+
+    IX-F exports are first-party -- the IXP describing its own fabric -- whereas
+    PeeringDB's netixlan rows are member-self-reported and PCH's are observed.
+    """
     pdb = interfaces_from_records([("PDB IX", "111", ["80.81.192.1"], [])])
+    pch = interfaces_from_records([("PCH IX", "222", ["80.81.192.1"], [])])
     eu = interfaces_from_records([("EU IX", "999", ["80.81.192.1"], ["2001:7f8::9"])])
-    merged = merge_interfaces(pdb, {}, name_map={}, euroix_members=eu)
-    assert merged["80.81.192.1"] == ("111", "PDB_IX"), "EuroIX must not override"
-    assert merged["2001:7f8::9"] == ("999", "EU_IX"), "but must fill gaps"
+    merged = merge_interfaces(pdb, pch, name_map={}, euroix_members=eu)
+    assert merged["80.81.192.1"] == ("999", "EU_IX"), "EuroIX must win"
+    assert merged["2001:7f8::9"] == ("999", "EU_IX"), "and still fill gaps"
+
+
+def test_pch_still_outranks_peeringdb_where_euroix_is_absent():
+    pdb = interfaces_from_records([("PDB IX", "111", ["80.81.192.1"], [])])
+    pch = interfaces_from_records([("PCH IX", "222", ["80.81.192.1"], [])])
+    merged = merge_interfaces(pdb, pch, name_map={}, euroix_members={})
+    assert merged["80.81.192.1"] == ("222", "PCH_IX")
