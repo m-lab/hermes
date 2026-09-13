@@ -43,15 +43,15 @@ import argparse
 import glob
 import logging
 import os
-import subprocess
 import sys
 from datetime import datetime
-from pathlib import Path
 
 from hermes.enrichment.as_metadata.enricher import update_as_metadata
+from hermes.enrichment.as_metadata.paths import as_metadata_input_paths
+from hermes.enrichment.as_metadata.sources import generate_as_metadata_inputs_native
 from hermes.enrichment.peeringdb_ixp.ixp_collector import IXPCollector
 from hermes.enrichment.peeringdb_ixp.ixp_collector_ipv6 import IXPCollectorIPv6
-from hermes.enrichment.peeringdb_ixp.snapshot import generate_snapshot
+from hermes.enrichment.peeringdb_ixp.snapshot import download_peeringdb_dump, generate_snapshot
 from hermes.enrichment.routeviews import RouteViewsEnricher
 from hermes.enrichment.routeviews.enricher_ipv6 import RouteViewsEnricherIPv6
 
@@ -160,99 +160,45 @@ def refresh_ixp(date: str, do_v4: bool, do_v6: bool, refresh_snapshot: bool) -> 
         _ingest_ixp_snapshot(IXPCollectorIPv6(), ipv6=True)
 
 
-def _as_metadata_input_paths(date: str, mpl_repo: str) -> dict[str, Path]:
-    """The three local files hermes.as_metadata is built from, for `date`.
-
-    Naming must match hermes_enrichment/as_metadata/enricher.py::update_as_metadata.
-    """
-    repo = Path(mpl_repo)
-    yyyymmdd = date.replace("-", "")
-    year, month, _ = date.split("-")
-    return {
-        "caida": repo / "data" / "BGP_data" / f"ASNS-{yyyymmdd}.json",
-        "footprint": repo
-        / "scripts"
-        / "data"
-        / "PeeringDB"
-        / f"AS_footprint_info_{year}-{month}.csv",
-        "as_type": repo / "scripts" / "data" / "PeeringDB" / f"AS_Type{year}-{month}.csv",
-    }
-
-
 def generate_as_metadata_inputs(
     date: str, mpl_repo: str, python_exe: str, regenerate: bool
 ) -> None:
-    """Generate the CAIDA + PeeringDB input files in the missing-peering-links repo.
+    """Generate the CAIDA AS Rank + PeeringDB input files for `date`.
 
-    Runs the same generators the companion repo uses:
+    Built in-process (``as_metadata.sources``) rather than by shelling out to
+    ``get_as_rank_data.py`` and ``PeeringDB_Crawler.py`` in the private
+    missing-peering-links repo. Those could not run on hermes-ec2 -- the repo is
+    not there -- and the old precondition only checked that ``<repo>/scripts``
+    was a directory, which an empty leftover tree on the VM satisfies, so the
+    check passed and the first subprocess died instead.
 
-    - ``scripts/get_as_rank_data.py``
-      → ``data/BGP_data/ASNS-<YYYYMMDD>.json`` (CAIDA AS-Rank)
-    - ``scripts/PeeringDB_Crawler.py``
-      → ``scripts/data/PeeringDB/AS_{footprint_info,Type}-<YYYY-MM>.csv``
+    AS Rank comes from api.asrank.caida.org; the two PeeringDB CSVs come from the
+    same CAIDA archived dump the IXP snapshot downloads, so no new source and no
+    geocoding.
 
-    Neither script needs an API key. Both are run under ``python_exe``
-    (which must have ``graphqlclient``, ``requests``, and ``pandas`` available).
-    Skips generation when all files already exist unless ``regenerate`` is set.
-
-    Parameters
-    ----------
-    date
-        Target date as ``YYYY-MM-DD``.
-    mpl_repo
-        Absolute path to the ``missing-peering-links`` companion repository.
-    python_exe
-        Python interpreter used to run the generator scripts.
-    regenerate
-        When ``True``, regenerate inputs even if they already exist.
-
-    Raises
-    ------
-    RuntimeError
-        If ``mpl_repo/scripts`` is not found, a generator script fails, or
-        any expected output file is missing after generation.
+    Args:
+        date: Target date, ``YYYY-MM-DD``.
+        mpl_repo: Base directory for the input files.
+        python_exe: Unused; kept so the CLI flag stays accepted.
+        regenerate: Rebuild even when all three files already exist.
     """
-    repo = Path(mpl_repo)
-    scripts_dir = repo / "scripts"
-    if not scripts_dir.is_dir():
-        raise RuntimeError(f"missing-peering-links scripts dir not found: {scripts_dir}")
+    del python_exe  # no subprocess to run under an interpreter any more
 
-    paths = _as_metadata_input_paths(date, mpl_repo)
+    paths = as_metadata_input_paths(date, mpl_repo)
     if not regenerate and all(p.exists() for p in paths.values()):
         logger.info("[AS_METADATA] Input files already present for %s — skipping generation", date)
         return
 
-    yyyymmdd = date.replace("-", "")
-    paths["caida"].parent.mkdir(parents=True, exist_ok=True)
+    cache_dir = os.path.join(os.path.expanduser("~"), ".cache", "hermes", "peeringdb")
+    downloaded = download_peeringdb_dump(date, cache_dir)
+    if downloaded is None:
+        raise RuntimeError(f"no PeeringDB dump available for {date} or nearby dates")
+    dump_path, actual = downloaded
+    if actual != date:
+        logger.warning("[AS_METADATA] Using PeeringDB dump from %s (requested %s)", actual, date)
 
-    # 1. CAIDA AS-Rank: ASNS / ORGS / LINKS JSON
-    asns = paths["caida"]
-    orgs = asns.with_name(f"ORGS-{yyyymmdd}.json")
-    links = asns.with_name(f"LINKS-{yyyymmdd}.json")
-    logger.info("[AS_METADATA] Generating CAIDA AS-Rank data → %s", asns)
-    _run(
-        [python_exe, "get_as_rank_data.py", "-a", str(asns), "-o", str(orgs), "-l", str(links)],
-        cwd=scripts_dir,
-    )
-
-    # 2. PeeringDB footprint + AS-type CSVs (written under scripts/data/PeeringDB/)
-    logger.info("[AS_METADATA] Generating PeeringDB footprint/type CSVs (DATE=%s)", yyyymmdd)
-    _run([python_exe, "PeeringDB_Crawler.py", "--DATE", yyyymmdd], cwd=scripts_dir)
-
-    missing = [str(p) for p in paths.values() if not p.exists()]
-    if missing:
-        raise RuntimeError("as_metadata input generation did not produce: " + ", ".join(missing))
-
-
-def _run(cmd: list[str], cwd: Path) -> None:
-    """Run a subprocess, streaming failure output into our log."""
-    logger.info("[AS_METADATA] $ %s  (cwd=%s)", " ".join(cmd), cwd)
-    result = subprocess.run(cmd, cwd=str(cwd), capture_output=True, text=True)
-    if result.returncode != 0:
-        raise RuntimeError(
-            f"command failed ({result.returncode}): {' '.join(cmd)}\n"
-            f"stderr:\n{result.stderr.strip()}"
-        )
+    logger.info("[AS_METADATA] Generating inputs for %s", date)
+    generate_as_metadata_inputs_native(date, paths, dump_path)
 
 
 def refresh_as_metadata(
@@ -264,7 +210,7 @@ def refresh_as_metadata(
     (unless --skip-as-metadata-generation), then uploads the augmented metadata.
     """
     if skip_generation:
-        paths = _as_metadata_input_paths(date, mpl_repo)
+        paths = as_metadata_input_paths(date, mpl_repo)
         missing = [str(p) for p in paths.values() if not p.exists()]
         if missing:
             raise RuntimeError("as_metadata input files missing: " + ", ".join(missing))

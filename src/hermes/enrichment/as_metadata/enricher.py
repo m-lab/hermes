@@ -1,13 +1,14 @@
 import io
 import json
 import logging
-import os
 from datetime import datetime
 
 import pandas as pd
 import requests
 from google.cloud import bigquery
 from tqdm import tqdm
+
+from hermes.enrichment.as_metadata.paths import as_metadata_input_paths
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -341,25 +342,14 @@ def update_as_metadata(date: str) -> bool:
     try:
         enricher = ASMetadataEnricher()
 
-        # Define file paths
-        base_dir = os.path.expanduser("~/Documents/GitHub/missing-peering-links")
-        caida_file = os.path.join(
-            base_dir, "data", "BGP_data", f"ASNS-{date.replace('-', '')}.json"
-        )
-        facilities_file = os.path.join(
-            base_dir,
-            "scripts",
-            "data",
-            "PeeringDB",
-            f"AS_footprint_info_{date.split('-')[0]}-{date.split('-')[1]}.csv",
-        )
-        as_type_file = os.path.join(
-            base_dir,
-            "scripts",
-            "data",
-            "PeeringDB",
-            f"AS_Type{date.split('-')[0]}-{date.split('-')[1]}.csv",
-        )
+        # Paths resolved via HERMES_AS_METADATA_DIR (default: the historical
+        # laptop location). They were hardcoded here AND in
+        # refresh_topology_tables, which is why as_metadata could only ever be
+        # refreshed on one machine.
+        paths = as_metadata_input_paths(date)
+        caida_file = str(paths["caida"])
+        facilities_file = str(paths["footprint"])
+        as_type_file = str(paths["as_type"])
 
         success = enricher.update_as_metadata(date, caida_file, facilities_file, as_type_file)
 
