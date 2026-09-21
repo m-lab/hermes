@@ -33,7 +33,14 @@ ExecStartPre=-/usr/bin/docker rm -f topology-refresh
 # --entrypoint: docker-entrypoint.sh hardcodes `exec hermes-pipeline`, so the
 # refresh console script has to be invoked directly. The cache subdirectories it
 # needs are created by the enricher itself (os.makedirs(exist_ok=True)).
-ExecStart=/bin/bash -lc '/usr/bin/docker run --rm --name topology-refresh --memory=4g --memory-swap=4g --entrypoint hermes-refresh-topology --env-file /etc/hermes/hermes.env -e GOOGLE_APPLICATION_CREDENTIALS=/app/credentials.json -v /home/ec2-user/hermes-docker-cache:/app/cache -v /home/ec2-user/.config/gcloud/application_default_credentials.json:/app/credentials.json:ro hermes-pipeline:latest --date $(date -u +%%F) --ip-version both >> /home/ec2-user/logs/refresh_topology_$(date -u +%%Y%%m%%d).log 2>&1'
+# -e HERMES_IXP_OUTPUT_DIR: without it resolve_ixp_paths falls back to
+# $HOME/Documents/GitHub/missing-peering-links/scripts/data, and $HOME is /root
+# inside the container -- a path that is not mounted, so --rm destroyed every
+# merged-members-gen-*.txt this service has ever produced. The rows still reached
+# BigQuery, but the snapshot file did not survive, and scamper-analysis maps
+# against that file. /app/cache is already bind-mounted, so pointing the output
+# there keeps it on the host.
+ExecStart=/bin/bash -lc '/usr/bin/docker run --rm --name topology-refresh --memory=4g --memory-swap=4g --entrypoint hermes-refresh-topology --env-file /etc/hermes/hermes.env -e GOOGLE_APPLICATION_CREDENTIALS=/app/credentials.json -e HERMES_IXP_OUTPUT_DIR=/app/cache/ixp -v /home/ec2-user/hermes-docker-cache:/app/cache -v /home/ec2-user/.config/gcloud/application_default_credentials.json:/app/credentials.json:ro hermes-pipeline:latest --date $(date -u +%%F) --ip-version both >> /home/ec2-user/logs/refresh_topology_$(date -u +%%Y%%m%%d).log 2>&1'
 TimeoutStartSec=0
 TimeoutStopSec=3600
 
