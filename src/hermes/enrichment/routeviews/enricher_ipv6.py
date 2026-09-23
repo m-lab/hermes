@@ -31,7 +31,7 @@ class RouteViewsEnricherIPv6(BaseEnrichment):
             ip_part = prefix.split("/")[0]
             ip_obj = ipaddress.ip_address(ip_part)
             return isinstance(ip_obj, ipaddress.IPv6Address)
-        except ValueError, IndexError:
+        except (ValueError, IndexError):
             return False
 
     def _try_download_for_date(self, date_str: str) -> str | None:
