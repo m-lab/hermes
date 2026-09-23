@@ -3,17 +3,35 @@
 from hermes.sql import loader
 
 
-def _view_sql() -> str:
-    return loader.load_query(
-        "create_events_enriched.sql",
-        {"DS": "hermes_union", "PUBLISHED_DS": "hermes"},
-    )
+def _view_sql(ds: str = "hermes_union") -> str:
+    """The view SQL with `--` comment lines dropped.
+
+    The header comment legitimately names the old `hermes.events_enriched` and
+    the retired ${PUBLISHED_DS}; the tests are about the statements.
+    """
+    sql = loader.load_query("create_events_enriched.sql", {"DS": ds})
+    return "\n".join(line for line in sql.splitlines() if not line.lstrip().startswith("--"))
+
+
+def test_view_is_published_beside_the_table_it_reads():
+    """The view moved from `hermes` into `hermes_union`.
+
+    Source and publication dataset are now the same ${DS}, so a staging
+    bootstrap cannot publish a staging view over production rows.
+    """
+    assert "`mlab-collaboration.hermes_union.events_enriched`" in _view_sql()
+
+    staging = _view_sql("hermes_staging")
+    assert "`mlab-collaboration.hermes_staging.events_enriched`" in staging
+    assert "`mlab-collaboration.hermes_staging.events_with_as_and_geoloc`" in staging
+    assert "mlab-collaboration.hermes_union." not in staging
+    assert "${PUBLISHED_DS}" not in staging
 
 
 def test_view_uses_stable_nested_contract():
     sql = _view_sql()
 
-    assert "`mlab-collaboration.hermes.events_enriched`" in sql
+    assert "`mlab-collaboration.hermes_union.events_enriched`" in sql
     assert "`mlab-collaboration.hermes_union.events_with_as_and_geoloc`" in sql
     assert "AS client" in sql
     assert "AS server" in sql

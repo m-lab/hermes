@@ -202,7 +202,23 @@ Also writes the GIGA-meter subset: rows where `client_name = 'giga-meter'` OR th
 
 **SQL:** `create_events_enriched.sql`
 **Reads:** `hermes_union.events_with_as_and_geoloc`
-**Publishes:** `hermes.events_enriched`
+**Publishes:** `hermes_union.events_enriched`
+
+The view is published in the **same** dataset it reads. It used to take a second
+`${PUBLISHED_DS}` parameter and land in `hermes` while reading `hermes_union` —
+two datasets to keep in step, and a staging render left `${PUBLISHED_DS}`
+unsubstituted in the submitted SQL. One `${DS}` now decides both, so a staging
+bootstrap publishes `hermes_staging.events_enriched` over staging rows and can
+never point at production.
+
+`mlab-collaboration.hermes.events_enriched` is deliberately **left in place** and
+is no longer managed by this repo. It still resolves to the same physical table,
+so existing consumers keep working while they cut over to the `hermes_union`
+name. Drop it once they have.
+
+Because `events_with_as_and_geoloc` requires a partition filter (below), a query
+against this view must filter `partition_date`; BigQuery pushes that predicate
+down into the base table.
 
 `events_enriched` is the stable downstream interface. It leaves the large
 historical physical table unchanged and presents each row as nested `client`,
@@ -304,6 +320,46 @@ DELETE+INSERT per day: first deletes existing rows for the partition date, then 
 | `hermes_union.temporal_path_verdicts` | `partition_date` | Temporal verdict scores per path edge (Phase D; read by dashboard) |
 | `hermes_union.events_explained_daily` | `partition_date` | Public event table with resolved/unresolved attribution (Phase E; read by dashboard) |
 | `hermes_union.giga_school_ips` | No | School IPs for GIGA identification (loaded separately) |
+| `hermes_union.events_enriched` | View | Canonical nested compatibility interface over `events_with_as_and_geoloc` |
+| `hermes_union.place_canonical_metro` | No | Optional place→canonical-metro lookup |
+
+### A time filter is mandatory
+
+Every **partitioned** table above carries `require_partition_filter = TRUE`, set
+by `require_partition_filter.sql` at the end of the bootstrap. BigQuery rejects a
+query that does not constrain the partitioning column — at plan time, billing
+zero bytes:
+
+```
+Cannot query over table 'mlab-collaboration.hermes_union.events_with_as_and_geoloc'
+without a filter over column(s) 'partition_date' that can be used for partition
+elimination
+```
+
+This is aimed at readers outside this repo — dashboards, notebooks, `bq` and the
+console — as much as inside it. Every pipeline step already filters on
+`partition_date`, so nothing in the nightly changed; the audit of which reader
+carries which filter is in the header of `require_partition_filter.sql`.
+
+The table list is **derived** from `INFORMATION_SCHEMA`, not hard-coded, so a
+partitioned table added later is covered without anyone remembering to add it.
+Unpartitioned lookups (`place_canonical_metro`, `giga_school_ips`) are skipped.
+
+Two consequences worth knowing:
+
+- **A deliberately whole-table scan needs a sentinel**, e.g.
+  `WHERE partition_date > DATE '1970-01-01'`. `scripts/backfill_detection_granularity.sql`
+  uses exactly that, and it is greppable, so genuine full scans stay easy to find.
+- **Reading via a view still requires the filter.** `events_enriched` exposes
+  `partition_date`, and BigQuery pushes a predicate on it down into the base
+  table, so `WHERE partition_date = '…'` on the view is enough.
+
+To lift the requirement on one table:
+
+```sql
+ALTER TABLE `mlab-collaboration.hermes_union.<table>`
+  SET OPTIONS (require_partition_filter = FALSE);
+```
 
 ## Resume and idempotency
 

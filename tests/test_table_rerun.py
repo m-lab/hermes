@@ -66,7 +66,7 @@ def test_parallel_failure_exits_nonzero(monkeypatch, tmp_path):
             return FakePool()
 
     monkeypatch.setattr(table_rerun, "print_active_credentials", lambda: None)
-    monkeypatch.setattr(table_rerun, "get_existing_dates", lambda project, table: set())
+    monkeypatch.setattr(table_rerun, "get_existing_dates", lambda project, table, days: set())
     monkeypatch.setattr(table_rerun.mp, "get_context", lambda method: FakeContext())
     monkeypatch.setattr(
         sys,

@@ -31,7 +31,7 @@ closes that gap while preserving the old public denominator.
 - Existing `total_anomalous_sites` remains RTT-or-download for longitudinal
   comparability. `total_anomalous_sites_all_signals` is the new inclusive count.
 
-Direction convention (from `create_events_enriched.sql:246-284`):
+Direction convention (from `create_events_enriched.sql:257-295`):
 
 | HERMES name | direction | measurement | NDT metric that loads it |
 |---|---|---|---|
@@ -100,7 +100,7 @@ anomalous-pair filter (lines 109-110), `is_latency_anomaly` /
 `is_throughput_anomaly` (449-451), and the INSERT column list (8-19) all exclude
 upload. Nothing upload-derived reaches `events_explained_daily`.
 
-**`create_events_enriched.sql:218-244`** — exposes upload as data, not as a
+**`create_events_enriched.sql:229-255`** — exposes upload as data, not as a
 verdict: `performance.upload_mbps`, `performance.baseline.upload_mbps`,
 `performance.anomaly.upload_ratio` / `upload_count` / `upload_difference_mbps`.
 
