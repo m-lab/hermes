@@ -30,32 +30,31 @@ DDL_FILES = [
     # precede step 07 and uses the same append order as the fresh-table DDL.
     "add_upload_anomaly_columns.sql",
     # Stable nested compatibility interface over the legacy physical table.
+    # Published into ``source_dataset`` -- see create_events_enriched.sql.
     "create_events_enriched.sql",
+    # LAST, and it must stay last: it ALTERs every partitioned table in the
+    # dataset, so everything above has to exist before it runs. Requiring the
+    # partition filter is also the loudest failure mode in this list -- an
+    # unfiltered reader stops working the moment it lands -- so it is the step
+    # a partial bootstrap should reach last, not first.
+    "require_partition_filter.sql",
 ]
 
 DEFAULT_SOURCE_DATASET = "hermes_union"
-DEFAULT_PUBLISHED_DATASET = "hermes"
 
 
-def _ddl_params(name: str, source_dataset: str, published_dataset: str) -> dict[str, object]:
-    """Return the substitutions required by a bootstrap DDL."""
-    params: dict[str, object] = {"DS": source_dataset}
-    if name == "create_events_enriched.sql":
-        params["PUBLISHED_DS"] = published_dataset
-    return params
+def bootstrap(client, *, source_dataset: str = DEFAULT_SOURCE_DATASET) -> None:
+    """Create or refresh each bootstrapped table/view definition.
 
-
-def bootstrap(
-    client,
-    *,
-    source_dataset: str = DEFAULT_SOURCE_DATASET,
-    published_dataset: str = DEFAULT_PUBLISHED_DATASET,
-) -> None:
-    """Create or refresh each bootstrapped table/view definition."""
+    Every DDL is parameterised by ``DS`` alone, so a staging bootstrap
+    (``source_dataset="hermes_staging"``) reads, writes and publishes entirely
+    within staging. There is deliberately no second "published" dataset knob:
+    it let the view's dataset drift from its source, and a staging render left
+    ``${PUBLISHED_DS}`` unsubstituted in the submitted SQL.
+    """
     for name in DDL_FILES:
         logger.info("Bootstrapping via %s", name)
-        params = _ddl_params(name, source_dataset, published_dataset)
-        client.query(loader.load_query(name, params)).result()
+        client.query(loader.load_query(name, {"DS": source_dataset})).result()
 
 
 if __name__ == "__main__":

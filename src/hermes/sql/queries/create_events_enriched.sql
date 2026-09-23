@@ -5,12 +5,23 @@
 -- both historical and current rows into one nested schema while the physical
 -- pipeline evolves incrementally.
 --
+-- The view is published in the SAME dataset it reads, so it moves with ${DS}:
+-- a staging bootstrap publishes hermes_staging.events_enriched over staging data
+-- and can never point at production. It used to take a separate ${PUBLISHED_DS},
+-- which defaulted to `hermes` while the source was `hermes_union` -- two datasets
+-- to keep in step, and a staging render left ${PUBLISHED_DS} unsubstituted.
+--
+-- `mlab-collaboration.hermes.events_enriched` is deliberately left in place and
+-- is no longer managed here. It still points at the same physical table, so it
+-- keeps working while consumers cut over to the hermes_union name; drop it once
+-- they have.
+--
 -- Parameters:
---   ${DS}           source operational dataset (hermes_union / hermes_staging)
---   ${PUBLISHED_DS} dataset in which the stable view is published
+--   ${DS} operational dataset that is both read and published to
+--         (hermes_union / hermes_staging)
 --------------------------------------------------------------------------------
 
-CREATE OR REPLACE VIEW `mlab-collaboration.${PUBLISHED_DS}.events_enriched`
+CREATE OR REPLACE VIEW `mlab-collaboration.${DS}.events_enriched`
 OPTIONS (
   description = 'Canonical HERMES measurement, endpoint, performance, and symmetric path interface'
 )

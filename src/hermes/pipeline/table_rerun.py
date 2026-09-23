@@ -69,8 +69,15 @@ def load_sql(file_path: str, params: dict) -> str:
         sys.exit(1)
 
 
-def get_existing_dates(project_id: str, table_name: str) -> set[_dt.date]:
-    """Fetch the set of dates already present in a BigQuery table.
+def get_existing_dates(project_id: str, table_name: str, days: list[_dt.date]) -> set[_dt.date]:
+    """Fetch which of ``days`` are already present in ``table_name``.
+
+    ``days`` is REQUIRED. ``hermes_union`` tables carry
+    ``require_partition_filter = TRUE`` (see
+    ``sql/queries/require_partition_filter.sql``), so the unbounded
+    ``SELECT DISTINCT`` this used to run is rejected at plan time -- and because
+    the caller swallows the error and logs an empty set, an unbounded query here
+    would have degraded silently into "nothing exists" rather than failing.
 
     Parameters
     ----------
@@ -78,21 +85,29 @@ def get_existing_dates(project_id: str, table_name: str) -> set[_dt.date]:
         GCP project ID.
     table_name
         Fully-qualified BigQuery table name.
+    days
+        Partition dates to look for.
 
     Returns
     -------
     set of datetime.date
-        Distinct dates found in the table's ``partition_date`` column.
+        The subset of ``days`` present in the table.
         Returns an empty set on error (logged at ``ERROR`` level).
     """
+    if not days:
+        return set()
     client = bigquery.Client(project=project_id)
     query = f"""
         SELECT DISTINCT DATE(partition_date) AS date
         FROM `{table_name}`
+        WHERE partition_date IN UNNEST(@days)
         ORDER BY date
     """
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[bigquery.ArrayQueryParameter("days", "DATE", list(days))]
+    )
     try:
-        query_job = client.query(query)
+        query_job = client.query(query, job_config=job_config)
         results = query_job.result()
         return {row.date for row in results}
     except Exception as e:
@@ -413,8 +428,11 @@ def main() -> None:
         return
 
     # Get existing dates from the table
-    existing_dates = get_existing_dates(project_id, args.table)
-    logger.info(f"Existing dates in {args.table}: {sorted(existing_dates)}")
+    existing_dates = get_existing_dates(project_id, args.table, dates_to_process)
+    logger.info(
+        f"Of the {len(dates_to_process)} dates requested, "
+        f"{args.table} already holds: {sorted(existing_dates)}"
+    )
 
     # Delete existing entries if requested
     if args.delete_first:

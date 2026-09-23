@@ -225,8 +225,19 @@ def print_active_credentials() -> None:
         logger.info(f"Authenticated as user: {creds}")
 
 
-def get_existing_dates(project_id: str, table_name: str) -> set[date]:
-    """Fetch the set of dates already present in a BigQuery table.
+def get_existing_dates(project_id: str, table_name: str, lo: date, hi: date) -> set[date]:
+    """Fetch the dates already present in ``table_name`` within ``[lo, hi]``.
+
+    The window is REQUIRED, not a convenience. ``hermes_union`` tables carry
+    ``require_partition_filter = TRUE`` (see
+    ``sql/queries/require_partition_filter.sql``), so the unbounded
+    ``SELECT DISTINCT`` this used to run is now rejected at plan time. It was
+    always the wrong shape anyway: it scanned the whole ``partition_date``
+    column to answer a question about a handful of days.
+
+    Bounding it is semantically exact for the one caller: the result is only ever
+    tested against dates inside the requested range, so dates outside it could
+    not change any decision.
 
     Parameters
     ----------
@@ -234,20 +245,27 @@ def get_existing_dates(project_id: str, table_name: str) -> set[date]:
         GCP project ID used for the BigQuery client.
     table_name
         Fully-qualified BigQuery table name (``project.dataset.table``).
+    lo, hi
+        Inclusive partition-date bounds to look within.
 
     Returns
     -------
     set of datetime.date
-        Distinct dates found in the table's ``partition_date`` column.
+        Distinct dates present in ``[lo, hi]``.
     """
     client = bigquery.Client(project=project_id)
     query = f"""
         SELECT DISTINCT DATE(partition_date) AS date
         FROM `{table_name}`
+        WHERE partition_date BETWEEN @lo AND @hi
     """
-    query_job = client.query(query)
-    results = query_job.result()
-    return {row.date for row in results}
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[
+            bigquery.ScalarQueryParameter("lo", "DATE", lo),
+            bigquery.ScalarQueryParameter("hi", "DATE", hi),
+        ]
+    )
+    return {row.date for row in client.query(query, job_config=job_config).result()}
 
 
 def check_input_data(project_id: str, day: date, window_days: int = 0) -> set[date]:
@@ -771,9 +789,9 @@ def get_populated_dates(project_id: str, table_name: str) -> set[date]:
 
     Reads ``INFORMATION_SCHEMA.PARTITIONS`` rather than scanning the table, so
     this is free metadata regardless of table size — unlike
-    :func:`get_existing_dates`, whose ``SELECT DISTINCT`` scans the whole
-    ``partition_date`` column (fine for the small public table, expensive if
-    pointed at a multi-TiB one).
+    :func:`get_existing_dates`, whose ``SELECT DISTINCT`` scans the
+    ``partition_date`` column over its requested window (fine for the small
+    public table, expensive if pointed at a multi-TiB one over a wide range).
 
     Partitions with ``total_rows = 0`` are treated as absent: deleting a date's
     rows leaves the partition metadata behind, and such a date still needs
@@ -1639,8 +1657,11 @@ def main() -> None:
     # Get existing dates from the final output table
     if not args.force_rerun and not args.dry_run:
         try:
-            existing_dates = get_existing_dates(project_id, final_table)
-            logger.info(f"Found {len(existing_dates)} existing dates in {final_table}")
+            existing_dates = get_existing_dates(project_id, final_table, start_date, end_date)
+            logger.info(
+                f"Found {len(existing_dates)} existing dates in {final_table} "
+                f"between {start_date} and {end_date}"
+            )
         except Exception as e:
             logger.warning(f"Could not check existing dates ({e}). Proceeding with all dates.")
             existing_dates = set()
