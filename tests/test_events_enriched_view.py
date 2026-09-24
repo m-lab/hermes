@@ -110,3 +110,25 @@ def test_legacy_fiber_value_is_not_mislabeled_as_a_speed():
     assert sql.count("200000.0") == 2
     assert sql.count("AS propagation_speed_km_s") == 2
     assert sql.count("AS fiber_lower_bound_rtt_ms") == 2
+
+
+def test_anomaly_flags_are_not_called_counts():
+    """`anomaly_*_count` is a 0/1 verdict flag, not a count of measurements.
+
+    Exposing it as `rtt_count` invited readers to treat it as "how many
+    measurements were anomalous". It is `SUM()` of a per-group boolean, which is
+    why every predicate in this repo reads `>= 0.5`. The view states that
+    contract as a BOOL. See docs/reference/anomaly-fields.md.
+    """
+    sql = _view_sql()
+
+    for signal in ("rtt", "download", "upload"):
+        assert f"AS {signal}_significant" in sql, signal
+        assert f"AS {signal}_anomalous_sample_fraction" in sql, signal
+        # the misleading names must not come back
+        assert f"AS {signal}_count" not in sql, signal
+
+    # Exposed as a boolean, using the same threshold the pipeline predicates use.
+    assert "anomaly_rtt_count >= 0.5 AS rtt_significant" in sql
+    assert "anomaly_throughput_count >= 0.5 AS download_significant" in sql
+    assert "anomaly_upload_throughput_count >= 0.5 AS upload_significant" in sql

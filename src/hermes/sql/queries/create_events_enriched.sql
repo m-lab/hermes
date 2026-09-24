@@ -240,13 +240,37 @@ SELECT
       number_of_measurements_baseline AS measurement_count,
       number_of_unique_src_ips_baseline AS unique_client_ip_count
     ) AS baseline,
+    -- Two DIFFERENT kinds of evidence; do not conflate them.
+    --
+    -- *_anomalous_sample_fraction: of the individual measurements in this
+    --   window, what fraction was worse than baseline. Continuous 0..1.
+    --   (RTT: samples above baseline_median_rtt + 5ms. Download/upload: samples
+    --   below the baseline median.) Computed in 02 as a SAFE_DIVIDE of array
+    --   lengths.
+    --
+    -- *_significant: did the GROUP pass its statistical gate. RTT requires
+    --   (t-test OR Mann-Whitney) p < 0.05 AND median >= baseline + 5ms;
+    --   download/upload require t-test AND Mann-Whitney AND Wasserstein all
+    --   p < 0.05 AND a >= 20% median regression.
+    --
+    -- The underlying anomaly_*_count columns are NOT measurement counts. Each is
+    -- SUM() of a per-group 0/1 verdict flag over a group that normally holds one
+    -- row, which is why every predicate in this repo reads `>= 0.5` -- that is
+    -- "the flag is set", not a fraction threshold. Exposing them as BOOL here
+    -- states the contract those predicates were already assuming.
+    --
+    -- `>= 0.5` rather than `= 1` on purpose: the value is not strictly 0/1.
+    -- StatisticalTestsResults is grouped on 13 keys but joined on 4, so a group
+    -- whose extra keys vary gets duplicate rows and the SUM can exceed 1 (2 was
+    -- observed on 2026-09-22, in 2 of ~147,602 groups). See
+    -- docs/reference/anomaly-fields.md.
     STRUCT(
-      anomaly_ratio_rtt AS rtt_ratio,
-      anomaly_rtt_count AS rtt_count,
-      anomaly_ratio_throughput AS download_ratio,
-      anomaly_throughput_count AS download_count,
-      anomaly_ratio_upload_throughput AS upload_ratio,
-      anomaly_upload_throughput_count AS upload_count,
+      anomaly_ratio_rtt AS rtt_anomalous_sample_fraction,
+      anomaly_rtt_count >= 0.5 AS rtt_significant,
+      anomaly_ratio_throughput AS download_anomalous_sample_fraction,
+      anomaly_throughput_count >= 0.5 AS download_significant,
+      anomaly_ratio_upload_throughput AS upload_anomalous_sample_fraction,
+      anomaly_upload_throughput_count >= 0.5 AS upload_significant,
       anomaly_loss_ratio AS loss_ratio,
       difference_latency AS rtt_difference_ms,
       difference_throughput AS download_difference_mbps,

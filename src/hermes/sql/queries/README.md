@@ -244,6 +244,19 @@ Historical rows created before grouping provenance was stored are exposed as
 compatibility projection only: the physical historical rows remain NULL and are
 not rewritten.
 
+The anomaly record exposes two different kinds of evidence, and conflating them
+is a recurring source of error. `performance.anomaly.*_anomalous_sample_fraction`
+is the **fraction of individual measurements** in the window that were worse than
+baseline (continuous 0..1). `performance.anomaly.*_significant` is a **BOOL**: did
+the group pass its statistical gate.
+
+The underlying `anomaly_*_count` columns are **not measurement counts** — each is
+`SUM()` of a per-group 0/1 verdict flag, which is why every predicate in this repo
+reads `>= 0.5`. They were previously exposed as `rtt_count` / `download_count` /
+`upload_count`, which invited exactly the wrong reading. See
+[docs/reference/anomaly-fields.md](../../../../docs/reference/anomaly-fields.md),
+which also documents a join fan-out that lets the raw value exceed 1.
+
 The legacy `speed_of_internet_fiber` field is a calculated lower-bound RTT, not
 a speed. The canonical hop therefore exposes it as `fiber_lower_bound_rtt_ms`
 and separately records the assumed propagation speed as
