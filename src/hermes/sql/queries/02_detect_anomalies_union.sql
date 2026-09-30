@@ -1,5 +1,7 @@
 --------------------------------------------------------------------------------
 -- @requires-udf: compute_wasserstein_p_value
+-- @requires-udf: welch_t_test
+-- @requires-udf: mann_whitney_u
 -- HERMES (union): anomaly detection only (no topology joins)
 --
 -- Input:  `mlab-collaboration.${DS}.merged_download_upload`
@@ -682,8 +684,8 @@ StatisticalTestsResults AS (
     dst_site,
     ip_version,
 
-    `hermes.mann_whitney_u_test`(current_rtt_array, baseline_rtt_array) AS mann_whitney,
-    `hermes.welchs_t_test`(current_rtt_array, baseline_rtt_array) AS t_test_result,
+    mann_whitney_u(current_rtt_array, baseline_rtt_array) AS mann_whitney,
+    welch_t_test(current_rtt_array, baseline_rtt_array) AS t_test_result,
     ARRAY_LENGTH(current_rtt_array) AS current_number_of_measurements,
     ARRAY_LENGTH(baseline_rtt_array) AS baseline_number_of_measurements,
     -- Upload availability is only ~54% of paired download rows.  The RTT-shaped
@@ -694,11 +696,11 @@ StatisticalTestsResults AS (
     ARRAY_LENGTH(baseline_upload_throughput_array) AS baseline_upload_sample_count,
     current_rtt_stddev,
 
-    `hermes.mann_whitney_u_test`(
+    mann_whitney_u(
       current_throughput_array, baseline_throughput_array
     ) AS mann_whitney_throughput,
 
-    `hermes.welchs_t_test`(
+    welch_t_test(
       current_throughput_array, baseline_throughput_array
     ) AS t_test_result_throughput,
 
@@ -706,11 +708,11 @@ StatisticalTestsResults AS (
       current_throughput_array, baseline_throughput_array, 50
     ) AS wasserstein_throughput_result,
 
-    `hermes.mann_whitney_u_test`(
+    mann_whitney_u(
       current_upload_throughput_array, baseline_upload_throughput_array
     ) AS mann_whitney_upload_throughput,
 
-    `hermes.welchs_t_test`(
+    welch_t_test(
       current_upload_throughput_array, baseline_upload_throughput_array
     ) AS t_test_result_upload_throughput,
 
@@ -760,7 +762,7 @@ StatisticalTestsResults AS (
     CASE
       WHEN ARRAY_LENGTH(current_positive_loss_array) >= 5
        AND ARRAY_LENGTH(baseline_positive_loss_array) >= 5
-      THEN `hermes.mann_whitney_u_test`(
+      THEN mann_whitney_u(
         current_positive_loss_array,
         baseline_positive_loss_array
       )
