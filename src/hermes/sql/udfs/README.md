@@ -19,9 +19,18 @@ source of truth captured from `INFORMATION_SCHEMA.ROUTINES`.
 | `welchs_t_test.sql` | `welchs_t_test(baseline ARRAY<FLOAT64>, current_rtt ARRAY<FLOAT64>)` | Welch's t-test (unequal variances) on RTT distributions. |
 | `mann_whitney_u_test.sql` | `mann_whitney_u_test(...)` | Mann–Whitney U rank-sum test. |
 | `compute_wasserstein_p_value.sql` | `compute_wasserstein_p_value(weekly ARRAY<FLOAT64>, daily ARRAY<FLOAT64>, num_permutations INT64)` | Self-contained deterministic 1-D Wasserstein permutation test used by Step 02. |
+| `welch_t_test.sql` | `welch_t_test(sample1, sample2)` (TEMP) | Welch's t-test used by Step 02. Fixed `betacf` recurrence; no 20,000-sample short-circuit. |
+| `mann_whitney_u.sql` | `mann_whitney_u(sample1, sample2)` (TEMP) | Mann–Whitney U used by Step 02. Continuity correction toward the mean; no 20,000-sample short-circuit. |
 
-All three are JavaScript UDFs (`LANGUAGE js`). Welch and Mann–Whitney retain
-their persistent definitions. Wasserstein is a `CREATE TEMP FUNCTION` inlined
+All are JavaScript UDFs (`LANGUAGE js`). Step 02 inlines `welch_t_test`,
+`mann_whitney_u` and `compute_wasserstein_p_value` as TEMP functions. The
+persistent `welchs_t_test` / `mann_whitney_u_test` in `mlab-collaboration.hermes`
+are left untouched for the legacy queries only, and keep three known defects:
+the Welch p-value continued fraction uses wrong index terms (p overestimated by
+up to ~0.2 for |t| around 1–1.8), the Mann–Whitney continuity correction moves
+Z away from zero (p underestimated for small samples), and both return
+`p_value = 1e-10` without testing when a sample exceeds 20,000 values.
+`tests/test_stat_udfs.py` checks the TEMP versions against scipy. Wasserstein is a `CREATE TEMP FUNCTION` inlined
 into Step 02 by `@requires-udf`, so every image carries the exact detector it
 runs and a sandbox cannot silently share a different live routine with
 production. Its permutations use a stable seed derived from canonicalized
