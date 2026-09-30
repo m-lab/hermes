@@ -1494,32 +1494,32 @@ forward_as_loop_detection AS (
         WHERE asn IS NULL OR asn = -1
       )
     ) AS null_or_negative_one_count,
-    CASE
-      WHEN ARRAY_LENGTH(
-        ARRAY(
-          SELECT asn
-          FROM UNNEST(forward_asn_path) AS asn
-          WHERE asn IS NULL OR asn = -1
-        )
-      ) > 0 THEN TRUE
-      ELSE FALSE
-    END AS forward_unresponse_within_AS,
-    CASE
-      WHEN ARRAY_LENGTH(forward_asn_path) > ARRAY_LENGTH(
-        ARRAY(
-          SELECT DISTINCT asn
-          FROM UNNEST(forward_asn_path) AS asn
-          WHERE asn IS NOT NULL AND asn != -1
-        )
-      ) AND ARRAY_LENGTH(
-        ARRAY(
-          SELECT asn
-          FROM UNNEST(forward_asn_path) AS asn
-          WHERE asn IS NULL OR asn = -1
-        )
-      ) = 0 THEN TRUE
-      ELSE FALSE
-    END AS forward_loop
+    -- One definition shared with the events_enriched view. Over the mapped
+    -- hops (ASN not -1) in TTL order:
+    --   forward_unresponse_within_AS: an AS reappears after hops with no ASN
+    --     (A ... A), silent or replied-but-unmapped;
+    --   forward_loop: an AS reappears after a DIFFERENT AS (A B A), with
+    --     consecutive same-AS hops collapsed first.
+    -- The previous logic (inherited from legacy `loop_induced_by_*`) flagged any
+    -- unmapped hop as the first, and any fully mapped path that stayed in one
+    -- AS for two hops as the second.
+    COALESCE((
+      SELECT LOGICAL_OR(asn = prev_asn AND o - prev_o > 1)
+      FROM (
+        SELECT asn, o, LAG(asn) OVER (ORDER BY o) AS prev_asn, LAG(o) OVER (ORDER BY o) AS prev_o
+        FROM UNNEST(forward_asn_path) AS asn WITH OFFSET o
+        WHERE asn != -1
+      )
+    ), FALSE) AS forward_unresponse_within_AS,
+    (
+      SELECT COUNT(*) > COUNT(DISTINCT asn)
+      FROM (
+        SELECT asn, LAG(asn) OVER (ORDER BY o) AS prev_asn
+        FROM UNNEST(forward_asn_path) AS asn WITH OFFSET o
+        WHERE asn != -1
+      )
+      WHERE prev_asn IS NULL OR asn != prev_asn
+    ) AS forward_loop
   FROM (
     SELECT
       id,
@@ -1550,32 +1550,32 @@ reverse_as_loop_detection AS (
         WHERE asn IS NULL OR asn = -1
       )
     ) AS null_or_negative_one_count,
-    CASE
-      WHEN ARRAY_LENGTH(
-        ARRAY(
-          SELECT asn
-          FROM UNNEST(reverse_asn_path) AS asn
-          WHERE asn IS NULL OR asn = -1
-        )
-      ) > 0 THEN TRUE
-      ELSE FALSE
-    END AS reverse_unresponsive_within_AS,
-    CASE
-      WHEN ARRAY_LENGTH(reverse_asn_path) > ARRAY_LENGTH(
-        ARRAY(
-          SELECT DISTINCT asn
-          FROM UNNEST(reverse_asn_path) AS asn
-          WHERE asn IS NOT NULL AND asn != -1
-        )
-      ) AND ARRAY_LENGTH(
-        ARRAY(
-          SELECT asn
-          FROM UNNEST(reverse_asn_path) AS asn
-          WHERE asn IS NULL OR asn = -1
-        )
-      ) = 0 THEN TRUE
-      ELSE FALSE
-    END AS reverse_loop
+    -- One definition shared with the events_enriched view. Over the mapped
+    -- hops (ASN not -1) in TTL order:
+    --   reverse_unresponsive_within_AS: an AS reappears after hops with no ASN
+    --     (A ... A), silent or replied-but-unmapped;
+    --   reverse_loop: an AS reappears after a DIFFERENT AS (A B A), with
+    --     consecutive same-AS hops collapsed first.
+    -- The previous logic (inherited from legacy `loop_induced_by_*`) flagged any
+    -- unmapped hop as the first, and any fully mapped path that stayed in one
+    -- AS for two hops as the second.
+    COALESCE((
+      SELECT LOGICAL_OR(asn = prev_asn AND o - prev_o > 1)
+      FROM (
+        SELECT asn, o, LAG(asn) OVER (ORDER BY o) AS prev_asn, LAG(o) OVER (ORDER BY o) AS prev_o
+        FROM UNNEST(reverse_asn_path) AS asn WITH OFFSET o
+        WHERE asn != -1
+      )
+    ), FALSE) AS reverse_unresponsive_within_AS,
+    (
+      SELECT COUNT(*) > COUNT(DISTINCT asn)
+      FROM (
+        SELECT asn, LAG(asn) OVER (ORDER BY o) AS prev_asn
+        FROM UNNEST(reverse_asn_path) AS asn WITH OFFSET o
+        WHERE asn != -1
+      )
+      WHERE prev_asn IS NULL OR asn != prev_asn
+    ) AS reverse_loop
   FROM (
     SELECT
       id,

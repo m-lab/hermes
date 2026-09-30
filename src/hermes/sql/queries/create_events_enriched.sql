@@ -367,8 +367,44 @@ SELECT
     forward_geolocated_hop_count AS geolocated_hop_count,
     SAFE_DIVIDE(forward_geolocated_hop_count, forward_total_hop_count)
       AS geolocation_coverage,
-    forward_loop AS loop_detected,
-    forward_unresponse_within_AS AS unresponsive_within_as,
+    -- Recomputed from the hops, NOT read from the physical forward_* columns:
+    -- those flag any fully mapped path that stays in one AS for two hops as a
+    -- "loop", and any unmapped hop anywhere as "unresponsive within an AS".
+    -- A loop is an AS that reappears after a DIFFERENT AS (A B A): consecutive
+    -- hops in one AS are collapsed first and hops with no ASN are ignored.
+    -- Same definition as step 04. NULL when the path has no hops.
+    IF(
+      ARRAY_LENGTH(forward_hops) = 0,
+      NULL,
+      (
+        SELECT COUNT(*) > COUNT(DISTINCT asn)
+        FROM (
+          SELECT h.asn, LAG(h.asn) OVER (ORDER BY o) AS prev_asn
+          FROM UNNEST(forward_hops) AS h WITH OFFSET o
+          WHERE h.asn IS NOT NULL AND h.asn != -1
+        )
+        WHERE prev_asn IS NULL OR asn != prev_asn
+      )
+    ) AS loop_detected,
+    -- TRUE when an AS reappears after one or more hops with no ASN (A ... A):
+    -- silent hops or hops that replied but could not be mapped, so part of
+    -- that AS's internal path is unknown. Same definition as step 04.
+    IF(
+      ARRAY_LENGTH(forward_hops) = 0,
+      NULL,
+      COALESCE((
+        SELECT LOGICAL_OR(asn = prev_asn AND o - prev_o > 1)
+        FROM (
+          SELECT
+            h.asn,
+            o,
+            LAG(h.asn) OVER (ORDER BY o) AS prev_asn,
+            LAG(o) OVER (ORDER BY o) AS prev_o
+          FROM UNNEST(forward_hops) AS h WITH OFFSET o
+          WHERE h.asn IS NOT NULL AND h.asn != -1
+        )
+      ), FALSE)
+    ) AS unresponsive_within_as,
     ARRAY(SELECT h.asn FROM UNNEST(forward_hops) h WHERE h.asn IS NOT NULL)
       AS as_path,
     ARRAY(SELECT h.country_code FROM UNNEST(forward_hops) h
@@ -391,8 +427,16 @@ SELECT
     reverse_geolocated_hop_count AS geolocated_hop_count,
     SAFE_DIVIDE(reverse_geolocated_hop_count, reverse_total_hop_count)
       AS geolocation_coverage,
-    reverse_loop AS loop_detected,
-    reverse_unresponsive_within_AS AS unresponsive_within_as,
+    -- Reverse flags describe the reverse path AS MEASURED (A B A loop; A ... A
+    -- gap over hops with no ASN), computed by step 04 BEFORE its cleanup drops
+    -- ambiguous hop_type=4 hops and truncates at the first AS re-entry. They
+    -- cannot be recomputed from reverse_hops: a loop never survives cleanup.
+    -- The raw path is not stored, so partitions written before step 04 was
+    -- fixed cannot be corrected; they are exposed as NULL (unknown) rather
+    -- than with the old definition. The date is the first partition written by
+    -- the fixed step 04 (a sentinel until that has run).
+    IF(partition_date >= DATE '9999-12-31', reverse_loop, NULL) AS loop_detected,
+    IF(partition_date >= DATE '9999-12-31', reverse_unresponsive_within_AS, NULL) AS unresponsive_within_as,
     ARRAY(SELECT h.asn FROM UNNEST(reverse_hops) h WHERE h.asn IS NOT NULL)
       AS as_path,
     ARRAY(SELECT h.country_code FROM UNNEST(reverse_hops) h
