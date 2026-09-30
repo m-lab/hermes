@@ -158,7 +158,18 @@ def test_view_exposes_every_column_the_pipeline_writes():
     sql = _view_sql()
     missing = [c for c in columns if not re.search(rf"\b{re.escape(c)}\b", sql)]
     # `src` and `dst` are renamed in the first CTE (`e.src AS client_ip`).
-    assert missing == [], missing
+    assert missing == SUPERSEDED_BY_HOPS, missing
+
+
+# Physical columns the view deliberately does not read, because it recomputes
+# what they claim to hold from the hop arrays. See
+# test_path_flags_are_derived_from_the_hops_not_the_legacy_columns.
+SUPERSEDED_BY_HOPS = [
+    "reverse_unresponsive_within_AS",
+    "forward_unresponse_within_AS",
+    "forward_loop",
+    "reverse_loop",
+]
 
 
 def test_test_results_and_day_of_distribution_are_exposed():
@@ -169,3 +180,28 @@ def test_test_results_and_day_of_distribution_are_exposed():
         assert f"AS {struct}" in sql, struct
     assert "AS analysis_day" in sql
     assert "window_start AS traceroute_hour" in sql
+
+
+def test_path_flags_are_derived_from_the_hops_not_the_legacy_columns():
+    """The physical loop/unresponsive flags do not mean what their names say.
+
+    `forward_loop` is TRUE for any fully mapped path that stays in one AS for
+    two hops (34.5% of paths on 2026-09-22, 0.9% of them real loops), and any
+    unmapped hop suppresses it. `*_unresponse*_within_AS` is TRUE for any
+    unmapped hop anywhere. The view recomputes both from the hops instead.
+    """
+    sql = _view_sql()
+
+    for legacy in (
+        "forward_loop",
+        "reverse_loop",
+        "forward_unresponse_within_AS",
+        "reverse_unresponsive_within_AS",
+    ):
+        assert not re.search(rf"\b{legacy}\b", sql), legacy
+
+    assert sql.count("AS loop_detected") == 2
+    assert sql.count("AS unresponsive_within_as") == 2
+    # A loop is an AS that reappears after a different AS: consecutive hops in
+    # one AS are collapsed first.
+    assert sql.count("LAG(h.asn) OVER (ORDER BY o)") == 2

@@ -367,8 +367,53 @@ SELECT
     forward_geolocated_hop_count AS geolocated_hop_count,
     SAFE_DIVIDE(forward_geolocated_hop_count, forward_total_hop_count)
       AS geolocation_coverage,
-    forward_loop AS loop_detected,
-    forward_unresponse_within_AS AS unresponsive_within_as,
+    -- Recomputed from the hops, NOT read from the physical forward_* columns:
+    -- those flag any fully mapped path that stays in one AS for two hops as a
+    -- "loop", and any unmapped hop anywhere as "unresponsive within an AS".
+    -- A loop is an AS that reappears after a DIFFERENT AS (consecutive hops in
+    -- one AS are collapsed first; unmapped hops are ignored). NULL when the
+    -- path has no hops.
+    IF(
+      ARRAY_LENGTH(forward_hops) = 0,
+      NULL,
+      (
+        SELECT COUNT(*) > COUNT(DISTINCT asn)
+        FROM (
+          SELECT h.asn, LAG(h.asn) OVER (ORDER BY o) AS prev_asn
+          FROM UNNEST(forward_hops) AS h WITH OFFSET o
+          WHERE h.asn IS NOT NULL AND h.asn != -1
+        )
+        WHERE prev_asn IS NULL OR asn != prev_asn
+      )
+    ) AS loop_detected,
+    -- TRUE when a hop that did not reply ('*') sits between two mapped hops of
+    -- the SAME AS, so part of that AS's internal path is invisible.
+    IF(
+      ARRAY_LENGTH(forward_hops) = 0,
+      NULL,
+      COALESCE((
+        SELECT LOGICAL_OR(prev_asn = next_asn)
+        FROM (
+          SELECT
+            silent,
+            LAST_VALUE(IF(mapped, asn, NULL) IGNORE NULLS) OVER (
+              ORDER BY o ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
+            ) AS prev_asn,
+            FIRST_VALUE(IF(mapped, asn, NULL) IGNORE NULLS) OVER (
+              ORDER BY o ROWS BETWEEN 1 FOLLOWING AND UNBOUNDED FOLLOWING
+            ) AS next_asn
+          FROM (
+            SELECT
+              o,
+              h.asn,
+              h.asn IS NOT NULL AND h.asn != -1 AS mapped,
+              h.ip IS NULL OR h.ip = '*' AS silent
+            FROM UNNEST(forward_hops) AS h WITH OFFSET o
+          )
+        )
+        WHERE silent
+      ), FALSE)
+    ) AS unresponsive_within_as,
     ARRAY(SELECT h.asn FROM UNNEST(forward_hops) h WHERE h.asn IS NOT NULL)
       AS as_path,
     ARRAY(SELECT h.country_code FROM UNNEST(forward_hops) h
@@ -391,8 +436,53 @@ SELECT
     reverse_geolocated_hop_count AS geolocated_hop_count,
     SAFE_DIVIDE(reverse_geolocated_hop_count, reverse_total_hop_count)
       AS geolocation_coverage,
-    reverse_loop AS loop_detected,
-    reverse_unresponsive_within_AS AS unresponsive_within_as,
+    -- Recomputed from the hops, NOT read from the physical reverse_* columns:
+    -- those flag any fully mapped path that stays in one AS for two hops as a
+    -- "loop", and any unmapped hop anywhere as "unresponsive within an AS".
+    -- A loop is an AS that reappears after a DIFFERENT AS (consecutive hops in
+    -- one AS are collapsed first; unmapped hops are ignored). NULL when the
+    -- path has no hops.
+    IF(
+      ARRAY_LENGTH(reverse_hops) = 0,
+      NULL,
+      (
+        SELECT COUNT(*) > COUNT(DISTINCT asn)
+        FROM (
+          SELECT h.asn, LAG(h.asn) OVER (ORDER BY o) AS prev_asn
+          FROM UNNEST(reverse_hops) AS h WITH OFFSET o
+          WHERE h.asn IS NOT NULL AND h.asn != -1
+        )
+        WHERE prev_asn IS NULL OR asn != prev_asn
+      )
+    ) AS loop_detected,
+    -- TRUE when a hop that did not reply ('*') sits between two mapped hops of
+    -- the SAME AS, so part of that AS's internal path is invisible.
+    IF(
+      ARRAY_LENGTH(reverse_hops) = 0,
+      NULL,
+      COALESCE((
+        SELECT LOGICAL_OR(prev_asn = next_asn)
+        FROM (
+          SELECT
+            silent,
+            LAST_VALUE(IF(mapped, asn, NULL) IGNORE NULLS) OVER (
+              ORDER BY o ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
+            ) AS prev_asn,
+            FIRST_VALUE(IF(mapped, asn, NULL) IGNORE NULLS) OVER (
+              ORDER BY o ROWS BETWEEN 1 FOLLOWING AND UNBOUNDED FOLLOWING
+            ) AS next_asn
+          FROM (
+            SELECT
+              o,
+              h.asn,
+              h.asn IS NOT NULL AND h.asn != -1 AS mapped,
+              h.ip IS NULL OR h.ip = '*' AS silent
+            FROM UNNEST(reverse_hops) AS h WITH OFFSET o
+          )
+        )
+        WHERE silent
+      ), FALSE)
+    ) AS unresponsive_within_as,
     ARRAY(SELECT h.asn FROM UNNEST(reverse_hops) h WHERE h.asn IS NOT NULL)
       AS as_path,
     ARRAY(SELECT h.country_code FROM UNNEST(reverse_hops) h
