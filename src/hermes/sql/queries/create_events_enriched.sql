@@ -434,9 +434,9 @@ SELECT
     -- The raw path is not stored, so partitions written before step 04 was
     -- fixed cannot be corrected; they are exposed as NULL (unknown) rather
     -- than with the old definition. The date is the first partition written by
-    -- the fixed step 04 (a sentinel until that has run).
-    IF(partition_date >= DATE '9999-12-31', reverse_loop, NULL) AS loop_detected,
-    IF(partition_date >= DATE '9999-12-31', reverse_unresponsive_within_AS, NULL) AS unresponsive_within_as,
+    -- the fixed step 04: 2026-09-30, the first date the 08d689b+ image processed.
+    IF(partition_date >= DATE '2026-09-30', reverse_loop, NULL) AS loop_detected,
+    IF(partition_date >= DATE '2026-09-30', reverse_unresponsive_within_AS, NULL) AS unresponsive_within_as,
     ARRAY(SELECT h.asn FROM UNNEST(reverse_hops) h WHERE h.asn IS NOT NULL)
       AS as_path,
     ARRAY(SELECT h.country_code FROM UNNEST(reverse_hops) h
