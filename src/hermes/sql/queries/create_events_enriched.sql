@@ -370,9 +370,9 @@ SELECT
     -- Recomputed from the hops, NOT read from the physical forward_* columns:
     -- those flag any fully mapped path that stays in one AS for two hops as a
     -- "loop", and any unmapped hop anywhere as "unresponsive within an AS".
-    -- A loop is an AS that reappears after a DIFFERENT AS (consecutive hops in
-    -- one AS are collapsed first; unmapped hops are ignored). NULL when the
-    -- path has no hops.
+    -- A loop is an AS that reappears after a DIFFERENT AS (A B A): consecutive
+    -- hops in one AS are collapsed first and hops with no ASN are ignored.
+    -- Same definition as step 04. NULL when the path has no hops.
     IF(
       ARRAY_LENGTH(forward_hops) = 0,
       NULL,
@@ -386,32 +386,23 @@ SELECT
         WHERE prev_asn IS NULL OR asn != prev_asn
       )
     ) AS loop_detected,
-    -- TRUE when a hop that did not reply ('*') sits between two mapped hops of
-    -- the SAME AS, so part of that AS's internal path is invisible.
+    -- TRUE when an AS reappears after one or more hops with no ASN (A ... A):
+    -- silent hops or hops that replied but could not be mapped, so part of
+    -- that AS's internal path is unknown. Same definition as step 04.
     IF(
       ARRAY_LENGTH(forward_hops) = 0,
       NULL,
       COALESCE((
-        SELECT LOGICAL_OR(prev_asn = next_asn)
+        SELECT LOGICAL_OR(asn = prev_asn AND o - prev_o > 1)
         FROM (
           SELECT
-            silent,
-            LAST_VALUE(IF(mapped, asn, NULL) IGNORE NULLS) OVER (
-              ORDER BY o ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
-            ) AS prev_asn,
-            FIRST_VALUE(IF(mapped, asn, NULL) IGNORE NULLS) OVER (
-              ORDER BY o ROWS BETWEEN 1 FOLLOWING AND UNBOUNDED FOLLOWING
-            ) AS next_asn
-          FROM (
-            SELECT
-              o,
-              h.asn,
-              h.asn IS NOT NULL AND h.asn != -1 AS mapped,
-              h.ip IS NULL OR h.ip = '*' AS silent
-            FROM UNNEST(forward_hops) AS h WITH OFFSET o
-          )
+            h.asn,
+            o,
+            LAG(h.asn) OVER (ORDER BY o) AS prev_asn,
+            LAG(o) OVER (ORDER BY o) AS prev_o
+          FROM UNNEST(forward_hops) AS h WITH OFFSET o
+          WHERE h.asn IS NOT NULL AND h.asn != -1
         )
-        WHERE silent
       ), FALSE)
     ) AS unresponsive_within_as,
     ARRAY(SELECT h.asn FROM UNNEST(forward_hops) h WHERE h.asn IS NOT NULL)
@@ -439,9 +430,9 @@ SELECT
     -- Recomputed from the hops, NOT read from the physical reverse_* columns:
     -- those flag any fully mapped path that stays in one AS for two hops as a
     -- "loop", and any unmapped hop anywhere as "unresponsive within an AS".
-    -- A loop is an AS that reappears after a DIFFERENT AS (consecutive hops in
-    -- one AS are collapsed first; unmapped hops are ignored). NULL when the
-    -- path has no hops.
+    -- A loop is an AS that reappears after a DIFFERENT AS (A B A): consecutive
+    -- hops in one AS are collapsed first and hops with no ASN are ignored.
+    -- Same definition as step 04. NULL when the path has no hops.
     IF(
       ARRAY_LENGTH(reverse_hops) = 0,
       NULL,
@@ -455,32 +446,23 @@ SELECT
         WHERE prev_asn IS NULL OR asn != prev_asn
       )
     ) AS loop_detected,
-    -- TRUE when a hop that did not reply ('*') sits between two mapped hops of
-    -- the SAME AS, so part of that AS's internal path is invisible.
+    -- TRUE when an AS reappears after one or more hops with no ASN (A ... A):
+    -- silent hops or hops that replied but could not be mapped, so part of
+    -- that AS's internal path is unknown. Same definition as step 04.
     IF(
       ARRAY_LENGTH(reverse_hops) = 0,
       NULL,
       COALESCE((
-        SELECT LOGICAL_OR(prev_asn = next_asn)
+        SELECT LOGICAL_OR(asn = prev_asn AND o - prev_o > 1)
         FROM (
           SELECT
-            silent,
-            LAST_VALUE(IF(mapped, asn, NULL) IGNORE NULLS) OVER (
-              ORDER BY o ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
-            ) AS prev_asn,
-            FIRST_VALUE(IF(mapped, asn, NULL) IGNORE NULLS) OVER (
-              ORDER BY o ROWS BETWEEN 1 FOLLOWING AND UNBOUNDED FOLLOWING
-            ) AS next_asn
-          FROM (
-            SELECT
-              o,
-              h.asn,
-              h.asn IS NOT NULL AND h.asn != -1 AS mapped,
-              h.ip IS NULL OR h.ip = '*' AS silent
-            FROM UNNEST(reverse_hops) AS h WITH OFFSET o
-          )
+            h.asn,
+            o,
+            LAG(h.asn) OVER (ORDER BY o) AS prev_asn,
+            LAG(o) OVER (ORDER BY o) AS prev_o
+          FROM UNNEST(reverse_hops) AS h WITH OFFSET o
+          WHERE h.asn IS NOT NULL AND h.asn != -1
         )
-        WHERE silent
       ), FALSE)
     ) AS unresponsive_within_as,
     ARRAY(SELECT h.asn FROM UNNEST(reverse_hops) h WHERE h.asn IS NOT NULL)

@@ -202,6 +202,22 @@ def test_path_flags_are_derived_from_the_hops_not_the_legacy_columns():
 
     assert sql.count("AS loop_detected") == 2
     assert sql.count("AS unresponsive_within_as") == 2
-    # A loop is an AS that reappears after a different AS: consecutive hops in
-    # one AS are collapsed first.
-    assert sql.count("LAG(h.asn) OVER (ORDER BY o)") == 2
+    # One definition shared with step 04: over the mapped hops in TTL order,
+    # a loop is an AS that reappears after a DIFFERENT AS (A B A), and
+    # "unresponsive within an AS" is an AS that reappears after hops with no
+    # ASN (A ... A), whether they were silent or replied but went unmapped.
+    assert sql.count("LAG(h.asn) OVER (ORDER BY o)") == 4
+    assert sql.count("o - prev_o > 1") == 2
+
+
+def test_step_04_writes_the_same_flag_definitions():
+    """The physical columns must mean the same as the view's flags."""
+    sql = loader.load_query("04_mapping_union.sql", {"DS": "hermes_union"})
+
+    for path in ("forward_asn_path", "reverse_asn_path"):
+        assert f"FROM UNNEST({path}) AS asn WITH OFFSET o" in sql, path
+    assert sql.count("COUNT(*) > COUNT(DISTINCT asn)") == 2
+    assert sql.count("o - prev_o > 1") == 2
+    # the old "longer than its distinct set" test must be gone
+    assert "ARRAY_LENGTH(forward_asn_path) > ARRAY_LENGTH(" not in sql
+    assert "ARRAY_LENGTH(reverse_asn_path) > ARRAY_LENGTH(" not in sql
