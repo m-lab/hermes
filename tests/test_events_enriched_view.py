@@ -165,10 +165,8 @@ def test_view_exposes_every_column_the_pipeline_writes():
 # what they claim to hold from the hop arrays. See
 # test_path_flags_are_derived_from_the_hops_not_the_legacy_columns.
 SUPERSEDED_BY_HOPS = [
-    "reverse_unresponsive_within_AS",
     "forward_unresponse_within_AS",
     "forward_loop",
-    "reverse_loop",
 ]
 
 
@@ -192,12 +190,9 @@ def test_path_flags_are_derived_from_the_hops_not_the_legacy_columns():
     """
     sql = _view_sql()
 
-    for legacy in (
-        "forward_loop",
-        "reverse_loop",
-        "forward_unresponse_within_AS",
-        "reverse_unresponsive_within_AS",
-    ):
+    # Forward flags are recomputed from the published hops (step 04 computes
+    # them over the same hops, so every partition gets the fixed definition).
+    for legacy in ("forward_loop", "forward_unresponse_within_AS"):
         assert not re.search(rf"\b{legacy}\b", sql), legacy
 
     assert sql.count("AS loop_detected") == 2
@@ -206,8 +201,28 @@ def test_path_flags_are_derived_from_the_hops_not_the_legacy_columns():
     # a loop is an AS that reappears after a DIFFERENT AS (A B A), and
     # "unresponsive within an AS" is an AS that reappears after hops with no
     # ASN (A ... A), whether they were silent or replied but went unmapped.
-    assert sql.count("LAG(h.asn) OVER (ORDER BY o)") == 4
-    assert sql.count("o - prev_o > 1") == 2
+    assert sql.count("LAG(h.asn) OVER (ORDER BY o)") == 2
+    assert sql.count("o - prev_o > 1") == 1
+
+
+def test_reverse_flags_describe_the_measured_path_and_are_null_before_the_fix():
+    """Reverse flags describe the reverse path AS MEASURED, before step 04's
+    cleanup truncates it at the first AS re-entry, so they cannot be recomputed
+    from the published hops (a loop never survives the cleanup). The view reads
+    step 04's columns, and only for partitions written by the fixed step 04:
+    the raw path is not stored, so older values cannot be corrected and are
+    exposed as NULL rather than as the old, wrong definition.
+    """
+    sql = _view_sql()
+
+    gate = f"partition_date >= DATE '{REVERSE_PATH_FLAGS_FROM}'"
+    assert f"IF({gate}, reverse_loop, NULL) AS loop_detected" in sql
+    assert f"IF({gate}, reverse_unresponsive_within_AS, NULL) AS unresponsive_within_as" in sql
+
+
+# First partition_date written by the fixed step 04. A sentinel until the
+# fixed image has processed its first date; then set to that date.
+REVERSE_PATH_FLAGS_FROM = "9999-12-31"
 
 
 def test_step_04_writes_the_same_flag_definitions():
