@@ -1,5 +1,7 @@
 """Contract tests for the canonical HERMES compatibility view."""
 
+import re
+
 from hermes.sql import loader
 
 
@@ -132,3 +134,38 @@ def test_anomaly_flags_are_not_called_counts():
     assert "anomaly_rtt_count >= 0.5 AS rtt_significant" in sql
     assert "anomaly_throughput_count >= 0.5 AS download_significant" in sql
     assert "anomaly_upload_throughput_count >= 0.5 AS upload_significant" in sql
+
+
+def _columns_written_by_step_04() -> list[str]:
+    """The explicit column list of step 04's INSERT into events_with_as_and_geoloc."""
+    sql = loader.load_query("04_mapping_union.sql", {"DS": "hermes_union"})
+    start = sql.index("INSERT INTO `mlab-collaboration.hermes_union.events_with_as_and_geoloc`")
+    column_list = sql[sql.index("(", start) + 1 : sql.index(")\nSELECT", start)]
+    code = "\n".join(line.split("--")[0] for line in column_list.splitlines())
+    return [c.strip() for c in code.split(",") if c.strip()]
+
+
+def test_view_exposes_every_column_the_pipeline_writes():
+    """The published view must carry everything the operational table holds.
+
+    It once silently omitted the statistical test results, the day-of
+    percentiles and window_start, so users had to fall back on the raw table
+    and its legacy names. Any column step 04 writes must be read by the view.
+    """
+    columns = _columns_written_by_step_04()
+    assert len(columns) > 70, columns
+
+    sql = _view_sql()
+    missing = [c for c in columns if not re.search(rf"\b{re.escape(c)}\b", sql)]
+    # `src` and `dst` are renamed in the first CTE (`e.src AS client_ip`).
+    assert missing == [], missing
+
+
+def test_test_results_and_day_of_distribution_are_exposed():
+    sql = _view_sql()
+
+    assert "AS tests" in sql
+    for struct in ("mann_whitney", "welch_t", "wasserstein"):
+        assert f"AS {struct}" in sql, struct
+    assert "AS analysis_day" in sql
+    assert "window_start AS traceroute_hour" in sql

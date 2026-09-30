@@ -175,6 +175,9 @@ path_summaries AS (
 SELECT
   id AS measurement_id,
   TIMESTAMP_SECONDS(start) AS measurement_time,
+  -- window_start is the traceroute's start truncated to the hour (step 03),
+  -- not an analysis window, so it is named for what it holds.
+  window_start AS traceroute_hour,
   partition_date,
   ip_version,
 
@@ -275,7 +278,82 @@ SELECT
       difference_latency AS rtt_difference_ms,
       difference_throughput AS download_difference_mbps,
       difference_upload_throughput AS upload_difference_mbps
-    ) AS anomaly
+    ) AS anomaly,
+    -- The raw test results behind *_significant, exposed so the published
+    -- interface carries everything the operational table does. Group-level:
+    -- they repeat on every row of a group, and are NULL for groups too small
+    -- to test. Only RTT has a Welch's t result in the table; step 02 computes
+    -- the throughput t-tests but does not persist them.
+    --
+    -- The UDFs' own field names (U, meanU, mean1, se1, ...) are renamed here.
+    -- Both are called as (analysis_day, baseline) in step 02 even though the
+    -- UDF signatures name their first parameter `baseline`, so mean1/se1 are
+    -- the ANALYSIS-DAY sample. U is min(U1, U2), a two-sided statistic;
+    -- expected_u and u_standard_deviation are its null mean and tie-corrected
+    -- standard deviation.
+    --
+    -- Both UDFs short-circuit when either sample exceeds 20,000 values: they
+    -- return p_value = 1e-10 with every other field 0.0, without testing.
+    STRUCT(
+      STRUCT(
+        STRUCT(
+          mann_whitney_latency.U AS u_statistic,
+          mann_whitney_latency.Z AS z_score,
+          mann_whitney_latency.p_value AS p_value,
+          mann_whitney_latency.meanU AS expected_u,
+          mann_whitney_latency.stdU AS u_standard_deviation
+        ) AS rtt,
+        STRUCT(
+          mann_whitney_throughput.U AS u_statistic,
+          mann_whitney_throughput.Z AS z_score,
+          mann_whitney_throughput.p_value AS p_value,
+          mann_whitney_throughput.meanU AS expected_u,
+          mann_whitney_throughput.stdU AS u_standard_deviation
+        ) AS download,
+        STRUCT(
+          mann_whitney_upload_throughput.U AS u_statistic,
+          mann_whitney_upload_throughput.Z AS z_score,
+          mann_whitney_upload_throughput.p_value AS p_value,
+          mann_whitney_upload_throughput.meanU AS expected_u,
+          mann_whitney_upload_throughput.stdU AS u_standard_deviation
+        ) AS upload
+      ) AS mann_whitney,
+      STRUCT(
+        STRUCT(
+          t_test_latency.t_stat AS t_statistic,
+          t_test_latency.degrees_of_freedom AS degrees_of_freedom,
+          t_test_latency.p_value AS p_value,
+          t_test_latency.mean1 AS analysis_day_mean,
+          t_test_latency.mean2 AS baseline_mean,
+          t_test_latency.se1 AS analysis_day_standard_error,
+          t_test_latency.se2 AS baseline_standard_error
+        ) AS rtt
+      ) AS welch_t,
+      STRUCT(
+        STRUCT(
+          wasserstein_throughput_result.distance AS distance,
+          wasserstein_throughput_result.p_value AS p_value
+        ) AS download,
+        STRUCT(
+          wasserstein_upload_throughput_result.distance AS distance,
+          wasserstein_upload_throughput_result.p_value AS p_value
+        ) AS upload
+      ) AS wasserstein
+    ) AS tests,
+    -- The physical city_* columns are NOT city-wide context: step 03 computes
+    -- them per detection group (group label, ASN, site, IP version) over every
+    -- NDT test on the analysis day, including tests with no traceroute. So
+    -- they are the day-of distribution that rtt_difference_ms is measured on,
+    -- which a median over this view's rows (traceroute-bearing tests, plus the
+    -- 7-day lookback) does not reproduce.
+    STRUCT(
+      city_oneth_percentile_rtt AS rtt_p01_ms,
+      city_tenth_percentile_rtt AS rtt_p10_ms,
+      city_median_rtt AS rtt_median_ms,
+      city_ninetyth_percentile_rtt AS rtt_p90_ms,
+      city_median_throughput AS download_median_mbps,
+      city_ninetyth_percentile_throughput AS download_p90_mbps
+    ) AS analysis_day
   ) AS performance,
 
   STRUCT(
