@@ -291,11 +291,13 @@ WITH
       -- three-component historical rows readable when reformatting old dates.
       AND (ocd.pair_ip_version IS NULL
         OR ocd.pair_ip_version = ta.ip_version)
-      -- Defense in depth: an attributed path direction must be supported by at
-      -- least one signal eligible for that direction. This also contains any
-      -- legacy three-component pair collision.
+      -- Both path directions are eligible for every anomaly signal (see
+      -- 05_temporal_edge_prevalences_union.sql). The signal-to-direction check
+      -- survives only for legacy three-component pair keys (no ip_version),
+      -- where it contains an IPv4/IPv6 pair collision.
       AND (
-        (ocd.information_source = 'forward' AND (
+        ocd.pair_ip_version IS NOT NULL
+        OR (ocd.information_source = 'forward' AND (
           'latency' IN UNNEST(ta.anomaly_signals)
           OR 'download' IN UNNEST(ta.anomaly_signals)
         ))
@@ -369,7 +371,8 @@ WITH
         AND (ocd.pair_ip_version IS NULL
           OR ocd.pair_ip_version = ip_version)
         AND (
-          (ocd.information_source = 'forward' AND (
+          ocd.pair_ip_version IS NOT NULL
+          OR (ocd.information_source = 'forward' AND (
             'latency' IN UNNEST(anomaly_signals)
             OR 'download' IN UNNEST(anomaly_signals)
           ))

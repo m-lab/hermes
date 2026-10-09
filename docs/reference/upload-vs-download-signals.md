@@ -10,17 +10,19 @@ closes that gap while preserving the old public denominator.
 
 - Step 02 requires at least 10 current-day and 25 baseline upload samples before
   an upload anomaly can fire.
-- The bidirectional step-05 prevalence query now uses RTT/download for the
-  forward path and RTT/upload for the reverse path. The legacy forward-only
-  temporal tomography query remains RTT/download-only.
-- Correlation tomography already classified its main edge extraction by
-  direction; its path-local fallback is now direction-aware too, so an
-  upload-only anomaly cannot emit forward fallback hops.
+- **Since 2026-10 both path directions are eligible for every anomaly signal**
+  (RTT, download, upload) in the step-05 prevalence query, the correlation edge
+  extraction and the path-local fallback. A fault on a shared element (access
+  link, Wi-Fi, cellular, a device on both paths) degrades either test, and the
+  earlier signal-to-direction gate (download -> forward only, upload -> reverse
+  only) discarded that evidence. Favouring the more-loaded direction is meant to
+  be a downstream ranking, not a gate. The legacy forward-only temporal
+  tomography query remains RTT/download-only.
 - Correlation pair identity now includes `ip_version`. Sandbox validation found
   11 IPv4/IPv6 keys that had previously collapsed into one pair universe, which
   allowed three upload-only public rows to inherit a forward attribution from
-  the other address family. Step 07 also enforces signal-to-direction eligibility
-  as a compatibility guard when reading historical three-component pair keys.
+  the other address family. Step 07 keeps a signal-to-direction check only
+  for historical three-component pair keys, where it contains that collision.
 - Step 07 parses correlation keys from both ends and reconstructs the complete
   middle label. Four sandbox pair references had valid source labels containing
   the historical ` - ` delimiter; a fixed-offset `SPLIT` silently misread their
@@ -90,9 +92,9 @@ enters temporal tomography.
 **06 correlation tomography** — this is where upload does real work
 (`06_correlation_tomography_prepare_union.sql:96-107`):
 
-- `is_forward_anomaly` = RTT or **download**;
-- `is_reverse_anomaly` = RTT or **upload**;
-- `is_anomaly` (overall) = RTT or download or upload.
+- `is_forward_anomaly` = `is_reverse_anomaly` = `is_anomaly` = RTT or download
+  or upload (since 2026-10; before that forward was RTT/download and reverse
+  RTT/upload).
 
 `06_correlation_tomography_unexplained_hops_union.sql:19` uses the same three-way
 `is_anomaly` as its group filter, so upload-only anomalies do reach path-local

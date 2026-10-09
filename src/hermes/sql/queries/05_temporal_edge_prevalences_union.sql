@@ -9,15 +9,21 @@ WITH meas AS (
     CONCAT(src_asn, ' - ', src_group_label, ' - ', dst_site) AS src_dst_pair,
     ip_version,
     DATE(window_start) >= '${DAY}' AS is_day,
-    -- Directional eligibility is essential here: download throughput describes
-    -- server->client, while upload throughput describes client->server. RTT is
-    -- round-trip evidence and is intentionally eligible in both directions.
+    -- Both directions are eligible for every anomaly type (RTT, download,
+    -- upload). Download throughput is set by the server->client path and upload
+    -- by client->server, but a fault on a shared element (access link, Wi-Fi,
+    -- cellular, a device on both paths) degrades either test, and restricting a
+    -- direction discarded that evidence. Favouring the more-loaded direction is
+    -- a ranking concern downstream, not an eligibility gate. The two flags are
+    -- kept (and identical) so the per-direction plumbing stays in place for it.
     (
       (anomaly_ratio_rtt >= 0.8 AND ndt_rtt > baseline_median_rtt + 5 AND anomaly_rtt_count >= 0.5)
       OR (anomaly_ratio_throughput >= 0.8 AND ndt_throughput < baseline_median_throughput AND anomaly_throughput_count >= 0.5)
+      OR (anomaly_ratio_upload_throughput >= 0.8 AND median_upload_throughput < baseline_median_upload_throughput AND anomaly_upload_throughput_count >= 0.5)
     ) AS is_forward_anomaly,
     (
       (anomaly_ratio_rtt >= 0.8 AND ndt_rtt > baseline_median_rtt + 5 AND anomaly_rtt_count >= 0.5)
+      OR (anomaly_ratio_throughput >= 0.8 AND ndt_throughput < baseline_median_throughput AND anomaly_throughput_count >= 0.5)
       OR (anomaly_ratio_upload_throughput >= 0.8 AND median_upload_throughput < baseline_median_upload_throughput AND anomaly_upload_throughput_count >= 0.5)
     ) AS is_reverse_anomaly,
     forward_updated_node_details AS fwd,
