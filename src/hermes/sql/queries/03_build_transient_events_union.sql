@@ -870,22 +870,44 @@ AggregatedData AS (
 --------------------------------------------------------------------------------
 -- 2) Match the reverse-path data (revtr)
 --------------------------------------------------------------------------------
+-- A test is two ndt7 connections (download, upload) with different ids, and
+-- revTr can be keyed by either. Joining on the download id alone discarded every
+-- revTr keyed by the upload: on 2026-10-06, 194,746 tests had a revTr only on
+-- their upload connection (464,780 had one on the download). Each test's
+-- connections are unpivoted so revtr1 is scanned once.
+TestConnections AS (
+  SELECT DISTINCT id AS test_id, id AS connection_id, 0 AS connection_pref
+  FROM MeasurementsWithGroup
+  UNION ALL
+  SELECT DISTINCT id, upload_id, 1
+  FROM MeasurementsWithGroup
+  WHERE upload_id IS NOT NULL
+),
+
 matched_reverse_path_on_date AS (
   SELECT
-    t.*,
-    ROW_NUMBER() OVER (PARTITION BY t.raw.uuid ORDER BY t.raw.date DESC) AS rn
+    c.test_id,
+    c.connection_pref,
+    t.*
   FROM `measurement-lab.revtr_raw.revtr1` t
+  JOIN TestConnections c
+    ON t.raw.uuid = c.connection_id
   WHERE t.date BETWEEN '${ONE_WEEK_EARLIER}' AND '${DAY}'
 ),
 
 filtered_reverse_path_on_date AS (
+  -- One revTr per test: a complete one first, then the download connection's
+  -- (so tests that already had a reaching revTr keep the same one), then the
+  -- most recent. Which connection a revTr came from is recoverable by joining
+  -- revtr_id back to revtr1 and comparing raw.uuid with id.
   SELECT *
   FROM matched_reverse_path_on_date
   QUALIFY ROW_NUMBER() OVER (
-    PARTITION BY raw.uuid
+    PARTITION BY test_id
     ORDER BY
       CASE WHEN raw.stop_reason = 'REACHES' THEN 1 ELSE 2 END,
-      rn ASC
+      connection_pref,
+      raw.date DESC
   ) = 1
 ),
 
@@ -900,7 +922,7 @@ WithReversePathData AS (
     t2.raw.id AS revtr_id
   FROM filtered_reverse_path_on_date t2
   FULL OUTER JOIN AggregatedData ag
-    ON t2.raw.uuid = ag.id
+    ON t2.test_id = ag.id
 ),
 
 --------------------------------------------------------------------------------
