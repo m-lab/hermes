@@ -43,10 +43,13 @@ that stresses the reverse path.
 
 ## Step by step
 
-**01 `01_merge_upload_download_union.sql`** — uploads come from
-`measurement-lab.ndt_raw.ndt7` (`raw.Upload.*`), downloads from
-`measurement-lab.ndt.ndt7_union`. They are joined on the `access_token` in
-`ClientMetadata`, collapsed to one upload row per (day, token) with `ANY_VALUE`.
+**01 `01_merge_upload_download_union.sql`** — downloads and uploads both come
+from `measurement-lab.ndt.ndt7_union`. (Until 2026-10, uploads came from
+`measurement-lab.ndt_raw.ndt7`, which has no uploads at the `<metro><ASN>` sites;
+that dropped ~25% of uploads.) Download and upload are separate connections with
+different ids, linked only by the `access_token` in `ClientMetadata`. When a token
+carries several uploads (~0.2% of tokens: re-runs, parallel connections, failed
+retries), the fastest one is kept (previously the slowest, a low bias).
 The join is a **LEFT JOIN from downloads**, so:
 
 - a test with no matching upload keeps its download row with NULL upload fields;
