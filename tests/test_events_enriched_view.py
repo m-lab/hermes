@@ -220,9 +220,8 @@ def test_reverse_flags_describe_the_measured_path_and_are_null_before_the_fix():
     assert f"IF({gate}, reverse_unresponsive_within_AS, NULL) AS unresponsive_within_as" in sql
 
 
-# First partition_date written by the fixed step 04. A sentinel until the
-# fixed image has processed its first date; then set to that date.
-REVERSE_PATH_FLAGS_FROM = "9999-12-31"
+# First partition_date written by the fixed step 04 (image 08d689b and later).
+REVERSE_PATH_FLAGS_FROM = "2026-09-30"
 
 
 def test_step_04_writes_the_same_flag_definitions():
