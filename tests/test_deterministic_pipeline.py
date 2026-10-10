@@ -14,9 +14,11 @@ def test_detector_inlines_seeded_wasserstein_and_stable_trimming():
         {"DAY": "2026-08-26", "DETECTION_GRANULARITY": "metro"},
     )
 
-    assert "CREATE TEMP FUNCTION compute_wasserstein_p_value" in sql
+    assert "CREATE TEMP FUNCTION wasserstein_permutation_test" in sql
     assert "Math.random" not in sql
-    assert "seededRng(fnv1a(seedMaterial))" in sql
+    # seeded from SQL (group + day + metric), not from the data
+    assert "seededRng(Number(seed))" in sql
+    assert "w1_seed(src_asn, src_city, dst_site, ip_version, 'download')" in sql
     assert "ORDER BY FARM_FINGERPRINT(measurement_id), measurement_id" in sql
     assert "ORDER BY (SELECT NULL)" not in sql
     assert "`hermes.compute_wasserstein_p_value`" not in sql

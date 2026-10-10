@@ -1,5 +1,5 @@
 --------------------------------------------------------------------------------
--- @requires-udf: compute_wasserstein_p_value
+-- @requires-udf: wasserstein_permutation_test
 -- @requires-udf: welch_t_test
 -- @requires-udf: mann_whitney_u
 -- HERMES (union): anomaly detection only (no topology joins)
@@ -16,6 +16,26 @@
 -- CREATE OR REPLACE TABLE `mlab-collaboration.${DS}.anomaly_counts_union`
 -- PARTITION BY partition_date
 -- AS
+-- Bounded statistics. The JS UDFs below used to receive every test in a group: a
+-- 7-day baseline of 170k-270k values for the largest groups (AS29465/los02,
+-- AS55836/del02), which exhausted BigQuery's JS UDF memory and failed the WHOLE
+-- date (12 backfill dates dropped). Each UDF now gets at most stats_cap() values
+-- per side: a deterministic simple random sample, because every array below is
+-- aggregated in FARM_FINGERPRINT(test id) order and capped() keeps a prefix.
+-- Medians, anomaly ratios, sample-count gates and loss fractions still read the
+-- full arrays. The cap binds for ~0.05% of groups (~100-165/day).
+CREATE TEMP FUNCTION stats_cap() AS (20000);
+-- Wasserstein permutations; with (c+1)/(B+1) the test's size is exactly 4.5%.
+CREATE TEMP FUNCTION w1_permutations() AS (199);
+CREATE TEMP FUNCTION capped(a ARRAY<FLOAT64>) AS (
+  ARRAY(SELECT x FROM UNNEST(a) AS x WITH OFFSET o WHERE o < stats_cap() ORDER BY o)
+);
+-- Per-group, per-metric RNG seed for the permutation test, independent of the data.
+CREATE TEMP FUNCTION w1_seed(asn INT64, city STRING, site STRING, ipv STRING, metric STRING) AS (
+  FARM_FINGERPRINT(CONCAT(IFNULL(CAST(asn AS STRING), ''), '|', IFNULL(city, ''), '|',
+    IFNULL(site, ''), '|', IFNULL(ipv, ''), '|${DAY}|', metric)) & 0xFFFFFFFF
+);
+
 ASSERT '${DETECTION_GRANULARITY}' IN ('city', 'metro')
   AS 'DETECTION_GRANULARITY must be city or metro';
 
@@ -328,6 +348,7 @@ BaselineMetrics AS (
     ndt.download_throughput_mbps AS median_throughput,
     ndt.upload_throughput_mbps AS upload_throughput_mbps,
     ndt.download_loss_rate AS loss_rate,
+    ndt.id AS test_id,
     COUNT(*) OVER (
       PARTITION BY
         ndt.client.Network.ASNumber,
@@ -357,9 +378,9 @@ BaselineRTTArrays AS (
     src_city,
     dst_site,
     ip_version,
-    ARRAY_AGG(rtt IGNORE NULLS) AS baseline_rtt_array,
-    ARRAY_AGG(median_throughput IGNORE NULLS) AS baseline_throughput_array,
-    ARRAY_AGG(upload_throughput_mbps IGNORE NULLS) AS baseline_upload_throughput_array
+    ARRAY_AGG(rtt IGNORE NULLS ORDER BY FARM_FINGERPRINT(test_id), test_id) AS baseline_rtt_array,
+    ARRAY_AGG(median_throughput IGNORE NULLS ORDER BY FARM_FINGERPRINT(test_id), test_id) AS baseline_throughput_array,
+    ARRAY_AGG(upload_throughput_mbps IGNORE NULLS ORDER BY FARM_FINGERPRINT(test_id), test_id) AS baseline_upload_throughput_array
   FROM BaselineMetrics
   GROUP BY src_asn, src_city, dst_site, ip_version
 ),
@@ -371,8 +392,8 @@ BaselineLossArrays AS (
     src_city,
     dst_site,
     ip_version,
-    ARRAY_AGG(loss_rate IGNORE NULLS) AS baseline_loss_array,
-    ARRAY_AGG(IF(loss_rate > 0.01, loss_rate, NULL) IGNORE NULLS) AS baseline_positive_loss_array
+    ARRAY_AGG(loss_rate IGNORE NULLS ORDER BY FARM_FINGERPRINT(test_id), test_id) AS baseline_loss_array,
+    ARRAY_AGG(IF(loss_rate > 0.01, loss_rate, NULL) IGNORE NULLS ORDER BY FARM_FINGERPRINT(test_id), test_id) AS baseline_positive_loss_array
   FROM BaselineMetrics
   GROUP BY src_asn, src_city, dst_site, ip_version
 ),
@@ -448,9 +469,9 @@ CurrentRTTsPerGroup AS (
     ndt.detection_src_city AS src_city,
     ndt.server.Site AS dst_site,
     ndt.ip_version,
-    ARRAY_AGG(ndt.download_min_rtt IGNORE NULLS) AS current_rtt_array,
-    ARRAY_AGG(ndt.download_throughput_mbps IGNORE NULLS) AS current_throughput_array,
-    ARRAY_AGG(ndt.upload_throughput_mbps IGNORE NULLS) AS current_upload_throughput_array,
+    ARRAY_AGG(ndt.download_min_rtt IGNORE NULLS ORDER BY FARM_FINGERPRINT(ndt.id), ndt.id) AS current_rtt_array,
+    ARRAY_AGG(ndt.download_throughput_mbps IGNORE NULLS ORDER BY FARM_FINGERPRINT(ndt.id), ndt.id) AS current_throughput_array,
+    ARRAY_AGG(ndt.upload_throughput_mbps IGNORE NULLS ORDER BY FARM_FINGERPRINT(ndt.id), ndt.id) AS current_upload_throughput_array,
     STDDEV(ndt.download_min_rtt) AS current_rtt_stddev
   FROM MeasurementsWithGroup ndt
   JOIN ConsistentSRCCounts c
@@ -470,8 +491,8 @@ CurrentLossPerGroup AS (
     ndt.server.Site AS dst_site,
     ndt.ip_version,
 
-    ARRAY_AGG(ndt.download_loss_rate IGNORE NULLS) AS current_loss_array,
-    ARRAY_AGG(IF(ndt.download_loss_rate > 0.01, ndt.download_loss_rate, NULL) IGNORE NULLS)
+    ARRAY_AGG(ndt.download_loss_rate IGNORE NULLS ORDER BY FARM_FINGERPRINT(ndt.id), ndt.id) AS current_loss_array,
+    ARRAY_AGG(IF(ndt.download_loss_rate > 0.01, ndt.download_loss_rate, NULL) IGNORE NULLS ORDER BY FARM_FINGERPRINT(ndt.id), ndt.id)
       AS current_positive_loss_array,
 
     COUNTIF(ndt.download_loss_rate > 0.01) AS current_lossy_count,
@@ -684,8 +705,8 @@ StatisticalTestsResults AS (
     dst_site,
     ip_version,
 
-    mann_whitney_u(current_rtt_array, baseline_rtt_array) AS mann_whitney,
-    welch_t_test(current_rtt_array, baseline_rtt_array) AS t_test_result,
+    mann_whitney_u(capped(current_rtt_array), capped(baseline_rtt_array)) AS mann_whitney,
+    welch_t_test(capped(current_rtt_array), capped(baseline_rtt_array)) AS t_test_result,
     ARRAY_LENGTH(current_rtt_array) AS current_number_of_measurements,
     ARRAY_LENGTH(baseline_rtt_array) AS baseline_number_of_measurements,
     -- Upload availability is only ~54% of paired download rows.  The RTT-shaped
@@ -697,27 +718,29 @@ StatisticalTestsResults AS (
     current_rtt_stddev,
 
     mann_whitney_u(
-      current_throughput_array, baseline_throughput_array
+      capped(current_throughput_array), capped(baseline_throughput_array)
     ) AS mann_whitney_throughput,
 
     welch_t_test(
-      current_throughput_array, baseline_throughput_array
+      capped(current_throughput_array), capped(baseline_throughput_array)
     ) AS t_test_result_throughput,
 
-    compute_wasserstein_p_value(
-      current_throughput_array, baseline_throughput_array, 50
+    wasserstein_permutation_test(
+      capped(current_throughput_array), capped(baseline_throughput_array), w1_permutations(),
+      w1_seed(src_asn, src_city, dst_site, ip_version, 'download')
     ) AS wasserstein_throughput_result,
 
     mann_whitney_u(
-      current_upload_throughput_array, baseline_upload_throughput_array
+      capped(current_upload_throughput_array), capped(baseline_upload_throughput_array)
     ) AS mann_whitney_upload_throughput,
 
     welch_t_test(
-      current_upload_throughput_array, baseline_upload_throughput_array
+      capped(current_upload_throughput_array), capped(baseline_upload_throughput_array)
     ) AS t_test_result_upload_throughput,
 
-    compute_wasserstein_p_value(
-      current_upload_throughput_array, baseline_upload_throughput_array, 50
+    wasserstein_permutation_test(
+      capped(current_upload_throughput_array), capped(baseline_upload_throughput_array), w1_permutations(),
+      w1_seed(src_asn, src_city, dst_site, ip_version, 'upload')
     ) AS wasserstein_upload_throughput_result,
 
     -- Loss occurrence: one-sided two-proportion z-test
@@ -763,8 +786,8 @@ StatisticalTestsResults AS (
       WHEN ARRAY_LENGTH(current_positive_loss_array) >= 5
        AND ARRAY_LENGTH(baseline_positive_loss_array) >= 5
       THEN mann_whitney_u(
-        current_positive_loss_array,
-        baseline_positive_loss_array
+        capped(current_positive_loss_array),
+        capped(baseline_positive_loss_array)
       )
       ELSE NULL
     END AS mann_whitney_loss_severity,
