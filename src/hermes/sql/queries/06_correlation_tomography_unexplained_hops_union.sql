@@ -12,18 +12,19 @@ WITH classified AS (
     (
       (anomaly_ratio_rtt >= 0.8 AND ndt_rtt > baseline_median_rtt + 5 AND anomaly_rtt_count >= 0.5)
       OR (anomaly_ratio_throughput >= 0.8 AND ndt_throughput < baseline_median_throughput AND anomaly_throughput_count >= 0.5)
+      OR (anomaly_ratio_upload_throughput >= 0.8 AND median_upload_throughput < baseline_median_upload_throughput AND anomaly_upload_throughput_count >= 0.5)
     ) AS is_forward_anomaly,
     (
       (anomaly_ratio_rtt >= 0.8 AND ndt_rtt > baseline_median_rtt + 5 AND anomaly_rtt_count >= 0.5)
+      OR (anomaly_ratio_throughput >= 0.8 AND ndt_throughput < baseline_median_throughput AND anomaly_throughput_count >= 0.5)
       OR (anomaly_ratio_upload_throughput >= 0.8 AND median_upload_throughput < baseline_median_upload_throughput AND anomaly_upload_throughput_count >= 0.5)
     ) AS is_reverse_anomaly
   FROM `mlab-collaboration.${DS}.events_with_as_and_geoloc`
   WHERE partition_date = '${DAY}' AND DATE(window_start) >= partition_date
 ),
 base AS (
-  -- Keep the download bounded while preserving the direction that made the
-  -- measurement eligible.  Previously an upload-only event emitted forward
-  -- fallback hops as well as reverse ones.
+  -- Keep the download bounded to anomalous measurements. Both directions are
+  -- eligible for every anomaly type (see 05_temporal_edge_prevalences_union.sql).
   SELECT * FROM classified
   WHERE is_forward_anomaly OR is_reverse_anomaly
 )

@@ -88,7 +88,7 @@ UploadsCollapsed AS (
     date,
     access_token,
     ARRAY_AGG(
-      STRUCT(upload_throughput_mbps, upload_min_rtt, upload_loss_rate)
+      STRUCT(upload_throughput_mbps, upload_min_rtt, upload_loss_rate, upload_id)
       ORDER BY upload_throughput_mbps DESC, upload_min_rtt, upload_loss_rate, upload_id
       LIMIT 1
     )[OFFSET(0)] AS selected_upload
@@ -119,7 +119,13 @@ SELECT
 
   IF(REGEXP_CONTAINS(d.client_ip, ':'), 'v6', 'v4') AS ip_version,
 
-  CAST(d.date AS DATE) AS partition_date
+  CAST(d.date AS DATE) AS partition_date,
+
+  -- The selected upload's own connection id. Appended last: this INSERT is
+  -- positional and add_upload_id_column.sql appends the column. Step 03 joins
+  -- revTr on it -- a test's upload connection carries its own revTr, which
+  -- gave 194,746 tests (2026-10-06) a reverse path the download id lacked.
+  u.selected_upload.upload_id
 FROM Downloads d
 LEFT JOIN UploadsCollapsed u
   ON u.date = d.date AND u.access_token = d.access_token;

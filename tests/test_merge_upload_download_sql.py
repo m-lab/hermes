@@ -31,3 +31,12 @@ def test_output_columns_unchanged():
         "partition_date",
     ):
         assert col in sql
+
+
+def test_upload_id_is_the_last_column():
+    """Step 01's INSERT is positional; add_upload_id_column.sql appends upload_id."""
+    sql = _sql().rstrip().rstrip(";")
+    final_select = sql[sql.rindex("SELECT\n  d.id,") :]
+    assert (
+        final_select.split("FROM Downloads d")[0].rstrip().endswith("u.selected_upload.upload_id")
+    )
