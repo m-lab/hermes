@@ -116,6 +116,11 @@ def granularity_blocked(client: bigquery.Client, granularity: str) -> set[date]:
         SELECT partition_date AS d,
                STRING_AGG(DISTINCT COALESCE(detection_granularity, '<NULL>')) AS g
         FROM `{DATASET}.anomaly_counts_union`
+        -- hermes_union tables require a partition filter (c0b582c, 2026-09-23).
+        -- Without one this query failed and the walker aborted every day from
+        -- 2026-09-24. The bound is a constant far below any real date, so it
+        -- satisfies the requirement without excluding a partition.
+        WHERE partition_date >= DATE '1970-01-01'
         GROUP BY d
     """
     known = {row.d: row.g for row in client.query(sql).result()}
