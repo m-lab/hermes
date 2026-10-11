@@ -49,7 +49,7 @@ def test_arrays_are_built_in_hash_order_so_a_prefix_is_a_random_sample():
 def test_cap_and_permutations_are_declared():
     sql = _sql()
     assert "CREATE TEMP FUNCTION stats_cap() AS (20000);" in sql
-    assert "CREATE TEMP FUNCTION w1_permutations() AS (199);" in sql
+    assert "CREATE TEMP FUNCTION w1_permutations() AS (999);" in sql
     assert "compute_wasserstein_p_value" not in sql[sql.index("ASSERT") :]
 
 

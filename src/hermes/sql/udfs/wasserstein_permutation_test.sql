@@ -5,8 +5,8 @@
 --   being derived from JSON.stringify of both whole arrays, a multi-MB string for
 --   the largest groups and a likely contributor to "UDF out of memory".
 -- * p = (c + 1) / (B + 1). The old count / B allowed p = 0 and, at B = 50, made the
---   real false-positive rate of "p < 0.05" 3/51 = 5.9%. With B = 199 it is 4.5% and
---   the resolution 0.005.
+--   real false-positive rate of "p < 0.05" 3/51 = 5.9%. With B = 999 (02's setting)
+--   "p < 0.05" means c <= 48, so the size is exactly 49/1000 = 4.9%; resolution 0.001.
 -- Callers cap both samples (see stats_cap() in 02), so memory is bounded.
 CREATE TEMP FUNCTION wasserstein_permutation_test(sample_a ARRAY<FLOAT64>, sample_b ARRAY<FLOAT64>, num_permutations INT64, seed INT64) RETURNS STRUCT<distance FLOAT64, p_value FLOAT64> LANGUAGE js
 AS

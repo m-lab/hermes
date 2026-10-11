@@ -25,8 +25,11 @@
 -- Medians, anomaly ratios, sample-count gates and loss fractions still read the
 -- full arrays. The cap binds for ~0.05% of groups (~100-165/day).
 CREATE TEMP FUNCTION stats_cap() AS (20000);
--- Wasserstein permutations; with (c+1)/(B+1) the test's size is exactly 4.5%.
-CREATE TEMP FUNCTION w1_permutations() AS (199);
+-- Wasserstein permutations, p = (c+1)/(B+1). The permutation p-value is a Monte Carlo
+-- estimate; groups near p = 0.05 flip with the seed. Measured on 2026-10-09: at B = 199
+-- re-seeding flipped 18% of download flags (472/2572); B = 999 roughly halves that
+-- (1/sqrt(B)) at ~18 min for this step instead of ~7. Bytes billed do not depend on B.
+CREATE TEMP FUNCTION w1_permutations() AS (999);
 CREATE TEMP FUNCTION capped(a ARRAY<FLOAT64>) AS (
   ARRAY(SELECT x FROM UNNEST(a) AS x WITH OFFSET o WHERE o < stats_cap() ORDER BY o)
 );
