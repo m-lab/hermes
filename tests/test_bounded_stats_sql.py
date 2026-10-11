@@ -26,18 +26,28 @@ def _call_args(sql: str, fn: str) -> list[str]:
     return out
 
 
-def test_every_udf_array_argument_is_capped():
+def test_only_wasserstein_still_takes_arrays_and_they_are_capped():
     sql = _sql()
     query = sql[sql.index("ASSERT") :]
-    calls = [
-        a
-        for fn in ("mann_whitney_u", "welch_t_test", "wasserstein_permutation_test")
-        for a in _call_args(query, fn)
-    ]
-    assert len(calls) == 9
+    assert not _call_args(query, "mann_whitney_u")
+    assert not _call_args(query, "welch_t_test")
+    calls = _call_args(query, "wasserstein_permutation_test")
+    assert len(calls) == 2
     for args in calls:
         arrays = re.findall(r"\b(?:current|baseline)_\w+_array\b", args)
-        assert arrays and len(re.findall(r"capped\(", args)) == len(arrays), args
+        assert len(arrays) == 2 and len(re.findall(r"capped\(", args)) == 2, args
+
+
+def test_mann_whitney_and_welch_run_in_sql_on_full_arrays():
+    sql = _sql()
+    query = sql[sql.index("ASSERT") :]
+    for fn, n in (("mann_whitney_sql", 4), ("welch_sql", 3)):
+        calls = _call_args(query, fn)
+        assert len(calls) == n, fn
+        for args in calls:
+            assert "capped(" not in args and re.search(r"current_\w+_array", args), args
+    assert "CREATE TEMP FUNCTION mann_whitney_sql" in sql and "before + (t + 1) / 2" in sql
+    assert "CREATE TEMP FUNCTION welch_sql" in sql and "VAR_SAMP(" in sql
 
 
 def test_arrays_are_built_in_hash_order_so_a_prefix_is_a_random_sample():

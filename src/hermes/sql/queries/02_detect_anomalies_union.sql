@@ -1,7 +1,8 @@
 --------------------------------------------------------------------------------
 -- @requires-udf: wasserstein_permutation_test
--- @requires-udf: welch_t_test
--- @requires-udf: mann_whitney_u
+-- @requires-udf: welch_from_moments
+-- @requires-udf: welch_sql
+-- @requires-udf: mann_whitney_sql
 -- HERMES (union): anomaly detection only (no topology joins)
 --
 -- Input:  `mlab-collaboration.${DS}.merged_download_upload`
@@ -19,10 +20,12 @@
 -- Bounded statistics. The JS UDFs below used to receive every test in a group: a
 -- 7-day baseline of 170k-270k values for the largest groups (AS29465/los02,
 -- AS55836/del02), which exhausted BigQuery's JS UDF memory and failed the WHOLE
--- date (12 backfill dates dropped). Each UDF now gets at most stats_cap() values
--- per side: a deterministic simple random sample, because every array below is
--- aggregated in FARM_FINGERPRINT(test id) order and capped() keeps a prefix.
--- Medians, anomaly ratios, sample-count gates and loss fractions still read the
+-- date (12 backfill dates dropped). Mann-Whitney and Welch now run in SQL on the
+-- FULL arrays (mann_whitney_sql, welch_sql), exact at any group size. Only the
+-- Wasserstein permutation test still runs on arrays in JS; it gets at most
+-- stats_cap() values per side, a deterministic simple random sample, because every
+-- array below is aggregated in FARM_FINGERPRINT(test id) order and capped() keeps a
+-- prefix. Medians, anomaly ratios, sample-count gates and loss fractions read the
 -- full arrays. The cap binds for ~0.05% of groups (~100-165/day).
 CREATE TEMP FUNCTION stats_cap() AS (20000);
 -- Wasserstein permutations, p = (c+1)/(B+1). The permutation p-value is a Monte Carlo
@@ -708,8 +711,8 @@ StatisticalTestsResults AS (
     dst_site,
     ip_version,
 
-    mann_whitney_u(capped(current_rtt_array), capped(baseline_rtt_array)) AS mann_whitney,
-    welch_t_test(capped(current_rtt_array), capped(baseline_rtt_array)) AS t_test_result,
+    mann_whitney_sql(current_rtt_array, baseline_rtt_array) AS mann_whitney,
+    welch_sql(current_rtt_array, baseline_rtt_array) AS t_test_result,
     ARRAY_LENGTH(current_rtt_array) AS current_number_of_measurements,
     ARRAY_LENGTH(baseline_rtt_array) AS baseline_number_of_measurements,
     -- Upload availability is only ~54% of paired download rows.  The RTT-shaped
@@ -720,12 +723,12 @@ StatisticalTestsResults AS (
     ARRAY_LENGTH(baseline_upload_throughput_array) AS baseline_upload_sample_count,
     current_rtt_stddev,
 
-    mann_whitney_u(
-      capped(current_throughput_array), capped(baseline_throughput_array)
+    mann_whitney_sql(
+      current_throughput_array, baseline_throughput_array
     ) AS mann_whitney_throughput,
 
-    welch_t_test(
-      capped(current_throughput_array), capped(baseline_throughput_array)
+    welch_sql(
+      current_throughput_array, baseline_throughput_array
     ) AS t_test_result_throughput,
 
     wasserstein_permutation_test(
@@ -733,12 +736,12 @@ StatisticalTestsResults AS (
       w1_seed(src_asn, src_city, dst_site, ip_version, 'download')
     ) AS wasserstein_throughput_result,
 
-    mann_whitney_u(
-      capped(current_upload_throughput_array), capped(baseline_upload_throughput_array)
+    mann_whitney_sql(
+      current_upload_throughput_array, baseline_upload_throughput_array
     ) AS mann_whitney_upload_throughput,
 
-    welch_t_test(
-      capped(current_upload_throughput_array), capped(baseline_upload_throughput_array)
+    welch_sql(
+      current_upload_throughput_array, baseline_upload_throughput_array
     ) AS t_test_result_upload_throughput,
 
     wasserstein_permutation_test(
@@ -788,9 +791,9 @@ StatisticalTestsResults AS (
     CASE
       WHEN ARRAY_LENGTH(current_positive_loss_array) >= 5
        AND ARRAY_LENGTH(baseline_positive_loss_array) >= 5
-      THEN mann_whitney_u(
-        capped(current_positive_loss_array),
-        capped(baseline_positive_loss_array)
+      THEN mann_whitney_sql(
+        current_positive_loss_array,
+        baseline_positive_loss_array
       )
       ELSE NULL
     END AS mann_whitney_loss_severity,
