@@ -89,7 +89,12 @@ MeasurementsWithGroup AS (
     IF(
       _detection_granularity = 'metro',
       g.metro,
-      CONCAT(g.city_ip_info, '-', g.region_ip_info, '-', g.country_ip_info)
+      -- city_ip_info already holds 'City-Region-CC' for 99.25% of rows (2025-08..2026-10),
+      -- so appending region and country again produced 'Paris-Ile-de-France-FR-Ile-de-France-FR'.
+      -- Append only when the suffix is absent.
+      IF(ENDS_WITH(g.city_ip_info, CONCAT('-', g.region_ip_info, '-', g.country_ip_info)),
+        g.city_ip_info,
+        CONCAT(g.city_ip_info, '-', g.region_ip_info, '-', g.country_ip_info))
     ) AS detection_src_city,
     -- The client's region either way: in metro mode the metro was resolved from
     -- this same coordinate, so IPInfo's region is the consistent answer and
