@@ -165,6 +165,7 @@ def test_view_exposes_every_column_the_pipeline_writes():
 # what they claim to hold from the hop arrays. See
 # test_path_flags_are_derived_from_the_hops_not_the_legacy_columns.
 SUPERSEDED_BY_HOPS = [
+    "reverse_unresponsive_within_AS",
     "forward_unresponse_within_AS",
     "forward_loop",
 ]
@@ -201,23 +202,30 @@ def test_path_flags_are_derived_from_the_hops_not_the_legacy_columns():
     # a loop is an AS that reappears after a DIFFERENT AS (A B A), and
     # "unresponsive within an AS" is an AS that reappears after hops with no
     # ASN (A ... A), whether they were silent or replied but went unmapped.
-    assert sql.count("LAG(h.asn) OVER (ORDER BY o)") == 2
-    assert sql.count("o - prev_o > 1") == 1
+    assert sql.count("LAG(h.asn) OVER (ORDER BY o)") == 4
+    assert sql.count("o - prev_o > 1") == 2
 
 
-def test_reverse_flags_describe_the_measured_path_and_are_null_before_the_fix():
-    """Reverse flags describe the reverse path AS MEASURED, before step 04's
-    cleanup truncates it at the first AS re-entry, so they cannot be recomputed
-    from the published hops (a loop never survives the cleanup). The view reads
-    step 04's columns, and only for partitions written by the fixed step 04:
-    the raw path is not stored, so older values cannot be corrected and are
-    exposed as NULL rather than as the old, wrong definition.
-    """
+def test_both_directions_flag_the_published_path_with_one_definition():
+    """loop_detected / unresponsive_within_as describe the path shown beside them
+    (as_path, hops) in BOTH directions. The reverse flags used to read step 04's
+    raw-revTr columns, so ~18% of reverse paths showed loop_detected = TRUE next to
+    an as_path with no loop (step 04 truncates at the first AS re-entry)."""
     sql = _view_sql()
+    for hops in ("forward_hops", "reverse_hops"):
+        assert f"FROM UNNEST({hops}) AS h WITH OFFSET o" in sql, hops
+        assert sql.count(f"ARRAY_LENGTH({hops}) = 0") == 2, hops
+    assert "reverse_unresponsive_within_AS" not in sql
+    assert not re.search(r"\breverse_loop, NULL\) AS loop_detected", sql)
 
+
+def test_raw_revtr_loop_is_published_under_its_own_name():
+    """Step 04's reverse_loop describes the RAW revTr: it is exposed as
+    revtr_loop_cleaned, NULL before the first partition with the fixed
+    definition (the raw path is not stored, so older values cannot be fixed)."""
+    sql = _view_sql()
     gate = f"partition_date >= DATE '{REVERSE_PATH_FLAGS_FROM}'"
-    assert f"IF({gate}, reverse_loop, NULL) AS loop_detected" in sql
-    assert f"IF({gate}, reverse_unresponsive_within_AS, NULL) AS unresponsive_within_as" in sql
+    assert f"IF({gate}, reverse_loop, NULL) AS revtr_loop_cleaned" in sql
 
 
 # First partition_date written by the fixed step 04 (image 08d689b and later).

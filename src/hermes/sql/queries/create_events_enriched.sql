@@ -427,16 +427,54 @@ SELECT
     reverse_geolocated_hop_count AS geolocated_hop_count,
     SAFE_DIVIDE(reverse_geolocated_hop_count, reverse_total_hop_count)
       AS geolocation_coverage,
-    -- Reverse flags describe the reverse path AS MEASURED (A B A loop; A ... A
-    -- gap over hops with no ASN), computed by step 04 BEFORE its cleanup drops
-    -- ambiguous hop_type=4 hops and truncates at the first AS re-entry. They
-    -- cannot be recomputed from reverse_hops: a loop never survives cleanup.
-    -- The raw path is not stored, so partitions written before step 04 was
-    -- fixed cannot be corrected; they are exposed as NULL (unknown) rather
-    -- than with the old definition. The date is the first partition written by
-    -- the fixed step 04: 2026-09-30, the first date the 08d689b+ image processed.
-    IF(partition_date >= DATE '2026-09-30', reverse_loop, NULL) AS loop_detected,
-    IF(partition_date >= DATE '2026-09-30', reverse_unresponsive_within_AS, NULL) AS unresponsive_within_as,
+    -- Same definitions as the forward path, over the PUBLISHED reverse hops, so
+    -- both directions' flags describe the path shown in as_path / hops. Step 04
+    -- drops ambiguous hop_type=4 excursions and truncates the revTr at the first
+    -- AS re-entry, so a published reverse path never has a loop: loop_detected is
+    -- FALSE by construction (NULL when there are no hops). Whether the RAW revTr
+    -- had a loop is revtr_loop_cleaned below.
+    IF(
+      ARRAY_LENGTH(reverse_hops) = 0,
+      NULL,
+      (
+        SELECT COUNT(*) > COUNT(DISTINCT asn)
+        FROM (
+          SELECT h.asn, LAG(h.asn) OVER (ORDER BY o) AS prev_asn
+          FROM UNNEST(reverse_hops) AS h WITH OFFSET o
+          WHERE h.asn IS NOT NULL AND h.asn != -1
+        )
+        WHERE prev_asn IS NULL OR asn != prev_asn
+      )
+    ) AS loop_detected,
+    -- TRUE when an AS reappears after one or more hops with no ASN (A ... A):
+    -- silent hops or hops that replied but could not be mapped, so part of
+    -- that AS's internal path is unknown. Same definition as step 04 and the forward path.
+    IF(
+      ARRAY_LENGTH(reverse_hops) = 0,
+      NULL,
+      COALESCE((
+        SELECT LOGICAL_OR(asn = prev_asn AND o - prev_o > 1)
+        FROM (
+          SELECT
+            h.asn,
+            o,
+            LAG(h.asn) OVER (ORDER BY o) AS prev_asn,
+            LAG(o) OVER (ORDER BY o) AS prev_o
+          FROM UNNEST(reverse_hops) AS h WITH OFFSET o
+          WHERE h.asn IS NOT NULL AND h.asn != -1
+        )
+      ), FALSE)
+    ) AS unresponsive_within_as,
+    -- TRUE when the reverse traceroute AS MEASURED contained an AS loop (A B A)
+    -- that step 04 then removed (dropped an ambiguous hop_type=4 hop) or cut
+    -- (truncated the path at the first AS re-entry, so the published path is
+    -- shorter than what was measured). ~18% of reverse paths on 2026-09-30 and
+    -- 2026-10-01 -- a property of raw revTr output, not of the published path.
+    -- Step 04 computes reverse_loop on the raw path; partitions before
+    -- 2026-09-30 (the first written by the fixed step 04, image 08d689b+) used a
+    -- wrong definition (~75% TRUE) and the raw path is not stored, so they are
+    -- NULL rather than wrong.
+    IF(partition_date >= DATE '2026-09-30', reverse_loop, NULL) AS revtr_loop_cleaned,
     ARRAY(SELECT h.asn FROM UNNEST(reverse_hops) h WHERE h.asn IS NOT NULL)
       AS as_path,
     ARRAY(SELECT h.country_code FROM UNNEST(reverse_hops) h
