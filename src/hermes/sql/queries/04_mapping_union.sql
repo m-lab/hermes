@@ -886,8 +886,14 @@ reverse_node_with_geo_info_normalized AS (
 -- re-entry (a hop whose AS/metro reappears after leaving it), keeping the
 -- reliable dst-side prefix. Loop detection uses HERMES-derived associated_asn +
 -- metro, compared against the nearest NON-NULL neighbor so unmapped/infra hops
--- (NULL asn) don't fake an excursion. NOTE: truncation keeps ttl < reentry_ttl;
--- confirm on a sample that low ttl == dst-side before wide deployment.
+-- (NULL asn) don't fake an excursion. Truncation keeps ttl < reentry_ttl.
+-- VERIFIED 2026-10-12 (2026-10-01, 10% of reverse paths): low ttl is the CLIENT
+-- end -- the first mapped hop is in the client's AS for 99.7% of paths -- i.e. the
+-- revTr destination, where the measurement starts, so truncation keeps that end
+-- and drops the server side. Cost of it: of the ~18% of paths the raw-loop flag
+-- marks, the published path ends in the server's AS 53.7% of the time vs 93.8%
+-- for unflagged paths, so roughly 8% of all reverse paths lose their server-side
+-- hops (the interconnect next to the M-Lab site) to truncation.
 --------------------------------------------------------------------------------
 reverse_hops_neighbors AS (
   SELECT n.*,
