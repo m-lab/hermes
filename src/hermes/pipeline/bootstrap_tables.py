@@ -29,6 +29,8 @@ DDL_FILES = [
     # Upload-throughput public metrics and explicit signal identity. This must
     # precede step 07 and uses the same append order as the fresh-table DDL.
     "add_upload_anomaly_columns.sql",
+    # Step 01 appends upload_id positionally, so the column must exist first.
+    "add_upload_id_column.sql",
     # Stable nested compatibility interface over the legacy physical table.
     # Published into ``source_dataset`` -- see create_events_enriched.sql.
     "create_events_enriched.sql",

@@ -162,7 +162,89 @@ def test_step_02_inlines_the_repo_udfs_not_the_shared_routines():
     from hermes.sql import loader
 
     sql = paths.query_path("02_detect_anomalies_union.sql").read_text(encoding="utf-8")
-    assert set(loader.required_udfs(sql)) >= {"welch_t_test", "mann_whitney_u"}
+    assert set(loader.required_udfs(sql)) >= {
+        "welch_from_moments",
+        "welch_sql",
+        "mann_whitney_sql",
+        "wasserstein_permutation_test",
+    }
     code = "\n".join(line for line in sql.splitlines() if not line.lstrip().startswith("--"))
     assert "hermes.welchs_t_test" not in code
     assert "hermes.mann_whitney_u_test" not in code
+
+
+def _run_js_rows(udf: str, rows: list[list]) -> list[dict]:
+    """Like _run_js, for UDFs with any number of scalar arguments."""
+    names, body = _js_body(udf)
+    script = (
+        "const data = JSON.parse(require('fs').readFileSync(0, 'utf8'));\n"
+        f"const f = new Function(...{json.dumps(names)}, data.body);\n"
+        "console.log(JSON.stringify(data.rows.map((r) => f(...r))));\n"
+    )
+    out = subprocess.run(
+        ["node", "-e", script],
+        input=json.dumps({"body": body, "rows": rows}),
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return json.loads(out.stdout)
+
+
+def _moments(x: list[float]) -> tuple[int, float, float]:
+    n = len(x)
+    mean = sum(x) / n
+    return n, mean, sum((v - mean) ** 2 for v in x) / (n - 1)
+
+
+def test_welch_from_moments_matches_scipy(reference, pairs):
+    """Step 02 computes Welch's moments in SQL on the full data; the scalar UDF must
+    reproduce scipy at every size, including groups far above the 20k cap."""
+    rows = [[*_moments(a), *_moments(b)] for a, b in pairs]
+    for (label, *_), got in zip(CASES, _run_js_rows("welch_from_moments", rows), strict=True):
+        want = reference[label]["welch"]
+        assert got["t_stat"] == pytest.approx(want["t_stat"], rel=1e-9), label
+        assert got["p_value"] == pytest.approx(want["p_value"], abs=1e-8), label
+
+
+def _erf_as(x: float) -> float:
+    t = 1 / (1 + 0.3275911 * abs(x))
+    y = 1 - (
+        ((((1.061405429 * t - 1.453152027) * t + 1.421413741) * t - 0.284496736) * t + 0.254829592)
+        * t
+        * math.exp(-x * x)
+    )
+    return y if x >= 0 else -y
+
+
+def _sql_mann_whitney(a: list[float], b: list[float]) -> dict:
+    """Python port of step 02's MannWhitneyResults (rank sums with tie groups)."""
+    ties: dict[float, list[int]] = {}
+    for v in a:
+        ties.setdefault(v, [0, 0])[0] += 1
+    for v in b:
+        ties.setdefault(v, [0, 0])[1] += 1
+    before, n1, n2, r1, tie = 0, 0.0, 0.0, 0.0, 0.0
+    for v in sorted(ties):
+        c, d = ties[v]
+        t = c + d
+        r1 += c * (before + (t + 1) / 2)
+        tie += float(t) * (float(t) * t - 1)
+        n1, n2, before = n1 + c, n2 + d, before + t
+    u1 = n1 * n2 + (n1 * (n1 + 1)) / 2 - r1
+    u = min(u1, n1 * n2 - u1)
+    mean_u = (n1 * n2) / 2
+    std_u = math.sqrt((n1 * n2 / 12) * ((n1 + n2 + 1) - tie / ((n1 + n2) * (n1 + n2 - 1))))
+    z = min(0, u - mean_u + 0.5) / std_u
+    return {"U": u, "p_value": 2 * (1 - (1 + _erf_as(abs(z) / math.sqrt(2))) / 2)}
+
+
+def test_sql_mann_whitney_algorithm_matches_scipy_and_the_js_udf(reference, pairs):
+    js = _run_js("mann_whitney_u", pairs)
+    for (label, *_), (a, b), old in zip(CASES, pairs, js, strict=True):
+        got = _sql_mann_whitney(a, b)
+        want = reference[label]["mann_whitney"]
+        assert got["U"] == want["U"], label
+        assert got["p_value"] == pytest.approx(want["p_value"], abs=1e-6), label
+        assert got["U"] == old["U"], label
+        assert got["p_value"] == pytest.approx(old["p_value"], abs=1e-12), label

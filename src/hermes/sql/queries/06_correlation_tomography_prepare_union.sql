@@ -96,12 +96,16 @@ WITH path_with_anomaly AS (
       AS src_dst_pair,
     pp.forward_as_path,
     pp.reverse_as_path,
+    -- Both directions are eligible for every anomaly type; see
+    -- 05_temporal_edge_prevalences_union.sql for why. Flags kept per direction.
     (
       (fr.anomaly_ratio_rtt >= 0.8 AND fr.ndt_rtt > fr.baseline_median_rtt + 5 AND fr.anomaly_rtt_count >= 0.5)
       OR (fr.anomaly_ratio_throughput >= 0.8 AND fr.ndt_throughput < fr.baseline_median_throughput AND fr.anomaly_throughput_count >= 0.5)
+      OR (fr.anomaly_ratio_upload_throughput >= 0.8 AND fr.median_upload_throughput < fr.baseline_median_upload_throughput AND fr.anomaly_upload_throughput_count >= 0.5)
     ) AS is_forward_anomaly,
     (
       (fr.anomaly_ratio_rtt >= 0.8 AND fr.ndt_rtt > fr.baseline_median_rtt + 5 AND fr.anomaly_rtt_count >= 0.5)
+      OR (fr.anomaly_ratio_throughput >= 0.8 AND fr.ndt_throughput < fr.baseline_median_throughput AND fr.anomaly_throughput_count >= 0.5)
       OR (fr.anomaly_ratio_upload_throughput >= 0.8 AND fr.median_upload_throughput < fr.baseline_median_upload_throughput AND fr.anomaly_upload_throughput_count >= 0.5)
     ) AS is_reverse_anomaly,
     (
