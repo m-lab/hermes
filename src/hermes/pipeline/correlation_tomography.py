@@ -987,82 +987,169 @@ def run_mixed_granularity_cover(
     """
     node_to_ixp = _node_ixp_map(all_edges)
 
-    # --- explode edges into per-(id,sdp,info,path_type) node rows ---
-    parts = edges_df["canonical_edge"].str.split(" - ", n=1, expand=True)
-    e = edges_df.assign(_a=parts[0], _b=parts[1])
-    base = ["id", "src_dst_pair", "information_source", "path_type"]
-    nodes = pd.concat(
-        [
-            e[base + ["_a"]].rename(columns={"_a": "node"}),
-            e[base + ["_b"]].rename(columns={"_b": "node"}),
-        ]
-    ).dropna(subset=["node"])
-    nodes = nodes[~nodes["node"].str.contains(r"\*", na=False)]
-    nodes["asn"] = nodes["node"].str.split("-").str[0]
-    nodes["metro"] = nodes["node"].str.split("-", n=1).str[1]
-    nodes["ixp"] = nodes["node"].map(node_to_ixp)
+    # Everything up to the greedy loop runs on integer codes. The previous build exploded
+    # edges_df into one long frame of Python strings -- the edge level plus node / AS /
+    # metro / IXP levels for BOTH endpoints, ~9x the rows -- before de-duplicating, and
+    # str.split every row. On 2025-03-08 (13.2M edge rows) that needed > 28 GB and the
+    # tomography worker was OOM-killed. Same algorithm, keys and output; the regression
+    # oracle is tests/golden/phase4/multigran_synthetic.json, frozen from the old code.
+    def _valid_entity(v) -> bool:
+        return not (v is None or (isinstance(v, float) and math.isnan(v))) and str(v) not in (
+            "",
+            "None",
+            "nan",
+        )
 
-    # --- build the candidate rows at all granularities (long form) ---
-    def lvl(df, col, gran):
-        out = df[base].copy()
-        out["gran"] = gran
-        out["entity"] = df[col].astype(str)
-        return out[df[col].notna() & ~out["entity"].isin(["", "None", "nan"])]
-
-    edge_rows = e[base].copy()
-    edge_rows["gran"] = "edge"
-    edge_rows["entity"] = e["canonical_edge"]
-    edge_rows = edge_rows[~edge_rows["entity"].str.contains(r"\*", na=False)]
-    units = pd.concat(
-        [
-            edge_rows,
-            lvl(nodes, "node", "node"),
-            lvl(nodes, "asn", "AS"),
-            lvl(nodes, "metro", "metro"),
-            lvl(nodes[nodes["ixp"].notna()], "ixp", "IXP"),
-        ],
-        ignore_index=True,
-    ).drop_duplicates(["id", "src_dst_pair", "information_source", "gran", "entity"])
-
-    # int-encode src_dst_pair to keep the per-candidate membership sets lean
+    id_code = pd.factorize(edges_df["id"])[0].astype(np.int64)  # NaN -> -1
     sdp_cat = edges_df["src_dst_pair"].astype("category")
     sdp_to_code = {v: i for i, v in enumerate(sdp_cat.cat.categories)}
-    units["sdp_code"] = units["src_dst_pair"].map(sdp_to_code)
+    sdp_code = sdp_cat.cat.codes.to_numpy(dtype=np.int64)  # NaN -> -1
+    info_code, info_vals = pd.factorize(edges_df["information_source"])
+    pt_code, pt_vals = pd.factorize(edges_df["path_type"])
+    edge_code, edge_vals = pd.factorize(edges_df["canonical_edge"])  # NaN -> -1
+
+    # Candidate vocabulary: one int per (granularity, entity); strings live only here.
+    cand_key: list[tuple[str, str]] = []
+    cand_index: dict[tuple[str, str], int] = {}
+
+    def cand_of(gran: str, entity: str) -> int:
+        k = (gran, entity)
+        if k not in cand_index:
+            cand_index[k] = len(cand_key)
+            cand_key.append(k)
+        return cand_index[k]
+
+    # Per UNIQUE edge: its edge candidate and its two endpoint nodes.
+    n_edges = len(edge_vals)
+    edge_cand = np.full(n_edges, -1, dtype=np.int64)
+    edge_a = np.full(n_edges, -1, dtype=np.int64)
+    edge_b = np.full(n_edges, -1, dtype=np.int64)
+    node_vals: list[str] = []
+    node_index: dict[str, int] = {}
+
+    def node_of(v) -> int:
+        if v is None or (isinstance(v, float) and math.isnan(v)) or "*" in v:
+            return -1  # old code: dropna(node) then drop '*' nodes
+        if v not in node_index:
+            node_index[v] = len(node_vals)
+            node_vals.append(v)
+        return node_index[v]
+
+    for i, ev in enumerate(edge_vals):
+        if "*" not in ev:
+            edge_cand[i] = cand_of("edge", ev)
+        a, _, b = ev.partition(" - ")
+        edge_a[i] = node_of(a)
+        edge_b[i] = node_of(b) if " - " in ev else -1
+
+    # Per node: its candidate at each node-derived granularity (-1 = not a candidate).
+    node_cand = {
+        g: np.full(len(node_vals), -1, dtype=np.int64) for g in ("node", "AS", "metro", "IXP")
+    }
+    node_attrs = []  # (node, asn, metro, ixp) for coarse_children
+    for j, nv in enumerate(node_vals):
+        asn = nv.split("-")[0]
+        metro = nv.split("-", 1)[1] if "-" in nv else float("nan")
+        ixp = node_to_ixp.get(nv, float("nan"))
+        node_attrs.append((nv, asn, metro, ixp))
+        for g, ent in (("node", nv), ("AS", asn), ("metro", metro), ("IXP", ixp)):
+            if _valid_entity(ent):
+                node_cand[g][j] = cand_of(g, str(ent))
+
+    # Long-form units, one granularity at a time, de-duplicated per level. The old global
+    # drop_duplicates key included the granularity, so per-level de-duplication keeping the
+    # first row (rows in the same order: edges, then all A endpoints, then all B) is exact.
+    row_edge = edge_code
+    has_edge = row_edge >= 0
+    side_a = np.where(has_edge, edge_a[np.where(has_edge, row_edge, 0)], -1)
+    side_b = np.where(has_edge, edge_b[np.where(has_edge, row_edge, 0)], -1)
+    base_cols = {"id": id_code, "sdp": sdp_code, "info": info_code, "pt": pt_code}
+
+    def level(cand_col: np.ndarray, twice: bool) -> pd.DataFrame:
+        cols = {k: (np.concatenate([v, v]) if twice else v) for k, v in base_cols.items()}
+        df = pd.DataFrame({**cols, "cand": cand_col})
+        df = df[df["cand"] >= 0]
+        return df.drop_duplicates(["id", "sdp", "info", "cand"])
+
+    def node_level(g: str, sa: np.ndarray, sb: np.ndarray) -> np.ndarray:
+        nc = node_cand[g]
+        return np.concatenate(
+            [
+                np.where(sa >= 0, nc[np.maximum(sa, 0)], -1),
+                np.where(sb >= 0, nc[np.maximum(sb, 0)], -1),
+            ]
+        )
+
+    edge_row_cand = np.where(has_edge, edge_cand[np.where(has_edge, row_edge, 0)], -1)
+    units = pd.concat(
+        [level(edge_row_cand, False)]
+        + [level(node_level(g, side_a, side_b), True) for g in ("node", "AS", "metro", "IXP")],
+        ignore_index=True,
+    )
+    pt_anom = int(np.flatnonzero(pt_vals == "anomalous")[0]) if "anomalous" in set(pt_vals) else -2
+    pt_non = (
+        int(np.flatnonzero(pt_vals == "non_anomalous")[0])
+        if "non_anomalous" in set(pt_vals)
+        else -2
+    )
+    # (node, direction) pairs actually traversed, for coarse_children below
+    node_info = pd.DataFrame(
+        {"node": np.concatenate([side_a, side_b]), "info": np.concatenate([info_code, info_code])}
+    )
+    node_info = node_info[node_info["node"] >= 0].drop_duplicates()
+    del side_a, side_b, edge_row_cand
 
     total_anom_ids = int(edges_df.loc[edges_df["path_type"] == "anomalous", "id"].nunique())
     total_non_ids = int(edges_df.loc[edges_df["path_type"] == "non_anomalous", "id"].nunique())
-    all_anom_codes = set(units.loc[units["path_type"] == "anomalous", "sdp_code"].unique().tolist())
+    # Old code: anomalous pairs over ALL unit rows, including edge rows whose
+    # canonical_edge is NULL (kept by its '*' filter, ignored by every group-by).
+    null_edge_anom = (~has_edge) & (pt_code == pt_anom)
+    all_anom_codes = set(units.loc[units["pt"] == pt_anom, "sdp"].tolist()) | set(
+        sdp_code[null_edge_anom].tolist()
+    )
+    all_anom_codes.discard(-1)
     total_anomalies = len(all_anom_codes)
     logger.info(
         f"  [multigran] {total_anomalies} anomalous pairs, "
-        f"{units[['gran', 'entity', 'information_source']].drop_duplicates().shape[0]:,} candidates"
+        f"{units[['cand', 'info']].drop_duplicates().shape[0]:,} candidates"
     )
     if total_anomalies == 0:
         return [], []
 
-    # --- per-candidate static stats ---
-    g = units.groupby(["gran", "entity", "information_source", "path_type"])
-    idc = g["id"].nunique().unstack("path_type").fillna(0)
-    a_ids = idc.get("anomalous", pd.Series(0, index=idc.index)).astype(int)
-    n_ids = idc.get("non_anomalous", pd.Series(0, index=idc.index)).astype(int)
-    anom_sets = (
-        units[units["path_type"] == "anomalous"]
-        .groupby(["gran", "entity", "information_source"])["sdp_code"]
-        .apply(set)
-    )
+    def key_of(c: int, i: int) -> tuple[str, str, str]:
+        g, e = cand_key[c]
+        return (g, e, info_vals[i])
+
+    # --- per-candidate static stats (distinct test ids per path type) ---
+    valid = units[units["id"] >= 0]
+    idc = valid.groupby(["cand", "info", "pt"])["id"].nunique().reset_index(name="cnt")
+    a_cnt: dict = {}
+    n_cnt: dict = {}
+    for cand_c, info_c, pt_c, cnt in idc.itertuples(index=False):
+        k = key_of(int(cand_c), int(info_c))
+        if pt_c == pt_anom:
+            a_cnt[k] = int(cnt)
+        elif pt_c == pt_non:
+            n_cnt[k] = int(cnt)
+    keys_sorted = sorted(set(a_cnt) | set(n_cnt))
+    mi = pd.MultiIndex.from_tuples(keys_sorted, names=["gran", "entity", "information_source"])
+    a_ids = pd.Series([a_cnt.get(k, 0) for k in keys_sorted], index=mi, dtype=int)
+    n_ids = pd.Series([n_cnt.get(k, 0) for k in keys_sorted], index=mi, dtype=int)
+    anom_rows = units[(units["pt"] == pt_anom) & (units["sdp"] >= 0)]
+    anom_sets_d: dict = {}
+    for cand_c, info_c, sdp_c in anom_rows[["cand", "info", "sdp"]].itertuples(index=False):
+        anom_sets_d.setdefault(key_of(int(cand_c), int(info_c)), set()).add(int(sdp_c))
+    anom_sets = pd.Series({k: anom_sets_d[k] for k in sorted(anom_sets_d)}, dtype=object)
 
     # coarse entity -> its finer ⟨AS,metro⟩ node children (for distinctness + purity)
     coarse_children: dict = {}
-    nn = nodes.dropna(subset=["node"])
-    for _, r in (
-        nn[["node", "asn", "metro", "ixp", "information_source"]].drop_duplicates().iterrows()
-    ):
-        for gr, ent in (("AS", r["asn"]), ("metro", r["metro"]), ("IXP", r["ixp"])):
-            if pd.isna(ent) or ent in ("", "None", "nan"):
+    for node_j, info_j in node_info.itertuples(index=False):
+        nv, asn, metro, ixp = node_attrs[int(node_j)]
+        inf = info_vals[int(info_j)]
+        for gr, ent in (("AS", asn), ("metro", metro), ("IXP", ixp)):
+            if not _valid_entity(ent):
                 continue
-            coarse_children.setdefault((gr, ent, r["information_source"]), set()).add(
-                (str(r["node"]), r["information_source"])
-            )
+            coarse_children.setdefault((gr, ent, inf), set()).add((str(nv), inf))
 
     # Candidate pool: static precision pre-filter (purity floor, Fisher, odds) bounds the
     # set; purity is then re-evaluated DYNAMICALLY on the unexplained pairs each iteration.
@@ -1079,25 +1166,30 @@ def run_mixed_granularity_cover(
 
     # Running (dynamic-on-remaining) path counts per pooled candidate + an inverse index
     # sdp -> [(candidate, d_anom, d_non)] used to decrement counts when a group is explained.
-    pool_df = pd.DataFrame(list(pool.keys()), columns=["gran", "entity", "information_source"])
-    psub = units.merge(pool_df, on=["gran", "entity", "information_source"], how="inner")
-    csc = (
-        psub.groupby(["gran", "entity", "information_source", "sdp_code", "path_type"])["id"]
-        .nunique()
-        .reset_index(name="cnt")
+    pool_codes = {
+        (cand_index[(g, e)], int(np.flatnonzero(info_vals == inf)[0])) for g, e, inf in pool
+    }
+    pc = (
+        pd.DataFrame(list(pool_codes), columns=["cand", "info"])
+        if pool_codes
+        else pd.DataFrame(columns=["cand", "info"], dtype=np.int64)
     )
+    psub = valid.merge(pc, on=["cand", "info"], how="inner")
+    psub = psub[psub["sdp"] >= 0]
+    csc = psub.groupby(["cand", "info", "sdp", "pt"])["id"].nunique().reset_index(name="cnt")
     a_run = {k: 0 for k in pool}
     n_run = {k: 0 for k in pool}
     inverse: dict = {}
-    for gr, ent, inf, sdp_c, pt, cnt in csc.itertuples(index=False):
-        k = (gr, ent, inf)
-        if pt == "anomalous":
+    for cand_c, info_c, sdp_c, pt_c, cnt in csc.itertuples(index=False):
+        k = key_of(int(cand_c), int(info_c))
+        if pt_c == pt_anom:
             a_run[k] += cnt
             da, dn = cnt, 0
         else:
             n_run[k] += cnt
             da, dn = 0, cnt
-        inverse.setdefault(sdp_c, []).append((k, da, dn))
+        inverse.setdefault(int(sdp_c), []).append((k, da, dn))
+    del units, valid, psub
     gt = (
         edges_df.groupby(["src_dst_pair", "path_type"])["id"]
         .nunique()
