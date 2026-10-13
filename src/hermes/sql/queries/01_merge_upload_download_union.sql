@@ -108,13 +108,20 @@ SELECT
   d.client_name,
 
   -- Download metrics (same fields used elsewhere)
-  d.download_a.MinRTT AS download_min_rtt,
+  -- Latency validity: MinRTT must be in (0, 2000] ms, else NULL. 0 is ~0.75% of tests
+  -- (2026-10-10/11) and the maximum is 4,294,967.295 ms = 2^32-1 us, an uninitialised
+  -- TCP counter, not a measurement. NULL rather than dropping the test: its throughput
+  -- and upload values stay usable, and every RTT statistic downstream ignores NULLs.
+  IF(d.download_a.MinRTT > 0 AND d.download_a.MinRTT <= 2000, d.download_a.MinRTT, NULL)
+    AS download_min_rtt,
   d.download_a.MeanThroughputMbps AS download_throughput_mbps,
   d.download_a.LossRate AS download_loss_rate,
 
   -- Upload metrics
   u.selected_upload.upload_throughput_mbps,
-  u.selected_upload.upload_min_rtt,
+  -- Same latency validity rule (not read by the union path today).
+  IF(u.selected_upload.upload_min_rtt > 0 AND u.selected_upload.upload_min_rtt <= 2000,
+    u.selected_upload.upload_min_rtt, NULL) AS upload_min_rtt,
   u.selected_upload.upload_loss_rate,
 
   IF(REGEXP_CONTAINS(d.client_ip, ':'), 'v6', 'v4') AS ip_version,

@@ -40,3 +40,14 @@ def test_upload_id_is_the_last_column():
     assert (
         final_select.split("FROM Downloads d")[0].rstrip().endswith("u.selected_upload.upload_id")
     )
+
+
+def test_latency_outside_0_to_2000_ms_is_nulled_not_dropped():
+    sql = _sql()
+    rule = "IF(d.download_a.MinRTT > 0 AND d.download_a.MinRTT <= 2000, d.download_a.MinRTT, NULL)"
+    assert rule in sql
+    # the test row is kept: no WHERE clause filters on latency
+    assert (
+        "WHERE d.download_a.MinRTT" not in sql
+        and "MinRTT >" not in sql.split("FROM Downloads d")[-1]
+    )
