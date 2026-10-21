@@ -209,7 +209,16 @@ ScamperDataIntermediary AS (
     ANY_VALUE(IF(a.src_asn IS NULL, scamper.server.Network.ASNumber, a.dst_asn)) AS dst_asn,
     ANY_VALUE(IF(a.src_asn IS NULL, scamper.client.Geo.CountryCode, a.src_country)) AS src_country,
     ANY_VALUE(IF(a.src_asn IS NULL, scamper.client.Network.ASName, a.src_asn_name)) AS src_asn_name,
-    ANY_VALUE(IF(a.src_asn IS NULL, ndt.client_name, a.client_name)) AS client_name,
+    -- client_name describes ONE test: keep the test's own, or NULL if it sent none.
+    -- Never the group's. Step 02's group value is MIN(client_name), the
+    -- alphabetically first name in the group, and copying it onto every matched
+    -- test mislabelled 58% of test rows on 2026-09-10 (staging, all countries) in
+    -- both directions: 5 'bwp-client' tests renamed 52,600 'giga-meter' tests in
+    -- one Tashkent group (AS8193/sxr138800) so step 04 dropped them, while groups
+    -- whose first name was 'giga-meter' renamed their 'ist', 'ndt7-android', ...
+    -- tests, which then made up 68% of giga_meter_measurements. A NULL own name
+    -- also inherited 'giga-meter' that way (7,550 tests), so no fallback.
+    ANY_VALUE(ndt.client_name) AS client_name,
     IF(a.src_asn IS NULL,
        IF(REGEXP_CONTAINS(scamper.raw.Tracelb.src, ':'), 'v6', 'v4'),
        a.ip_version) AS ip_version,
@@ -324,7 +333,8 @@ Scamper2DataIntermediary AS (
     ANY_VALUE(IF(a.src_asn IS NULL, ndt.server.Network.ASNumber, a.dst_asn)) AS dst_asn,
     ANY_VALUE(IF(a.src_asn IS NULL, ndt.client.Geo.CountryCode, a.src_country)) AS src_country,
     ANY_VALUE(IF(a.src_asn IS NULL, ndt.client.Network.ASName, a.src_asn_name)) AS src_asn_name,
-    ANY_VALUE(IF(a.src_asn IS NULL, ndt.client_name, a.client_name)) AS client_name,
+    -- The test's own name, never the group's; see the scamper1 branch above.
+    ANY_VALUE(ndt.client_name) AS client_name,
     IF(a.src_asn IS NULL,
        IF(REGEXP_CONTAINS(scamper.raw.Trace.src, ':'), 'v6', 'v4'),
        a.ip_version) AS ip_version,
