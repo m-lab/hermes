@@ -81,6 +81,26 @@ WHERE g.partition_date = @d AND g.id = o.id
   AND g.client_name IS DISTINCT FROM o.own"""
 
 
+def missing_traces(ds: str, giga: str, events: str) -> str:
+    """Rows of events on @d that belong in the GIGA table but have no row there.
+
+    One per trace, keyed like step 04's NOT EXISTS; a copy on any date D-7..D+7 counts.
+    """
+    return f"""
+FROM `{PROJECT}.{ds}.{events}` e
+LEFT JOIN {own_names(ds)} o ON o.id = e.id
+WHERE e.partition_date = @d
+  AND (o.own = 'giga-meter' OR e.src IN {month_list(ds)})
+  AND NOT EXISTS (
+    SELECT 1 FROM `{PROJECT}.{ds}.{giga}` g
+    WHERE g.partition_date BETWEEN DATE_SUB(@d, INTERVAL 7 DAY)
+                               AND DATE_ADD(@d, INTERVAL 7 DAY)
+      AND g.id = e.id AND g.src_asn = e.src_asn AND g.dst_site = e.dst_site
+      AND (g.src_group_label = e.src_group_label OR g.src_group_label IS NULL))
+QUALIFY ROW_NUMBER() OVER (
+  PARTITION BY e.id, e.src_asn, e.src_group_label, e.dst_site ORDER BY e.window_start) = 1"""
+
+
 def insert_sql(ds: str, giga: str, events: str, columns: list[str]) -> str:
     select = ",\n  ".join(
         "o.own AS client_name" if c == "client_name" else f"e.{c}" for c in columns
@@ -88,32 +108,13 @@ def insert_sql(ds: str, giga: str, events: str, columns: list[str]) -> str:
     return f"""
 INSERT INTO `{PROJECT}.{ds}.{giga}` ({", ".join(columns)})
 SELECT
-  {select}
-FROM `{PROJECT}.{ds}.{events}` e
-LEFT JOIN {own_names(ds)} o ON o.id = e.id
-WHERE e.partition_date = @d
-  AND (o.own = 'giga-meter' OR e.src IN {month_list(ds)})
-  AND NOT EXISTS (
-    SELECT 1 FROM `{PROJECT}.{ds}.{giga}` g
-    WHERE g.partition_date BETWEEN DATE_SUB(@d, INTERVAL 7 DAY) AND DATE_ADD(@d, INTERVAL 7 DAY)
-      AND g.id = e.id AND g.src_asn = e.src_asn AND g.dst_site = e.dst_site
-      AND (g.src_group_label = e.src_group_label OR g.src_group_label IS NULL))
-QUALIFY ROW_NUMBER() OVER (
-  PARTITION BY e.id, e.src_asn, e.src_group_label, e.dst_site ORDER BY e.window_start) = 1"""
+  {select}{missing_traces(ds, giga, events)}"""
 
 
 def plan_sql(ds: str, giga: str, events: str, with_insert: bool) -> str:
     """Counts what one date's correction would do, without writing."""
     insert_count = (
-        f"""(SELECT COUNT(*) FROM (
-      SELECT e.id FROM `{PROJECT}.{ds}.{events}` e LEFT JOIN {own_names(ds)} o ON o.id = e.id
-      WHERE e.partition_date = @d AND (o.own = 'giga-meter' OR e.src IN {month_list(ds)})
-        AND NOT EXISTS (SELECT 1 FROM `{PROJECT}.{ds}.{giga}` g
-          WHERE g.partition_date BETWEEN DATE_SUB(@d, INTERVAL 7 DAY) AND DATE_ADD(@d, INTERVAL 7 DAY)
-            AND g.id = e.id AND g.src_asn = e.src_asn AND g.dst_site = e.dst_site
-            AND (g.src_group_label = e.src_group_label OR g.src_group_label IS NULL))
-      QUALIFY ROW_NUMBER() OVER (PARTITION BY e.id, e.src_asn, e.src_group_label, e.dst_site
-                                 ORDER BY e.window_start) = 1))"""
+        f"(SELECT COUNT(*) FROM (SELECT e.id {missing_traces(ds, giga, events)}))"
         if with_insert
         else "NULL"
     )
