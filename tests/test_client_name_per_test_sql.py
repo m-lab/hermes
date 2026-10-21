@@ -9,8 +9,7 @@ group whose first name was 'giga-meter' pulled every other client into it.
 
 from hermes.sql import loader
 
-PARAMS = {"DAY": "2026-09-10", "ONE_WEEK_EARLIER": "2026-09-03",
-          "DETECTION_GRANULARITY": "metro"}
+PARAMS = {"DAY": "2026-09-10", "ONE_WEEK_EARLIER": "2026-09-03", "DETECTION_GRANULARITY": "metro"}
 
 
 def _step03():
