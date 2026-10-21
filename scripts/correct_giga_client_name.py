@@ -38,6 +38,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -47,6 +48,9 @@ PROJECT = "mlab-collaboration"
 #: merged_download_upload partitions that can hold the tests of one analysis date:
 #: step 03 attaches traces over a 7-day lookback, plus one day of slack.
 OWN_LOOKBACK_DAYS = 8
+#: Per-request timeout and polling interval while a date's transaction runs.
+REQUEST_TIMEOUT_S = 60
+POLL_S = 30
 
 
 def own_names(ds: str) -> str:
@@ -127,13 +131,32 @@ SELECT
   {insert_count} AS to_insert"""
 
 
+def wait_for(client: bigquery.Client, job: bigquery.QueryJob) -> bigquery.QueryJob:
+    """Poll a job to completion, each request with its own timeout.
+
+    job.result() can block forever on a dropped connection: a staging run sat 4 h
+    on a dead socket after its job had finished. A fresh get_job per poll cannot.
+    """
+    while True:
+        try:
+            job = client.get_job(job.job_id, location=job.location, timeout=REQUEST_TIMEOUT_S)
+        except Exception as e:  # transient network error: keep polling
+            print(f"  poll of {job.job_id} failed ({type(e).__name__}); retrying", flush=True)
+        else:
+            if job.state == "DONE":
+                if job.error_result:
+                    raise RuntimeError(f"{job.job_id}: {job.error_result}")
+                return job
+        time.sleep(POLL_S)
+
+
 def tib_used_today(client: bigquery.Client) -> float:
     sql = """SELECT IFNULL(SUM(total_bytes_billed), 0) / POW(1024, 4)
       FROM `mlab-collaboration.region-us.INFORMATION_SCHEMA.JOBS_BY_USER`
       WHERE creation_time > TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 1 DAY)
         AND job_type = 'QUERY'
         AND DATE(creation_time, 'America/Los_Angeles') = CURRENT_DATE('America/Los_Angeles')"""
-    return float(list(client.query(sql).result())[0][0])
+    return float(list(wait_for(client, client.query(sql)).result(timeout=REQUEST_TIMEOUT_S))[0][0])
 
 
 def done_dates(log: Path | None) -> set[str]:
@@ -220,9 +243,10 @@ def main(argv=None) -> int:
         if with_insert:
             stmts.append(insert_sql(args.dataset, args.giga_table, args.events_table, columns))
         script = "BEGIN TRANSACTION;\n" + ";\n".join(stmts) + ";\nCOMMIT TRANSACTION;"
-        job = client.query(script, job_config=bigquery.QueryJobConfig(query_parameters=param))
-        job.result()
-        children = list(client.list_jobs(parent_job=job.job_id))
+        job = wait_for(
+            client, client.query(script, job_config=bigquery.QueryJobConfig(query_parameters=param))
+        )
+        children = list(client.list_jobs(parent_job=job.job_id, timeout=REQUEST_TIMEOUT_S))
         counts = {}
         for child in children:
             stmt = (child.statement_type or "").lower()
