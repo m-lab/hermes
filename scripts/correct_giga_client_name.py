@@ -23,6 +23,11 @@ step 04 would write today -- including school IPs filled in after the fact.
 events_with_as_and_geoloc and transient_events_union keep their group-level
 client_name: nothing downstream reads it, and rewriting them costs ~127 GiB per date.
 
+Planned production run (dry-run priced 2026-10-21): DELETE + UPDATE for 2025-11-01..
+2026-10-19 (~4.5 GiB/date), INSERT from 2026-08-01, where misses reach 42-52% by
+September-October: ~8.4 TiB in total, of which INSERT for Aug 1..Oct 19 is 6.79 TiB.
+June-July misses (5-11%) are left as they are.
+
 Re-running a date is a no-op (nothing left to delete, update or insert), so the run is
 resumable; --log records each finished date and later runs skip it.
 
@@ -30,7 +35,7 @@ resumable; --log records each finished date and later runs skip it.
         --giga-table zz_surg_giga --start 2026-09-10 --end 2026-09-10 \\
         --insert-from 2026-09-10 --plan                     # counts only
     python scripts/correct_giga_client_name.py --start 2025-11-01 --end 2026-10-19 \\
-        --insert-from 2026-06-01 --log correction.jsonl --max-tib-today 11
+        --insert-from 2026-08-01 --log correction.jsonl --max-tib-today 8
 """
 
 from __future__ import annotations
