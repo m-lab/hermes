@@ -9,7 +9,11 @@ both misses Giga Meter tests and holds tests from other clients.
 Per analysis date D, oldest first, in one transaction:
 
 1. DELETE rows whose own client_name (step 01, merged_download_upload) is not
-   'giga-meter' and whose IP is not on the month's school list.
+   'giga-meter' and whose IP is not on the school list for ANY month the trace window
+   touches (D-8..D). A partition holds traces from the 7 days before D, so on 3 October
+   it holds late-September tests; protecting only October's list would delete
+   September school IPs (~1,000 rows on 2026-10-03). A row from a listed school IP is
+   never deleted, whatever its client_name.
 2. UPDATE client_name on the remaining rows to each test's own name.
 3. INSERT (only for D >= --insert-from) every trace in events_with_as_and_geoloc on D
    whose own name is 'giga-meter' or whose IP is listed, unless the GIGA table already
@@ -73,12 +77,21 @@ def month_list(ds: str) -> str:
       WHERE month_start = DATE_TRUNC(@d, MONTH) AND ip_address IS NOT NULL)"""
 
 
+def window_list(ds: str) -> str:
+    """School IPs listed for any month the trace window D-8..D touches."""
+    return f"""(
+      SELECT ip_address FROM `{PROJECT}.{ds}.giga_school_ips`
+      WHERE month_start BETWEEN DATE_TRUNC(DATE_SUB(@d, INTERVAL {OWN_LOOKBACK_DAYS} DAY), MONTH)
+                            AND DATE_TRUNC(@d, MONTH)
+        AND ip_address IS NOT NULL)"""
+
+
 def delete_sql(ds: str, giga: str) -> str:
     return f"""
 DELETE FROM `{PROJECT}.{ds}.{giga}` g
 WHERE g.partition_date = @d
   AND g.id NOT IN (SELECT id FROM {own_names(ds)} WHERE own = 'giga-meter')
-  AND (g.src IS NULL OR g.src NOT IN {month_list(ds)})"""
+  AND (g.src IS NULL OR g.src NOT IN {window_list(ds)})"""
 
 
 def update_sql(ds: str, giga: str) -> str:
@@ -132,7 +145,7 @@ SELECT
   (SELECT COUNT(*) FROM `{PROJECT}.{ds}.{giga}` g WHERE g.partition_date = @d) AS rows_before,
   (SELECT COUNT(*) FROM `{PROJECT}.{ds}.{giga}` g WHERE g.partition_date = @d
      AND g.id NOT IN (SELECT id FROM {own_names(ds)} WHERE own = 'giga-meter')
-     AND (g.src IS NULL OR g.src NOT IN {month_list(ds)})) AS to_delete,
+     AND (g.src IS NULL OR g.src NOT IN {window_list(ds)})) AS to_delete,
   {insert_count} AS to_insert"""
 
 
