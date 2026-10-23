@@ -156,6 +156,19 @@ Joins anomaly groups with MDA traceroutes (scamper1), standard traceroutes (scam
 - Group-level anomaly ratios and statistical test results
 - City-level percentile summaries
 
+**`client_name` is the test's own (from step 01), never its group's.** Before
+2026-10-20 (#61) step 03 copied step 02's group-level `MIN(client_name)` onto every
+matched test, so in `transient_events_union` and `events_with_as_and_geoloc` the
+stored value for earlier dates is a group label: on 2026-09-10, 58% of test rows
+carried a name that was not their own. That history is not rewritten (~62 TiB). Read
+it through `transient_events_union_named(start, end)` and
+`events_with_as_and_geoloc_named(start, end)`
+(`scripts/client_name_named_functions.sql`), which return each test's own name. The
+group-level `client_name` in `anomaly_counts_union` is unchanged and describes the
+group, not a test. `giga_meter_measurements` was corrected in place
+(`scripts/correct_giga_client_name.py`, #62), since its membership, not just its
+labels, depended on the name.
+
 ### Enrichment (between steps 03 and 04)
 
 **Code:** `hermes_pipeline_union.py:run_enrichment()`
