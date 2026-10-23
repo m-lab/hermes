@@ -173,6 +173,9 @@ def tib_used_today(client: bigquery.Client) -> float:
       FROM `mlab-collaboration.region-us.INFORMATION_SCHEMA.JOBS_BY_USER`
       WHERE creation_time > TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 1 DAY)
         AND job_type = 'QUERY'
+        -- A multi-statement script's parent job reports the total of its child
+        -- statements, which are listed too: counting both doubled every date's cost.
+        AND IFNULL(statement_type, '') != 'SCRIPT'
         AND DATE(creation_time, 'America/Los_Angeles') = CURRENT_DATE('America/Los_Angeles')"""
     return float(list(wait_for(client, client.query(sql)).result(timeout=REQUEST_TIMEOUT_S))[0][0])
 
