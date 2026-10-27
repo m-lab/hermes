@@ -6,7 +6,11 @@
 WITH meas AS (
   SELECT
     id,
-    CONCAT(src_asn, ' - ', src_group_label, ' - ', dst_site) AS src_dst_pair,
+    -- Byte-identical to the src_dst_pair of 06_correlation_tomography_prepare_union.sql
+    -- (ip_version included): temporal_verdict.py looks this key up in
+    -- correlation_hyperedges_tomography_v2.anomalous_src_dst_pairs_impacted, so any
+    -- drift makes agrees_with_culprit silently FALSE. Pinned by tests/test_temporal_keys.py.
+    CONCAT(src_asn, ' - ', src_group_label, ' - ', dst_site, ' - ', ip_version) AS src_dst_pair,
     ip_version,
     DATE(window_start) >= '${DAY}' AS is_day,
     -- Both directions are eligible for every anomaly type (RTT, download,
@@ -33,15 +37,17 @@ WITH meas AS (
 ),
 -- one ordered node list + per-node rtt per (measurement, direction)
 hops AS (
-  -- Canonicalize each hop's place to the polygon metro (lat/lon-derived) so a place
-  -- isn't split by ISO2-vs-full region naming across geo sources.
+  -- Node naming must match 06_correlation_tomography_prepare_union.sql exactly so a
+  -- verdict edge can be compared with a correlation culprit edge: prefer the
+  -- lat/lon-derived hop metro, then the place_canonical_metro string lookup, then the
+  -- raw place.
   SELECT id, src_dst_pair, ip_version, is_day, is_forward_anomaly AS is_anomaly, 'forward' AS direction,
-    n.ttl, IFNULL(CONCAT(n.associated_asn, '-', COALESCE(al.canon_metro, n.place)), '*') AS node, n.rtts
+    n.ttl, IFNULL(CONCAT(n.associated_asn, '-', COALESCE(n.metro, al.canon_metro, n.place)), '*') AS node, n.rtts
   FROM meas, UNNEST(fwd) AS n
   LEFT JOIN `mlab-collaboration.${DS}.place_canonical_metro` al ON al.place = n.place
   UNION ALL
   SELECT id, src_dst_pair, ip_version, is_day, is_reverse_anomaly AS is_anomaly, 'reverse' AS direction,
-    n.ttl, IFNULL(CONCAT(n.associated_asn, '-', COALESCE(al.canon_metro, n.place)), '*') AS node, n.rtts
+    n.ttl, IFNULL(CONCAT(n.associated_asn, '-', COALESCE(n.metro, al.canon_metro, n.place)), '*') AS node, n.rtts
   FROM meas, UNNEST(rev) AS n
   LEFT JOIN `mlab-collaboration.${DS}.place_canonical_metro` al ON al.place = n.place
 ),
