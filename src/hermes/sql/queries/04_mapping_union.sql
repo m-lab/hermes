@@ -351,6 +351,112 @@ FROM ranked
 WHERE rn = 1;
 
 -- ============================================================================
+-- 5b) Router geolocation validation (forward evidence, per address)
+-- ============================================================================
+-- A location is REFUTED when a hop's RTT cannot cover the distance to it and back:
+-- RTT * 100 km < geodesic(server, location) - 100 km, i.e. 200 km/ms in fibre (2/3 c),
+-- straight line, with a fixed 100 km slack for metro-centroid and site-metadata error.
+-- This is a per-hop bound: it depends only on this hop's location, unlike the old
+-- path-cumulative bound, where one mislocated hop failed every hop after it.
+--
+-- Evidence is per (address, M-Lab site): the 10th-percentile RTT over >= 3 traceroutes
+-- that day, so a single deflated sample cannot refute a location. When the database
+-- location (HOIHO > IPinfo > RIPE IPmap, the same priority as below) is refuted:
+--   * the router answers within 1.5 ms of some site (radius <= 150 km): use that
+--     server's location ('server_proximity', the single-radius idea of RIPE IPmap);
+--   * else another source's candidate that no site refutes ('rtt_checked_<source>':
+--     NOT REFUTED, which is weaker than verified);
+--   * else no location ('refuted'). The hop keeps its AS for AS-level analysis.
+-- Only refuted addresses get a row. Reverse hops reuse the decision (same address,
+-- same device); revTr hop RTTs are not used as evidence.
+CREATE TEMP TABLE _hop_geo_validation AS
+WITH obs AS (
+  SELECT t.dst_site, t.dst_lat, t.dst_lon, n.addr, n.rdns_name, n.rtts
+  FROM `mlab-collaboration.${DS}.transient_events_union` t, UNNEST(t.node_details) AS n
+  WHERE t.partition_date = '${DAY}'
+    AND n.ttl > 1 AND n.addr != '*' AND n.rtts > 0
+    AND t.dst_lat IS NOT NULL AND t.dst_lon IS NOT NULL
+),
+site_q AS (
+  SELECT
+    addr, dst_site,
+    MIN(dst_lat) AS site_lat,
+    MIN(dst_lon) AS site_lon,
+    -- exact, deterministic 10th percentile (discrete)
+    ARRAY_AGG(rtts ORDER BY rtts)[OFFSET(CAST(FLOOR(0.1 * (COUNT(*) - 1)) AS INT64))] AS rtt_q10
+  FROM obs
+  GROUP BY addr, dst_site
+  HAVING COUNT(*) >= 3
+),
+candidates AS (
+  SELECT a.addr, c.rank, c.source, c.lat, c.lon
+  FROM (SELECT addr, MIN(rdns_name) AS rdns_name FROM obs
+        WHERE addr IN (SELECT addr FROM site_q) GROUP BY addr) a
+  LEFT JOIN _rdns_geo geo ON geo.rdns_name = a.rdns_name
+  LEFT JOIN _closest_geo ip ON ip.ip_address = a.addr
+  CROSS JOIN UNNEST([
+    STRUCT(1 AS rank, 'hoiho' AS source, geo.lat AS lat, geo.lon AS lon),
+    STRUCT(2, 'ipinfo', ip.lat_ip_info, ip.lon_ip_info),
+    STRUCT(3, 'ripe_ipmap', ip.lat, ip.lon)
+  ]) AS c
+  WHERE c.lat IS NOT NULL AND c.lon IS NOT NULL
+),
+cand_check AS (
+  SELECT c.addr, c.rank, c.source, c.lat, c.lon,
+    LOGICAL_OR(
+      q.rtt_q10 * 100
+        < ST_DISTANCE(ST_GEOGPOINT(c.lon, c.lat), ST_GEOGPOINT(q.site_lon, q.site_lat)) / 1000 - 100
+    ) AS refuted
+  FROM candidates c
+  JOIN site_q q USING (addr)
+  GROUP BY c.addr, c.rank, c.source, c.lat, c.lon
+),
+-- One physical device cannot be at two places whose RTT disks do not overlap. Such an
+-- address is in use at several locations (anycast or reused addressing), so no single
+-- replacement is right: it is not validated here (the per-observation guard below
+-- still removes an impossible location from an individual observation).
+non_unique AS (
+  SELECT DISTINCT a.addr
+  FROM site_q a
+  JOIN site_q b ON a.addr = b.addr AND a.dst_site < b.dst_site
+  WHERE ST_DISTANCE(ST_GEOGPOINT(a.site_lon, a.site_lat), ST_GEOGPOINT(b.site_lon, b.site_lat)) / 1000
+        > a.rtt_q10 * 100 + b.rtt_q10 * 100 + 100
+),
+refuted_addrs AS (
+  -- the candidate step 04 would use is the lowest-ranked one present
+  SELECT addr
+  FROM cand_check
+  WHERE addr NOT IN (SELECT addr FROM non_unique)
+  GROUP BY addr
+  HAVING ARRAY_AGG(refuted ORDER BY rank LIMIT 1)[OFFSET(0)]
+),
+nearest_site AS (
+  SELECT addr,
+    ARRAY_AGG(STRUCT(rtt_q10, site_lat, site_lon) ORDER BY rtt_q10, dst_site LIMIT 1)[OFFSET(0)] AS s
+  FROM site_q
+  WHERE addr IN (SELECT addr FROM refuted_addrs)
+  GROUP BY addr
+),
+alternative AS (
+  SELECT addr, ARRAY_AGG(STRUCT(source, lat, lon) ORDER BY rank LIMIT 1)[OFFSET(0)] AS a
+  FROM cand_check
+  WHERE NOT refuted AND addr IN (SELECT addr FROM refuted_addrs)
+  GROUP BY addr
+)
+SELECT
+  r.addr,
+  CASE
+    WHEN ns.s.rtt_q10 <= 1.5 THEN 'server_proximity'
+    WHEN alt.addr IS NOT NULL THEN CONCAT('rtt_checked_', alt.a.source)
+    ELSE 'refuted'
+  END AS geo_source,
+  CASE WHEN ns.s.rtt_q10 <= 1.5 THEN ns.s.site_lat ELSE alt.a.lat END AS lat,
+  CASE WHEN ns.s.rtt_q10 <= 1.5 THEN ns.s.site_lon ELSE alt.a.lon END AS lon
+FROM refuted_addrs r
+JOIN nearest_site ns USING (addr)
+LEFT JOIN alternative alt USING (addr);
+
+-- ============================================================================
 -- Main query: enrich hops + compute distances + produce final output
 -- ============================================================================
 -- Materialize into a temp table first so we can write both
@@ -548,6 +654,10 @@ node_with_geo_info AS (
     CASE
       WHEN nwp.is_private THEN NULL
       WHEN nwp.ttl = 1 THEN nwp.dst_lat
+      -- unannounced public space: may name different devices at different sites,
+      -- so it is never geolocated (and never pooled across sites in 5b)
+      WHEN nwp.associated_asn IS NULL THEN NULL
+      WHEN hv.addr IS NOT NULL THEN hv.lat  -- 5b: database location refuted by RTT
       WHEN geo.lat IS NOT NULL AND geo.lon IS NOT NULL THEN geo.lat
       WHEN ip_geo.lat_ip_info IS NOT NULL AND ip_geo.lon_ip_info IS NOT NULL THEN ip_geo.lat_ip_info
       ELSE ip_geo.lat
@@ -555,6 +665,8 @@ node_with_geo_info AS (
     CASE
       WHEN nwp.is_private THEN NULL
       WHEN nwp.ttl = 1 THEN nwp.dst_lon
+      WHEN nwp.associated_asn IS NULL THEN NULL
+      WHEN hv.addr IS NOT NULL THEN hv.lon
       WHEN geo.lat IS NOT NULL AND geo.lon IS NOT NULL THEN geo.lon
       WHEN ip_geo.lat_ip_info IS NOT NULL AND ip_geo.lon_ip_info IS NOT NULL THEN ip_geo.lon_ip_info
       ELSE ip_geo.lon
@@ -562,12 +674,15 @@ node_with_geo_info AS (
     CASE
       WHEN nwp.is_private THEN NULL
       WHEN nwp.ttl = 1 THEN CONCAT(nwp.dst_city, '-', nwp.dst_state, '-', nwp.dst_country)
+      -- replaced or removed locations: the metro polygon below names a replacement
+      WHEN nwp.associated_asn IS NULL OR hv.addr IS NOT NULL THEN NULL
       -- Canonical naming: prefer the metro polygon (single authority across IPInfo/
       -- HOIHO/RIPE) so the same location groups identically regardless of source;
       -- fall back to per-source free-text only when no polygon matched.
       ELSE COALESCE(ip_geo.metro, geo.place, ip_geo.city_ip_info, ip_geo.city)
     END AS place,
-    CASE WHEN nwp.is_private THEN NULL ELSE geo.clli END AS clli,
+    CASE WHEN nwp.is_private OR nwp.associated_asn IS NULL OR hv.addr IS NOT NULL THEN NULL
+         ELSE geo.clli END AS clli,
     -- metro is the canonical `city-region-cc` geo field (full region name).
     -- Forward and reverse paths now derive it identically (COALESCE HOIHO + ipinfo),
     -- and the destination (ttl = 1) gets its metro from _dst_metro so it is no
@@ -575,11 +690,13 @@ node_with_geo_info AS (
     CASE
       WHEN nwp.is_private THEN NULL
       WHEN nwp.ttl = 1 THEN dm.dst_metro
+      WHEN nwp.associated_asn IS NULL OR hv.addr IS NOT NULL THEN NULL
       ELSE COALESCE(geo.metro, ip_geo.metro)
     END AS metro,
     CASE
       WHEN nwp.is_private THEN NULL
       WHEN nwp.ttl = 1 THEN nwp.dst_country
+      WHEN nwp.associated_asn IS NULL OR hv.addr IS NOT NULL THEN NULL
       ELSE COALESCE(geo.cc, ip_geo.country_ip_info, ip_geo.country)
     END AS cc,
     CASE WHEN nwp.is_private THEN -1 ELSE COALESCE(ip_geo.score, -1) END AS score,
@@ -587,13 +704,15 @@ node_with_geo_info AS (
     CASE
       WHEN nwp.is_private THEN NULL
       WHEN nwp.ttl = 1 THEN 'server_metadata'
+      WHEN nwp.associated_asn IS NULL THEN 'unannounced'
+      WHEN hv.addr IS NOT NULL THEN hv.geo_source
       WHEN geo.hostname IS NOT NULL THEN 'hoiho'
       WHEN ip_geo.lat_ip_info IS NOT NULL THEN 'ipinfo'
       WHEN ip_geo.lat IS NOT NULL THEN 'ripe_ipmap'
       ELSE NULL
     END AS geo_source,
     CASE
-      WHEN nwp.is_private OR nwp.ttl = 1 THEN NULL
+      WHEN nwp.is_private OR nwp.ttl = 1 OR nwp.associated_asn IS NULL OR hv.addr IS NOT NULL THEN NULL
       WHEN geo.hostname IS NOT NULL THEN NULL  -- HOIHO table has no partition_date
       ELSE ip_geo.partition_date
     END AS geo_partition_date
@@ -606,6 +725,8 @@ node_with_geo_info AS (
     ON nwp.addr = ip_geo.ip_address
   LEFT JOIN _dst_metro dm
     ON nwp.dst_lat = dm.dst_lat AND nwp.dst_lon = dm.dst_lon
+  LEFT JOIN _hop_geo_validation hv
+    ON nwp.addr = hv.addr
 ),
 
 -- (forward hop-metro normalization + array reconstruction moved below, after the
@@ -769,31 +890,41 @@ reverse_node_with_geo_info AS (
     -- lat/lon taken atomically from the SINGLE preferred source (HOIHO > IPInfo > RIPE)
     CASE
       WHEN nwp.is_private THEN NULL
+      WHEN nwp.associated_asn IS NULL THEN NULL  -- unannounced: never geolocated
+      WHEN hv.addr IS NOT NULL THEN hv.lat      -- forward evidence refuted the database location
       WHEN geo.lat IS NOT NULL AND geo.lon IS NOT NULL THEN geo.lat
       WHEN ip_geo.lat_ip_info IS NOT NULL AND ip_geo.lon_ip_info IS NOT NULL THEN ip_geo.lat_ip_info
       ELSE ip_geo.lat
     END AS latitude,
     CASE
       WHEN nwp.is_private THEN NULL
+      WHEN nwp.associated_asn IS NULL THEN NULL
+      WHEN hv.addr IS NOT NULL THEN hv.lon
       WHEN geo.lat IS NOT NULL AND geo.lon IS NOT NULL THEN geo.lon
       WHEN ip_geo.lat_ip_info IS NOT NULL AND ip_geo.lon_ip_info IS NOT NULL THEN ip_geo.lon_ip_info
       ELSE ip_geo.lon
     END AS longitude,
-    CASE WHEN nwp.is_private THEN NULL ELSE COALESCE(ip_geo.metro, geo.place, ip_geo.city_ip_info, ip_geo.city) END AS place,
-    CASE WHEN nwp.is_private THEN NULL ELSE geo.clli END AS clli,
-    CASE WHEN nwp.is_private THEN NULL ELSE COALESCE(geo.metro, ip_geo.metro) END AS metro,
-    CASE WHEN nwp.is_private THEN NULL ELSE COALESCE(geo.cc, ip_geo.country_ip_info, ip_geo.country) END AS cc,
+    CASE WHEN nwp.is_private OR nwp.associated_asn IS NULL OR hv.addr IS NOT NULL THEN NULL
+         ELSE COALESCE(ip_geo.metro, geo.place, ip_geo.city_ip_info, ip_geo.city) END AS place,
+    CASE WHEN nwp.is_private OR nwp.associated_asn IS NULL OR hv.addr IS NOT NULL THEN NULL
+         ELSE geo.clli END AS clli,
+    CASE WHEN nwp.is_private OR nwp.associated_asn IS NULL OR hv.addr IS NOT NULL THEN NULL
+         ELSE COALESCE(geo.metro, ip_geo.metro) END AS metro,
+    CASE WHEN nwp.is_private OR nwp.associated_asn IS NULL OR hv.addr IS NOT NULL THEN NULL
+         ELSE COALESCE(geo.cc, ip_geo.country_ip_info, ip_geo.country) END AS cc,
     CASE WHEN nwp.is_private THEN -1   ELSE COALESCE(ip_geo.score, -1) END AS score,
     -- Geo mapping provenance
     CASE
       WHEN nwp.is_private THEN NULL
+      WHEN nwp.associated_asn IS NULL THEN 'unannounced'
+      WHEN hv.addr IS NOT NULL THEN hv.geo_source
       WHEN geo.hostname IS NOT NULL THEN 'hoiho'
       WHEN ip_geo.lat_ip_info IS NOT NULL THEN 'ipinfo'
       WHEN ip_geo.lat IS NOT NULL THEN 'ripe_ipmap'
       ELSE NULL
     END AS geo_source,
     CASE
-      WHEN nwp.is_private THEN NULL
+      WHEN nwp.is_private OR nwp.associated_asn IS NULL OR hv.addr IS NOT NULL THEN NULL
       WHEN geo.hostname IS NOT NULL THEN NULL  -- HOIHO table has no partition_date
       ELSE ip_geo.partition_date
     END AS geo_partition_date,
@@ -805,6 +936,8 @@ reverse_node_with_geo_info AS (
     ON nwp.rdns_name = geo.rdns_name
   LEFT JOIN closest_geo_entry ip_geo
     ON nwp.addr = ip_geo.ip_address
+  LEFT JOIN _hop_geo_validation hv
+    ON nwp.addr = hv.addr
 ),
 
 -- ── Single metro-polygon lookup, shared by BOTH forward and reverse hops ──────
@@ -842,12 +975,29 @@ hop_coord_metro AS (
   GROUP BY 1, 2
 ),
 
+-- Per-observation guard: 5b validates addresses with >= 3 traceroutes from a site.
+-- An observation whose own RTT still cannot reach its location (too little evidence
+-- to judge the address) loses the location for that observation only, instead of
+-- the whole measurement being discarded downstream.
 node_with_geo_info_normalized AS (
   SELECT
-    n.* EXCEPT(metro, place),
-    COALESCE(cm.metro, n.metro) AS metro,  -- polygon authority (also covers dst ttl=1); NULL coords stay NULL
-    COALESCE(cm.metro, n.place) AS place    -- place := polygon metro (coord-canonical); was raw source string
-  FROM node_with_geo_info n
+    n.* EXCEPT(metro, place, latitude, longitude, geo_source, loc_refuted),
+    IF(n.loc_refuted, NULL, n.latitude) AS latitude,
+    IF(n.loc_refuted, NULL, n.longitude) AS longitude,
+    IF(n.loc_refuted, 'refuted_observation', n.geo_source) AS geo_source,
+    IF(n.loc_refuted, NULL, COALESCE(cm.metro, n.metro)) AS metro,  -- polygon authority (also covers dst ttl=1); NULL coords stay NULL
+    IF(n.loc_refuted, NULL, COALESCE(cm.metro, n.place)) AS place    -- place := polygon metro (coord-canonical); was raw source string
+  FROM (
+    SELECT
+      n0.*,
+      COALESCE(
+        n0.ttl > 1 AND n0.rtts > 0
+        AND n0.rtts * 100 < ST_DISTANCE(ST_GEOGPOINT(n0.longitude, n0.latitude),
+                                        ST_GEOGPOINT(n0.dst_lon, n0.dst_lat)) / 1000 - 100,
+        FALSE
+      ) AS loc_refuted
+    FROM node_with_geo_info n0
+  ) n
   LEFT JOIN hop_coord_metro cm
     ON n.latitude = cm.lat AND n.longitude = cm.lon
 ),
@@ -1298,15 +1448,17 @@ distance_rtt_checks AS (
       ELSE (cumulative_distance_km / 200)
         + (ST_DISTANCE(ST_GEOGPOINT(longitude, latitude), ST_GEOGPOINT(dst_lon, dst_lat)) / (200 * 1000))
     END AS speed_of_internet_fiber,
-    -- No RTT of its own (scamper1 keeps no TTL-1 reply, so usually the first router)
-    -- means the check cannot run: NULL, like a hop without a location, not 'Below threshold'.
+    -- Per-hop bound (same test as 5b): depends only on this hop's own location, so a
+    -- mislocated earlier hop no longer fails every later one. speed_of_internet_fiber
+    -- above keeps the old path-cumulative value for reference. No RTT of its own
+    -- (scamper1 keeps no TTL-1 reply, so usually the first router) means the check
+    -- cannot run: NULL, not 'Below threshold'.
     CASE
-      WHEN cumulative_distance_km IS NULL OR latitude IS NULL OR longitude IS NULL OR dst_lat IS NULL OR dst_lon IS NULL THEN NULL
+      WHEN latitude IS NULL OR longitude IS NULL OR dst_lat IS NULL OR dst_lon IS NULL THEN NULL
       WHEN rtts IS NULL THEN NULL
-      WHEN (
-        (cumulative_distance_km / 200)
-        + ST_DISTANCE(ST_GEOGPOINT(longitude, latitude), ST_GEOGPOINT(dst_lon, dst_lat)) / (200 * 1000)
-      ) > rtts THEN 'Above threshold'
+      WHEN rtts * 100
+        < ST_DISTANCE(ST_GEOGPOINT(longitude, latitude), ST_GEOGPOINT(dst_lon, dst_lat)) / 1000 - 100
+        THEN 'Above threshold'
       ELSE 'Below threshold'
     END AS distance_rtt_check,
     CASE
