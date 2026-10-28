@@ -123,6 +123,7 @@ def test_daily_resume_skips_complete_legacy_day_and_runs_missing_day(monkeypatch
     )
     monkeypatch.setattr(union, "print_active_credentials", lambda: None)
     monkeypatch.setattr(union, "get_existing_dates", lambda *args: {date(2026, 8, 10)})
+    monkeypatch.setattr(union, "check_giga_order", lambda *args, **kwargs: {})
     monkeypatch.setattr(
         union,
         "step_already_done",
