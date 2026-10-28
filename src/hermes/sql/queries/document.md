@@ -13,7 +13,7 @@ The step is a single self-contained SQL script:
 
 | Script | Purpose |
 |--------|---------|
-| `04_mapping_union.sql` | Builds four reusable **lookup temp tables** (closest AS metadata, rDNS, geolocation, extracted IP prefixes) scoped to the target `${DAY}`, then uses them to enrich forward and reverse hops, compute distance/RTT metrics, and produce the **final output table** — all in one multi-statement script |
+| `04_mapping_union.sql` | Builds four reusable **lookup temp tables** (AS metadata, rDNS, geolocation, extracted IP prefixes) **as of** the target `${DAY}` (see [Reference-snapshot selection](#reference-snapshot-selection)), then uses them to enrich forward and reverse hops, compute distance/RTT metrics, and produce the **final output table** — all in one multi-statement script |
 
 ## Input Tables
 
@@ -148,8 +148,8 @@ measured server-to-client direction.
 | `metro` | `STRING` | Metro area of the hop |
 | `score` | `INT64` | Geolocation confidence score (`-1` if unknown) |
 | `geo_source` | `STRING` | Provenance of geolocation: `"server_metadata"`, `"hoiho"`, `"ipinfo"`, `"ripe_ipmap"`; since 2026-10 also `"server_proximity"` (database location refuted by RTT; the router answers within 1.5 ms of an M-Lab site, so the site's location is used), `"rtt_checked_<source>"` (database location refuted; another source's location that no RTT refutes, which is weaker than verified), `"refuted"` (location removed; AS kept), `"refuted_observation"` (this observation's RTT cannot reach the location, with too little evidence to judge the address), `"unannounced"` (public address with no announcing AS; never geolocated). See step 04, section 5b. |
-| `geo_partition_date` | `DATE` | Date of the geolocation data used (NULL for HOIHO/server metadata) |
-| `ixp_partition_date` | `DATE` | Date of the IXP membership data used |
+| `geo_partition_date` | `DATE` | Date of the geolocation data used (NULL for HOIHO/server metadata). Later than `partition_date` only when the IP had no geolocation row dated on or before `${DAY}` (backfill fallback) |
+| `ixp_partition_date` | `DATE` | Date of the IXP membership snapshot used. Later than `partition_date` only when `${DAY}` precedes the first complete snapshot (backfill fallback) |
 | `facilities_info` | `ARRAY<STRUCT>` | Reserved for colocation facility data (currently NULL) |
 | `cumulative_distance_km` | `FLOAT64` | Cumulative geographic distance from the M-Lab server to this hop (km) |
 | `distance_to_destination_km` | `FLOAT64` | Great-circle remaining distance from this hop to the client (km) |
@@ -201,6 +201,39 @@ Each hop IP is matched to an ASN using longest-prefix matching:
 2. The masked result is joined against the `extracted_prefixes` table (which merges M-Lab's `hopannotation2` data with `unified_ip_to_as`)
 3. The longest matching prefix (highest mask) is selected
 4. IXP member IPs are given special treatment: they receive a `/32` prefix and are mapped to the IXP member's ASN
+
+## Reference-snapshot selection
+
+The reference tables are of two kinds, and step 04 picks rows from each differently.
+The previous rule ("the partition closest to `${DAY}`, per key") let future rows win
+(for `${DAY}` = 2026-09-01, 1.23M of 2.48M winning prefixes came from snapshots taken
+after the day) and, because it ran per key, let a withdrawn more-specific prefix keep
+winning longest-prefix match from whichever old snapshot still held it.
+
+| Table | Kind | Rule |
+|-------|------|------|
+| `hermes.unified_ip_to_as` / `_ipv6` | Full snapshots, one series per `source` (RouteViews pfx2as, IXP /32s) | Per source: the latest **complete** snapshot dated <= `${DAY}`; only its rows are candidates. Undated rows are not used. |
+| `ix_data.ixp_members` | Full snapshots | One snapshot: the latest complete one <= `${DAY}` |
+| `hermes.as_metadata` | Full snapshots | One snapshot: the latest complete one <= `${DAY}` |
+| `hermes.unified_ip_to_geoloc` / `_ipv6` | Incremental per-IP cache (a partition holds the IPs looked up that day) | Per IP: the latest row <= `${DAY}`, preferring a row with a location among non-future rows |
+| `hermes.unified_ip_to_rdns` / `_ipv6` | Incremental per-IP cache | Per IP: the latest row <= `${DAY}`, preferring a non-empty hostname among non-future rows; undated rows rank after dated past rows |
+
+- **Completeness.** `udfs/snapshot_is_complete.sql`: a snapshot counts only if it holds
+  at least half the median row count of up to two snapshots on each side. This drops
+  the truncated RouteViews v4 load of 2025-10-17 (20,000 prefixes vs ~1.06M), which
+  should also be reloaded upstream, while keeping the real Aug-2025 IXP list shrink
+  (~94K to ~57K).
+- **Backfill before the first snapshot** (RouteViews v4 starts 2025-05-28, v6
+  2025-07-13; the pipeline has dates from 2025-01-25): the earliest snapshot or row is
+  used. That is future data, and it is recorded: `geo_partition_date` /
+  `ixp_partition_date` exceed `partition_date`, and the `_extracted_prefixes` temp
+  table carries the prefix snapshot in `as_partition_date`. (The prefix snapshot is
+  not yet written to the output table; doing so needs a nested-schema change.)
+- **Undated prefix rows** (v4: 1,007,669 RouteViews + 60,038 `IXPs`) predate every dated
+  snapshot by their overlap pattern and are excluded: as a per-prefix fallback they would
+  resurrect ~183K prefixes absent from the current snapshot.
+- No maximum age is applied to the per-IP caches: an IP is re-looked-up only when it is
+  seen again, so an age cap would drop coverage rather than refresh it.
 
 ---
 

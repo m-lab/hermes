@@ -12,33 +12,96 @@
 -- This is a multi-statement BigQuery script. Temp tables created early on
 -- remain visible to the final INSERT statement.
 --------------------------------------------------------------------------------
+-- @requires-udf: snapshot_is_complete
 
 -- ============================================================================
 -- Reusable lookup temp tables
 -- ============================================================================
 
--- 1) Closest AS metadata w.r.t. ${DAY} (IP-version agnostic)
+-- ----------------------------------------------------------------------------
+-- Reference-snapshot selection rule (applies to every lookup below)
+--
+-- The reference tables come in two kinds, and each needs its own rule:
+--
+--   FULL SNAPSHOTS -- every key present at every snapshot date: as_metadata,
+--   ix_data.ixp_members, and hermes.unified_ip_to_as[_ipv6] per `source`
+--   (RouteViews pfx2as dumps of ~1.0-1.13M v4 prefixes; IXP member /32s). Use ONE
+--   snapshot date per table (per source) = the latest COMPLETE snapshot dated
+--   <= ${DAY}, and only the keys present in it. A key absent from that snapshot
+--   was not announced / not a member on that date, so it must NOT be filled in
+--   from another snapshot.
+--
+--   INCREMENTAL CACHES -- a key is written on the day it is looked up, so each
+--   partition holds only that day's keys: unified_ip_to_geoloc[_ipv6] and
+--   unified_ip_to_rdns[_ipv6]. Use, PER KEY, the latest row dated <= ${DAY}.
+--
+-- The previous rule ("partition closest to ${DAY}", per key) let FUTURE rows win:
+-- for ${DAY} = 2026-09-01, 1.23M of 2.48M winning prefixes came from snapshots
+-- taken after the day, and because it ran per key, a more-specific prefix that
+-- had been withdrawn kept winning longest-prefix match from whichever old
+-- snapshot still had it (181K winners were > 90 days stale). Results also
+-- depended on when the job ran: a snapshot appended later changed old dates.
+--
+-- Fallback: if nothing is dated <= ${DAY} (a backfill before the first
+-- snapshot), the EARLIEST available snapshot/row is used. That is future data,
+-- so it is recorded rather than silent: geo_partition_date / ixp_partition_date
+-- in the output then exceed partition_date, and _extracted_prefixes carries the
+-- prefix snapshot actually used in as_partition_date.
+-- ----------------------------------------------------------------------------
+
+-- 1) AS metadata as of ${DAY} (IP-version agnostic). FULL snapshots (one row per
+--    ASN per date: 116K-121K ASNs at 2024-06-10, 2025-06-10, 2026-06-01 and
+--    2026-07-01), so ONE snapshot date for the whole table, never a per-ASN mix.
 CREATE TEMP TABLE _closest_as_metadata AS
+WITH snapshots AS (
+  SELECT
+    partition_date,
+    n,
+    snapshot_is_complete(n, ARRAY_CONCAT(
+      IFNULL(ARRAY_AGG(n) OVER (ORDER BY partition_date ROWS BETWEEN 2 PRECEDING AND 1 PRECEDING), []),
+      IFNULL(ARRAY_AGG(n) OVER (ORDER BY partition_date ROWS BETWEEN 1 FOLLOWING AND 2 FOLLOWING), [])
+    )) AS is_complete
+  FROM (
+    SELECT partition_date, COUNT(*) AS n
+    FROM `mlab-collaboration.hermes.as_metadata`
+    WHERE partition_date IS NOT NULL
+    GROUP BY partition_date
+  )
+),
+chosen AS (
+  SELECT COALESCE(
+           MAX(IF(partition_date <= DATE '${DAY}', partition_date, NULL)),
+           MIN(partition_date)   -- backfill before the first snapshot (2024-06-10)
+         ) AS snapshot_date
+  FROM snapshots
+  WHERE is_complete
+)
 SELECT *
 FROM (
   SELECT
-    *,
+    m.*,
+    -- one row per ASN within a snapshot today; the guard stays deterministic
+    -- should a snapshot ever be loaded twice.
     ROW_NUMBER() OVER (
-      PARTITION BY asn
-      ORDER BY
-        ABS(DATE_DIFF(partition_date, DATE '${DAY}', DAY)) ASC,
-        -- on a distance tie (a partition equally far in the past and the future),
-        -- prefer the PAST one, then the most recent — deterministic, no future bias.
-        (CASE WHEN partition_date <= DATE '${DAY}' THEN 0 ELSE 1 END) ASC,
-        partition_date DESC
+      PARTITION BY m.asn
+      ORDER BY m.cone.numberPrefixes DESC, m.asnName ASC, m.rank ASC
     ) AS rn
-  FROM `mlab-collaboration.hermes.as_metadata`
+  FROM `mlab-collaboration.hermes.as_metadata` m
+  JOIN chosen c ON m.partition_date = c.snapshot_date
 )
 WHERE rn = 1;
 
--- 2) Closest rDNS entry w.r.t. ${DAY} — UNION of IPv4 and IPv6 sources
--- Resilience: prefer the closest partition that actually HAS a hostname, so a recent
--- empty rDNS row never shadows an earlier known hostname for the same IP.
+-- 2) rDNS entry as of ${DAY} — UNION of IPv4 and IPv6 sources. INCREMENTAL cache
+--    (each daily partition holds only the ~100-150K IPs resolved that day; of the
+--    126K IPs in 2026-10-20, none is in 2026-10-19), so the rule is PER IP: the
+--    latest row dated <= ${DAY}; a future row only when the IP has no other row
+--    (backfill fallback: the EARLIEST future row).
+--    Undated v4 rows (13.5M; `timestamp` is NULL on them too) have no vintage to
+--    compare: they are non-future candidates, used after every dated past row.
+-- Resilience: among NON-FUTURE rows, prefer one that actually HAS a hostname, so
+-- an empty rDNS row never shadows a known hostname for the same IP. That
+-- preference does not reach into the future: a future hostname never beats a
+-- past empty answer.
 CREATE TEMP TABLE _closest_rdns AS
 SELECT * EXCEPT(rn) FROM (
   SELECT
@@ -46,11 +109,13 @@ SELECT * EXCEPT(rn) FROM (
     ROW_NUMBER() OVER (
       PARTITION BY ip_address
       ORDER BY
+        (CASE WHEN partition_date > DATE '${DAY}' THEN 1 ELSE 0 END) ASC,
         (CASE WHEN hostname IS NULL OR hostname = '' THEN 1 ELSE 0 END) ASC,
+        (CASE WHEN partition_date IS NULL THEN 1 ELSE 0 END) ASC,
+        -- past tier: latest first; future tier: earliest first.
         ABS(DATE_DIFF(partition_date, DATE '${DAY}', DAY)) ASC,
-        -- on a distance tie, prefer the PAST partition, then most recent (deterministic).
-        (CASE WHEN partition_date <= DATE '${DAY}' THEN 0 ELSE 1 END) ASC,
-        partition_date DESC
+        -- total order for duplicate rows of one IP within a partition.
+        timestamp DESC, hostname ASC
     ) AS rn
   FROM (
     SELECT *, 'v4' AS ip_version
@@ -62,9 +127,17 @@ SELECT * EXCEPT(rn) FROM (
 )
 WHERE rn = 1;
 
--- 3) Closest geo entry w.r.t. ${DAY} — UNION of IPv4 and IPv6 sources
--- Resilience: prefer the closest partition that actually HAS a location, so a recent
--- empty/NULL geoloc row never shadows an earlier known one for the same IP.
+-- 3) Geo entry as of ${DAY} — UNION of IPv4 and IPv6 sources. INCREMENTAL cache
+--    (daily partitions of the IPs geolocated that day, plus periodic bulk loads), so
+--    the rule is PER IP: the latest row dated <= ${DAY}. Only an IP with no such row
+--    falls back to its EARLIEST future row, and that is visible in the output as
+--    geo_partition_date > partition_date. No maximum age: an IP is re-geolocated
+--    only when it is seen again, so an age cap would drop coverage, not refresh it.
+--    (Of the 154K IPs in the 2026-10-20 v4 partition, 3.6% are also in 10-19 and
+--    60% in some earlier partition.)
+-- Resilience: among NON-FUTURE rows, prefer one that actually HAS a location, so
+-- an empty/NULL geoloc row never shadows a known one for the same IP; a future
+-- location never beats a past empty one.
 CREATE TEMP TABLE _closest_geo AS
 SELECT * EXCEPT(rn) FROM (
   SELECT
@@ -72,11 +145,16 @@ SELECT * EXCEPT(rn) FROM (
     ROW_NUMBER() OVER (
       PARTITION BY ip_address
       ORDER BY
+        (CASE WHEN partition_date > DATE '${DAY}' THEN 1 ELSE 0 END) ASC,
         (CASE WHEN city IS NULL AND city_ip_info IS NULL AND metro IS NULL THEN 1 ELSE 0 END) ASC,
+        -- undated rows (none today) only after every dated past row.
+        (CASE WHEN partition_date IS NULL THEN 1 ELSE 0 END) ASC,
+        -- past tier: latest first; future tier: earliest first.
         ABS(DATE_DIFF(partition_date, DATE '${DAY}', DAY)) ASC,
-        -- on a distance tie, prefer the PAST partition, then most recent (deterministic).
-        (CASE WHEN partition_date <= DATE '${DAY}' THEN 0 ELSE 1 END) ASC,
-        partition_date DESC
+        -- total order for duplicate rows of one IP within a partition.
+        geoloc_snapshot_date DESC, score DESC,
+        lat_ip_info ASC, lon_ip_info ASC, lat ASC, lon ASC,
+        metro ASC, city_ip_info ASC, city ASC, country_ip_info ASC, country ASC
     ) AS rn
   FROM (
     SELECT *, 'v4' AS ip_version
@@ -143,21 +221,43 @@ GROUP BY 1, 2;
 -- 4) Extracted prefixes — IPv4 + IPv6 combined (stateless, no accumulation)
 CREATE TEMP TABLE _extracted_prefixes AS
 WITH
+-- IXP membership as of ${DAY}. ix_data.ixp_members is a sequence of FULL
+-- snapshots (~57-94K member IPs per date, one row per IP), so ONE snapshot date is
+-- used for every IP: the latest complete one <= ${DAY}, else the earliest
+-- (backfill; ixp_partition_date > partition_date in the output then flags it).
+-- The old per-IP "closest date" rule let an IP that left an IXP stay an IXP hop
+-- from whichever snapshot still listed it, and pulled future members into old
+-- dates.
+ixp_snapshots AS (
+  SELECT
+    partition_date,
+    snapshot_is_complete(n, ARRAY_CONCAT(
+      IFNULL(ARRAY_AGG(n) OVER (ORDER BY partition_date ROWS BETWEEN 2 PRECEDING AND 1 PRECEDING), []),
+      IFNULL(ARRAY_AGG(n) OVER (ORDER BY partition_date ROWS BETWEEN 1 FOLLOWING AND 2 FOLLOWING), [])
+    )) AS is_complete
+  FROM (
+    SELECT partition_date, COUNT(*) AS n
+    FROM `mlab-collaboration.ix_data.ixp_members`
+    WHERE partition_date IS NOT NULL
+    GROUP BY partition_date
+  )
+),
 ixp_ranked AS (
   SELECT
     ipv4,
     asn,
     name,
     partition_date,
-    ROW_NUMBER() OVER (
-      PARTITION BY ipv4
-      ORDER BY
-        ABS(DATE_DIFF(partition_date, DATE('${DAY}'), DAY)) ASC,
-        -- on a distance tie, prefer the PAST partition, then most recent (deterministic).
-        (CASE WHEN partition_date <= DATE('${DAY}') THEN 0 ELSE 1 END) ASC,
-        partition_date DESC
-    ) AS rank
+    -- one row per IP within a snapshot today; total order in case of duplicates.
+    ROW_NUMBER() OVER (PARTITION BY ipv4 ORDER BY asn ASC, name ASC) AS rank
   FROM `mlab-collaboration.ix_data.ixp_members`
+  WHERE partition_date = (
+    SELECT COALESCE(
+             MAX(IF(partition_date <= DATE('${DAY}'), partition_date, NULL)),
+             MIN(partition_date))
+    FROM ixp_snapshots
+    WHERE is_complete
+  )
 ),
 hop_prefixes AS (
   SELECT DISTINCT
@@ -192,49 +292,86 @@ hop_prefixes AS (
     ON ix.ipv4 = REGEXP_EXTRACT(hop.id, r'_([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)$')
   WHERE date BETWEEN DATE_SUB(DATE('${DAY}'), INTERVAL 1 MONTH) AND '${DAY}'
 ),
--- Keep only the snapshot closest to ${DAY} FOR EACH PREFIX. These tables are an
--- append-only pile of RouteViews + IXP snapshots taken at irregular intervals
--- (39 distinct dates for v4, 7 for v6 as of 2026-09-12, several of them partial
--- runs, and ~1.07M v4 rows carry no date at all), so reading
--- them unfiltered let a year-old origin compete with a current one on equal
--- footing: 93,342 v4 and 9,466 v6 prefixes carry more than one distinct ASN
--- across snapshots. That is how 2402:8100::/32 kept a 2025-07 Google origin long
--- after RouteViews had corrected it to Vodafone Idea in 2025-11.
+-- Prefix -> AS as of ${DAY}. unified_ip_to_as[_ipv6] is an append-only stack of
+-- FULL snapshots, one series per `source`: RouteViews pfx2as dumps (v4: 21 dates
+-- 2025-05-28..2026-10-13, ~1.0-1.13M prefixes each, 98-99% of each snapshot's
+-- prefixes also in the previous one) and IXP member /32s (copied from
+-- ix_data.ixp_members, on their own dates). The two series are dated
+-- independently, so the snapshot is chosen PER SOURCE: the latest complete
+-- snapshot <= ${DAY}, and only that snapshot's rows are candidates. A prefix absent
+-- from it was not announced on that date and must not come back from an older
+-- snapshot -- the old per-prefix "closest date" rule let withdrawn
+-- more-specifics keep winning longest-prefix match.
 --
--- DENSE_RANK, not ROW_NUMBER: a MOAS/AS_SET prefix legitimately contributes
--- several rows to the winning snapshot and all of them must survive as
--- candidates for the cone tiebreak below. Date ties prefer the PAST snapshot,
--- matching _closest_as_metadata / _closest_rdns / ixp_ranked above.
+-- snapshot_is_complete drops truncated loads (RouteViews v4 2025-10-17 holds
+-- 20,000 prefixes against ~1.06M around it; with the plain "latest <= ${DAY}"
+-- rule every date up to 2025-10-29 would have mapped almost nothing). That
+-- partition should also be reloaded upstream.
+--
+-- Before the first complete snapshot (RouteViews v4 2025-05-28, v6 2025-07-13;
+-- the pipeline has dates from 2025-01-25) the EARLIEST snapshot is used and
+-- as_partition_date records it, so the use of future data stays visible.
+--
+-- Undated rows (v4: 1,007,669 RouteViews + 60,038 'IXPs' /32s) are NOT used.
+-- Their vintage is unknown but older than every dated snapshot: their overlap
+-- with dated RouteViews peaks at 2025-06-09 and falls monotonically after it,
+-- and the 'IXPs' rows match the 2025-02-19 ixp_members list best. Used as a
+-- per-prefix fallback they would resurrect ~183K prefixes absent from the
+-- current snapshot -- exactly the withdrawn-prefix bug -- and every ${DAY} has a
+-- dated snapshot to use instead.
+--
+-- All rows of the chosen snapshot survive, so a MOAS/AS_SET prefix still keeps
+-- every origin as a candidate for the cone tiebreak downstream.
+as_snapshots AS (
+  SELECT
+    ip_version,
+    source,
+    partition_date,
+    snapshot_is_complete(n, ARRAY_CONCAT(
+      IFNULL(ARRAY_AGG(n) OVER (
+        PARTITION BY ip_version, source ORDER BY partition_date
+        ROWS BETWEEN 2 PRECEDING AND 1 PRECEDING), []),
+      IFNULL(ARRAY_AGG(n) OVER (
+        PARTITION BY ip_version, source ORDER BY partition_date
+        ROWS BETWEEN 1 FOLLOWING AND 2 FOLLOWING), [])
+    )) AS is_complete
+  FROM (
+    SELECT 'v4' AS ip_version, source, partition_date, COUNT(*) AS n
+    FROM `mlab-collaboration.hermes.unified_ip_to_as`
+    WHERE partition_date IS NOT NULL
+    GROUP BY source, partition_date
+    UNION ALL
+    SELECT 'v6' AS ip_version, source, partition_date, COUNT(*) AS n
+    FROM `mlab-collaboration.hermes.unified_ip_to_as_ipv6`
+    WHERE partition_date IS NOT NULL
+    GROUP BY source, partition_date
+  )
+),
+as_chosen AS (
+  SELECT
+    ip_version,
+    source,
+    COALESCE(
+      MAX(IF(partition_date <= DATE '${DAY}', partition_date, NULL)),
+      MIN(partition_date)   -- backfill before the first complete snapshot
+    ) AS snapshot_date
+  FROM as_snapshots
+  WHERE is_complete
+  GROUP BY ip_version, source
+),
 unified_data_v4 AS (
   SELECT
-    ip_prefix,
-    asn,
-    NET.IP_FROM_STRING(REGEXP_EXTRACT(ip_prefix, r'(.*)/')) AS network_bin,
-    CAST(REGEXP_EXTRACT(ip_prefix, r'/(.*)') AS INT64) AS mask,
-    IFNULL(ixp, 'None') AS ixp
-  FROM (
-    SELECT
-      *,
-      DENSE_RANK() OVER (
-        PARTITION BY ip_prefix
-        ORDER BY
-          -- Undated rows sort LAST, never first. BigQuery puts NULLs FIRST on an
-          -- ASC sort, so without this guard ABS(DATE_DIFF(NULL, ...)) outranked
-          -- every real snapshot: 1,067,707 of 1,420,484 v4 prefixes (75%) were
-          -- won by a NULL-partition_date row, discarding 14.7M dated RouteViews
-          -- rows. They are kept as candidates by the WHERE below instead.
-          (CASE WHEN partition_date IS NULL THEN 1 ELSE 0 END) ASC,
-          ABS(DATE_DIFF(partition_date, DATE '${DAY}', DAY)) ASC,
-          (CASE WHEN partition_date <= DATE '${DAY}' THEN 0 ELSE 1 END) ASC,
-          partition_date DESC
-      ) AS snapshot_rank
-    FROM `mlab-collaboration.hermes.unified_ip_to_as`
-  )
-  -- snapshot_rank = 1 is the closest DATED snapshot; undated rows (source 'IXPs'
-  -- and ~1M undated RouteViews rows) carry no vintage to compare, so they stay
-  -- candidates the way they were before date-scoping and are decided by the
-  -- mask/cone tiebreak downstream.
-  WHERE snapshot_rank = 1 OR partition_date IS NULL
+    u.ip_prefix,
+    u.asn,
+    NET.IP_FROM_STRING(REGEXP_EXTRACT(u.ip_prefix, r'(.*)/')) AS network_bin,
+    CAST(REGEXP_EXTRACT(u.ip_prefix, r'/(.*)') AS INT64) AS mask,
+    IFNULL(u.ixp, 'None') AS ixp,
+    u.partition_date AS as_partition_date
+  FROM `mlab-collaboration.hermes.unified_ip_to_as` u
+  JOIN as_chosen c
+    ON c.ip_version = 'v4'
+   AND u.source = c.source
+   AND u.partition_date = c.snapshot_date
 ),
 extracted_prefixes_v4 AS (
   SELECT
@@ -244,43 +381,31 @@ extracted_prefixes_v4 AS (
     COALESCE(ed.mask, ud.mask) AS mask,
     IFNULL(COALESCE(ed.ixp, ud.ixp), 'None') AS ixp,
     ed.ixp_partition_date,
-    'v4' AS ip_version
+    'v4' AS ip_version,
+    -- the snapshot that supplied this candidate; NULL when the hop's own
+    -- hopannotation2 annotation (measured <= ${DAY}) supplied it.
+    IF(ed.network_bin IS NULL, ud.as_partition_date, NULL) AS as_partition_date
   FROM hop_prefixes ed
   FULL OUTER JOIN unified_data_v4 ud
     ON ed.network_bin = ud.network_bin
    AND ed.mask = ud.mask
 ),
--- Same closest-snapshot rule as unified_data_v4 above; see that comment.
+-- Same per-source snapshot rule as unified_data_v4 above; see that comment.
 extracted_prefixes_v6 AS (
   SELECT
-    ip_prefix,
-    asn,
-    NET.IP_FROM_STRING(REGEXP_EXTRACT(ip_prefix, r'(.*)/')) AS network_bin,
-    CAST(REGEXP_EXTRACT(ip_prefix, r'/(.*)') AS INT64) AS mask,
-    IFNULL(ixp, 'None') AS ixp,
+    u.ip_prefix,
+    u.asn,
+    NET.IP_FROM_STRING(REGEXP_EXTRACT(u.ip_prefix, r'(.*)/')) AS network_bin,
+    CAST(REGEXP_EXTRACT(u.ip_prefix, r'/(.*)') AS INT64) AS mask,
+    IFNULL(u.ixp, 'None') AS ixp,
     CAST(NULL AS DATE) AS ixp_partition_date,
-    'v6' AS ip_version
-  FROM (
-    SELECT
-      *,
-      DENSE_RANK() OVER (
-        PARTITION BY ip_prefix
-        ORDER BY
-          -- Undated rows sort LAST, never first. BigQuery puts NULLs FIRST on an
-          -- ASC sort, so without this guard ABS(DATE_DIFF(NULL, ...)) outranked
-          -- every real snapshot: 1,067,707 of 1,420,484 v4 prefixes (75%) were
-          -- won by a NULL-partition_date row, discarding 14.7M dated RouteViews
-          -- rows. They are kept as candidates by the WHERE below instead.
-          (CASE WHEN partition_date IS NULL THEN 1 ELSE 0 END) ASC,
-          ABS(DATE_DIFF(partition_date, DATE '${DAY}', DAY)) ASC,
-          (CASE WHEN partition_date <= DATE '${DAY}' THEN 0 ELSE 1 END) ASC,
-          partition_date DESC
-      ) AS snapshot_rank
-    FROM `mlab-collaboration.hermes.unified_ip_to_as_ipv6`
-  )
-  -- Same rule as unified_data_v4; v6 has no undated rows today, but the guard
-  -- must not depend on that staying true.
-  WHERE snapshot_rank = 1 OR partition_date IS NULL
+    'v6' AS ip_version,
+    u.partition_date AS as_partition_date
+  FROM `mlab-collaboration.hermes.unified_ip_to_as_ipv6` u
+  JOIN as_chosen c
+    ON c.ip_version = 'v6'
+   AND u.source = c.source
+   AND u.partition_date = c.snapshot_date
 )
 SELECT * FROM extracted_prefixes_v4
 UNION ALL
