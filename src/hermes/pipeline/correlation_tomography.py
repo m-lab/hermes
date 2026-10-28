@@ -1427,8 +1427,16 @@ def run_correlation_tomography(
     3. **Phase 3 (SQL + Python)** — Compute node-level hyperedge fractions and
        upload results to :data:`OUTPUT_TABLE` (:func:`compute_hyperedges`).
 
-    If the output table already contains rows for ``date``, the function
-    returns immediately without reprocessing.
+    Resume is per output, not per date. Hyperedges (Phases 2-3) and the
+    multi-granularity tables (Phase 4) are checked independently: if
+    ``correlation_hyperedges_tomography_v2`` has rows but (with
+    ``write_multigranularity``) ``correlation_culprits_multigranularity`` does
+    not, only Phase 1 + Phase 4 re-run. Previously the hyperedge check alone
+    returned early, so a run that died between Phase 3 and Phase 4 left the
+    date permanently without multigran output while reporting success. Phase 4
+    is idempotent (entity stats WRITE_TRUNCATE the partition; culprits DELETE the
+    day first). The function returns immediately only when every requested
+    output is present.
 
     Parameters
     ----------
@@ -1451,39 +1459,57 @@ def run_correlation_tomography(
     output_table = _dataset_table(
         "correlation_hyperedges_tomography_v2", project_id=project_id, dataset=dataset
     )
-    if step_already_done(client, output_table, day_str):
+    hyperedges_done = step_already_done(client, output_table, day_str)
+    multigran_done = not write_multigranularity or step_already_done(
+        client,
+        _dataset_table(
+            "correlation_culprits_multigranularity", project_id=project_id, dataset=dataset
+        ),
+        day_str,
+    )
+    if hyperedges_done and multigran_done:
         logger.info(f"[{day_str}] Skipping — already done")
         return
+    if hyperedges_done:
+        # NB a day whose multigran cover legitimately yields zero rows lands here
+        # on every re-run. That costs a Phase-1 download but is idempotent.
+        logger.warning(
+            f"[{day_str}] hyperedges present but correlation_culprits_multigranularity "
+            "is empty — re-running Phase 4 only"
+        )
 
     logger.info(f"[{day_str}] Starting correlation tomography")
 
     # Phase 1: SQL → download edges
     edges_df = download_edges(client, day_str, project_id=project_id, dataset=dataset)
 
-    # Phase 2: Python set-cover
-    logger.info(f"[{day_str}] Phase 2: greedy set-cover...")
-    culprits, total_anomalies = run_greedy_set_cover(
-        edges_df,
-        day_str=day_str,
-        max_iterations=max_iterations,
-        no_progress_limit=no_progress_limit,
-    )
-
-    # Path-local pass: attribute the anomalous groups the set-cover couldn't explain.
     anomalous_pairs = set(
         edges_df.loc[edges_df["path_type"] == "anomalous", "src_dst_pair"].unique()
     )
-    explained = {p for c in culprits for p in c.get("anomalous_src_dst_pairs_impacted", [])}
-    path_local = attribute_unexplained(
-        client,
-        day_str,
-        explained,
-        anomalous_pairs,
-        project_id=project_id,
-        dataset=dataset,
-    )
-    logger.info(f"[{day_str}] Path-local attributions: {len(path_local)}")
-    culprits = culprits + path_local
+
+    culprits: list[dict] = []
+    if not hyperedges_done:
+        # Phase 2: Python set-cover
+        logger.info(f"[{day_str}] Phase 2: greedy set-cover...")
+        culprits, total_anomalies = run_greedy_set_cover(
+            edges_df,
+            day_str=day_str,
+            max_iterations=max_iterations,
+            no_progress_limit=no_progress_limit,
+        )
+
+        # Path-local pass: attribute the anomalous groups the set-cover couldn't explain.
+        explained = {p for c in culprits for p in c.get("anomalous_src_dst_pairs_impacted", [])}
+        path_local = attribute_unexplained(
+            client,
+            day_str,
+            explained,
+            anomalous_pairs,
+            project_id=project_id,
+            dataset=dataset,
+        )
+        logger.info(f"[{day_str}] Path-local attributions: {len(path_local)}")
+        culprits = culprits + path_local
 
     # Phase 3: hyperedges computation + upload. Download all_edges_per_node ONCE
     # and reuse it for both the edge-level hyperedge stats and the
@@ -1501,18 +1527,19 @@ def run_correlation_tomography(
     )
     logger.info(f"  Downloaded {len(all_edges):,} node-edge rows")
 
-    logger.info(f"[{day_str}] Phase 3: hyperedge summary...")
-    compute_hyperedges(
-        client,
-        culprits,
-        day_str,
-        all_edges=all_edges,
-        project_id=project_id,
-        dataset=dataset,
-    )
+    if not hyperedges_done:
+        logger.info(f"[{day_str}] Phase 3: hyperedge summary...")
+        compute_hyperedges(
+            client,
+            culprits,
+            day_str,
+            all_edges=all_edges,
+            project_id=project_id,
+            dataset=dataset,
+        )
 
     # Phase 4: multi-granularity cover (edge→node→AS→metro→IXP) + path-local tail.
-    if write_multigranularity:
+    if write_multigranularity and not multigran_done:
         logger.info(f"[{day_str}] Phase 4: multi-granularity cover...")
         multigran, entity_stats = run_mixed_granularity_cover(edges_df, all_edges, day_str)
         upload_entity_stats(client, entity_stats, day_str, project_id=project_id, dataset=dataset)
