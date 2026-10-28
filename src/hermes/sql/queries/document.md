@@ -132,7 +132,7 @@ measured server-to-client direction.
 
 | Sub-field | Type | Description |
 |-----------|------|-------------|
-| `ttl` | `INT64` | Time-to-live / hop number (1 = first hop from the M-Lab server) |
+| `ttl` | `INT64` | Path position: 1 = the M-Lab server itself (synthetic, RTT 0); a router at distance *d* sits at *d* + 1 for both scamper1 and scamper2 (before 2026-10, scamper2 hops sat one lower and the first scamper2 router was overwritten by the server). A trace that stops short of the client ends at its deepest responding router; a reaching trace lists the client once, last. A scamper1 trace with no replies at all is kept with only the server element (before 2026-10 its test was dropped) |
 | `addr` | `STRING` | IP address of the router at this hop (`"*"` if non-responsive) |
 | `rdns_name` | `STRING` | Reverse DNS hostname of the hop IP |
 | `rtts` | `FLOAT64` | Round-trip time of this hop's own reply (ms); `-1` if the hop did not answer; `NULL` if it answered but its own RTT was not recorded (scamper1 keeps no TTL-1 replies, so usually the first router). Before 2026-10, scamper1 hops carried the NEXT hop's RTT |
