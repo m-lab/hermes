@@ -516,6 +516,27 @@ ScamperBestFlow AS (
   FROM ScamperFlowHops sfh
 ),
 
+-- The chosen flow's path, plus two kinds of rows a hop row (keyed on a link's
+-- near end) cannot provide:
+--
+-- (a) FAR-END-ONLY ROUTERS. An address that is only ever a link's far end on
+--     the chosen flow has no outgoing link there, so it never gets a hop row.
+--     That is the deepest responding router of every trace that stops short of
+--     the destination (97% of non-reaching traces on 2026-10-14). It gets a row
+--     at position = probe TTL of the link into it + 1 (the same convention as a
+--     near end: distance + 1), unless the flow already has a hop row there. Its
+--     RTT is the reply it sent on that link, which is its own RTT under the rule
+--     above (the previous answered position is the link's near end, at the probe
+--     TTL), and also its far_rtt, so traceroute_rtt (the furthest reply) is
+--     unchanged. The destination is excluded: it is appended after the path
+--     below (NodeExtraction), exactly as before.
+-- (b) NO-REPLY TRACES. A trace with no replies at all has no hops and no best
+--     flow (7.1% of scamper1 traces on 2026-10-14). Dropping it removed its NDT
+--     test from transient_events_union and from step 07's day-of counts. It gets
+--     a single placeholder at position 1, which ExpandedRows turns into the
+--     server row, so its path is just the server. flow_id NULL marks it: it is
+--     not scamper1 data for the merge below, so a scamper2 trace for the same
+--     test still fills the path.
 WithoutDstNodeExtraction AS (
   SELECT
     bf.* EXCEPT(hops, best_flow_id),
@@ -529,11 +550,55 @@ WithoutDstNodeExtraction AS (
     h.link_addr,
     1 AS rtt_order
   FROM ScamperBestFlow bf
-  CROSS JOIN UNNEST(bf.hops) AS h
-  WHERE h.flow_id = bf.best_flow_id
+  CROSS JOIN UNNEST(ARRAY(
+    SELECT AS STRUCT * FROM (
+      SELECT addr, rdns_name, rtts, far_rtt, probe_ttl, probe_rttl, flow_id, link_addr
+      FROM UNNEST(bf.hops)
+      WHERE flow_id = bf.best_flow_id
+
+      UNION ALL
+
+      -- (a) far-end-only routers of the chosen flow
+      SELECT
+        f.link_addr                  AS addr,
+        CAST(NULL AS STRING)         AS rdns_name,
+        MIN(f.far_rtt)               AS rtts,
+        MIN(f.far_rtt)               AS far_rtt,
+        f.probe_ttl + 1              AS probe_ttl,
+        MIN(f.probe_rttl)            AS probe_rttl,
+        f.flow_id,
+        f.link_addr
+      FROM UNNEST(bf.hops) AS f
+      WHERE f.flow_id = bf.best_flow_id
+        AND f.link_addr != bf.dst
+        AND NOT EXISTS (
+          SELECT 1 FROM UNNEST(bf.hops) AS o
+          WHERE o.flow_id = f.flow_id
+            AND (o.addr = f.link_addr OR o.probe_ttl = f.probe_ttl + 1)
+        )
+      GROUP BY f.flow_id, f.probe_ttl, f.link_addr
+
+      UNION ALL
+
+      -- (b) no-reply placeholder (becomes the server row)
+      SELECT
+        bf.src, CAST(NULL AS STRING), CAST(NULL AS FLOAT64), CAST(NULL AS FLOAT64),
+        1, CAST(NULL AS INT64), CAST(NULL AS INT64), bf.src
+      FROM UNNEST([1])
+      WHERE bf.best_flow_id IS NULL
+    )
+  )) AS h
 ),
 
 -- scamper2: flat hops (no multipath — no Flowid / link_item nesting)
+--
+-- POSITION. scamper1 keys a hop on the TTL of its OUTGOING link, i.e. its
+-- distance + 1, so the first router sits at position 2 and position 1 is left
+-- for the synthetic server row (ExpandedRows). scamper2 lists each hop at its
+-- real TTL (the first router at 1), so it is shifted by one to the same
+-- convention. Without the shift the first router (present in 97% of scamper2
+-- traces on 2026-10-14) was overwritten by the server row, and every other
+-- scamper2 router sat one position lower than the same router in scamper1.
 Scamper2WithoutDstNodeExtraction AS (
   SELECT *
   FROM (
@@ -544,7 +609,7 @@ Scamper2WithoutDstNodeExtraction AS (
       SAFE_CAST(hop.rtt AS FLOAT64)         AS rtts,
       -- scamper2 hops carry their own address and RTT, so nothing is shifted here.
       SAFE_CAST(hop.rtt AS FLOAT64)         AS far_rtt,
-      SAFE_CAST(hop.probe_ttl AS INT64)     AS probe_ttl,
+      SAFE_CAST(hop.probe_ttl AS INT64) + 1 AS probe_ttl,
       CAST(NULL AS INT64)                   AS probe_rttl,
       1                                     AS flow_id,
       hop.addr                              AS link_addr,
@@ -561,7 +626,8 @@ Scamper2WithoutDstNodeExtraction AS (
 
 -- Merge: prefer scamper1; scamper2 only fills gaps where scamper1 has no data
 Scamper1IDs AS (
-  SELECT DISTINCT id FROM WithoutDstNodeExtraction
+  -- a no-reply placeholder (flow_id NULL) is not data: scamper2 may still fill it
+  SELECT DISTINCT id FROM WithoutDstNodeExtraction WHERE flow_id IS NOT NULL
 ),
 
 MergedNodeExpansion AS (
@@ -596,19 +662,37 @@ MaxTTLPerID AS (
   GROUP BY id
 ),
 
+-- ttl_rn picks the hop kept per position (NodeExtraction). dst_is_hop: the
+-- destination already is the KEPT hop at some position of this path. Then it
+-- must not be appended again after the path: for scamper2 link_addr = addr, so
+-- a responding destination was both a hop row and appended (listed twice at the
+-- end of 820K traces, 2.4%, on 2026-10-14). Computed on the kept hops, not on
+-- every row, so a destination that loses its position to another address is
+-- still appended rather than lost.
 FinalNodeExtraction AS (
   SELECT
-    ne.*,
-    CASE
-      WHEN EXISTS(
-        SELECT 1
-        FROM UNNEST(dc.all_link_addrs) AS addr
-        WHERE addr = ne.dst
-      ) THEN TRUE
-      ELSE FALSE
-    END AS add_dst
-  FROM LastNonStarRTT ne
-  LEFT JOIN DstCheck dc USING(id)
+    r.*,
+    IFNULL(LOGICAL_OR(r.ttl_rn = 1 AND r.addr = r.dst) OVER (PARTITION BY r.id), FALSE) AS dst_is_hop
+  FROM (
+    SELECT
+      ne.*,
+      CASE
+        WHEN EXISTS(
+          SELECT 1
+          FROM UNNEST(dc.all_link_addrs) AS addr
+          WHERE addr = ne.dst
+        ) THEN TRUE
+        ELSE FALSE
+      END AS add_dst,
+      -- far_rtt, not rtts: picks the same hop per TTL as before the RTT fix, so
+      -- every path keeps exactly the same addresses (topology is unchanged).
+      ROW_NUMBER() OVER (
+        PARTITION BY ne.id, ne.probe_ttl
+        ORDER BY ne.far_rtt ASC, ne.addr ASC
+      ) AS ttl_rn
+    FROM LastNonStarRTT ne
+    LEFT JOIN DstCheck dc USING(id)
+  ) AS r
 ),
 
 -- Deduplicate to one row per (id, TTL).  link_addr / probe_rttl / flow_id
@@ -635,17 +719,7 @@ NodeExtraction AS (
     mann_whitney_latency, mann_whitney_throughput, mann_whitney_upload_throughput,
     t_test_latency,
     ip_version
-  FROM (
-    SELECT
-      *,
-      -- far_rtt, not rtts: picks the same hop per TTL as before the RTT fix, so
-      -- every path keeps exactly the same addresses (topology is unchanged).
-      ROW_NUMBER() OVER (
-        PARTITION BY id, probe_ttl
-        ORDER BY far_rtt ASC, addr ASC
-      ) AS ttl_rn
-    FROM FinalNodeExtraction
-  )
+  FROM FinalNodeExtraction
   WHERE ttl_rn = 1
 
   UNION ALL
@@ -677,6 +751,7 @@ NodeExtraction AS (
   FROM FinalNodeExtraction
   LEFT JOIN MaxTTLPerID mt USING(id)
   WHERE add_dst = TRUE
+    AND NOT dst_is_hop  -- already on the path; see FinalNodeExtraction
 ),
 
 SequenceGenerator AS (

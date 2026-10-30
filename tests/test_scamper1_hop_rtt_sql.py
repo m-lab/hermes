@@ -46,10 +46,12 @@ def test_previous_value_kept_only_for_hop_choice_and_end_to_end_rtt():
         "FIRST_VALUE(far_rtt) OVER (PARTITION BY w.id ORDER BY probe_ttl DESC, far_rtt ASC)" in sql
     )
     # the hop kept per TTL is chosen exactly as before, so paths do not change
+    # (ranked in FinalNodeExtraction, kept in NodeExtraction)
     assert re.search(
-        r"PARTITION BY id, probe_ttl\s*\n\s*ORDER BY far_rtt ASC, addr ASC",
-        _block(sql, "NodeExtraction"),
+        r"PARTITION BY ne\.id, ne\.probe_ttl\s*\n\s*ORDER BY ne\.far_rtt ASC, ne\.addr ASC",
+        _block(sql, "FinalNodeExtraction"),
     )
+    assert "WHERE ttl_rn = 1" in _block(sql, "NodeExtraction")
 
 
 def test_scamper2_hops_are_not_shifted():
