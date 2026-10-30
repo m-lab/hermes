@@ -160,6 +160,12 @@ MeasurementsWithGroup AS (
     -- An unresolved coordinate is not a metro. Do not silently mix a city
     -- fallback into a partition labelled as metro-derived.
     AND (_detection_granularity != 'metro' OR g.metro IS NOT NULL)
+  -- A test id carried by more than one test in the window is ambiguous: its
+  -- traces and revTrs cannot be attributed to either test, and the per-id
+  -- ANY_VALUEs below then mixed fields from both (non-deterministically). Rare:
+  -- 90 ids / ~340 tests in 2026-08-05..12, mostly mlab-e2e-monitoring
+  -- 'Speedtest_*' ids reused across days. Drop them rather than guess.
+  QUALIFY COUNT(*) OVER (PARTITION BY ndt.id) = 1
 ),
 AnomalyCounts AS (
   SELECT *
