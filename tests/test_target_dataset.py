@@ -7,6 +7,8 @@ mutates production. These tests are the guard on that.
 
 from __future__ import annotations
 
+from unittest import mock
+
 import pytest
 
 from hermes.pipeline import init_staging, union
@@ -194,3 +196,15 @@ def test_resume_still_refuses_an_entirely_unlabelled_partition(monkeypatch):
     """All-NULL means pre-migration data, which genuinely is an unknown regime."""
     with pytest.raises(RuntimeError, match="no detection_granularity at all"):
         _guard(monkeypatch, ["<NULL>"])
+
+
+def test_copy_inputs_refreshes_staging_lookups_from_production():
+    # A stale staging giga_school_ips made a staging run drop every non-'giga-meter'
+    # GIGA row (2026-10-30). --copy-inputs now replaces it from production.
+    client = mock.MagicMock()
+    init_staging.refresh_lookups(client)
+    sql = client.query.call_args[0][0]
+    assert sql.startswith(
+        "CREATE OR REPLACE TABLE `mlab-collaboration.hermes_staging.giga_school_ips`"
+    )
+    assert "FROM `mlab-collaboration.hermes_union.giga_school_ips`" in sql
