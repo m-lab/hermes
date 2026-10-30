@@ -26,6 +26,17 @@ ASSERT _detection_granularity IN ('city', 'metro')
 -- join at all. That also removes the ST_COVERS/ST_DWITHIN work from this step.
 
 
+-- Step 03 joins anomaly_counts_union on the detection group only. More than one
+-- row per group means step 02 split a group's current-day sample, and the
+-- ANY_VALUE(a.*) reads below would mix columns from different splits.
+ASSERT NOT EXISTS (
+  SELECT 1
+  FROM `mlab-collaboration.${DS}.anomaly_counts_union`
+  WHERE partition_date = '${DAY}'
+  GROUP BY src_group_label, src_asn, dst_site, ip_version
+  HAVING COUNT(*) > 1
+) AS 'anomaly_counts_union has more than one row per detection group; re-run step 02 for this date';
+
 INSERT INTO `mlab-collaboration.${DS}.transient_events_union`
   (id, dst, src, ndt_rtt, ndt_throughput, ndt_loss_rate, traceroute_rtt,
    total_windows, is_consistent, src_city, src_lat, src_state, src_lon,
@@ -149,6 +160,12 @@ MeasurementsWithGroup AS (
     -- An unresolved coordinate is not a metro. Do not silently mix a city
     -- fallback into a partition labelled as metro-derived.
     AND (_detection_granularity != 'metro' OR g.metro IS NOT NULL)
+  -- A test id carried by more than one test in the window is ambiguous: its
+  -- traces and revTrs cannot be attributed to either test, and the per-id
+  -- ANY_VALUEs below then mixed fields from both (non-deterministically). Rare:
+  -- 90 ids / ~340 tests in 2026-08-05..12, mostly mlab-e2e-monitoring
+  -- 'Speedtest_*' ids reused across days. Drop them rather than guess.
+  QUALIFY COUNT(*) OVER (PARTITION BY ndt.id) = 1
 ),
 AnomalyCounts AS (
   SELECT *
@@ -1066,7 +1083,8 @@ filtered_reverse_path_on_date AS (
     ORDER BY
       CASE WHEN raw.stop_reason = 'REACHES' THEN 1 ELSE 2 END,
       connection_pref,
-      raw.date DESC
+      raw.date DESC,
+      raw.id  -- total order: same stop reason, connection and date otherwise tie
   ) = 1
 ),
 
@@ -1087,22 +1105,38 @@ WithReversePathData AS (
 --------------------------------------------------------------------------------
 -- 3) City-level percentile summary, then final join
 --------------------------------------------------------------------------------
-CityServerLatencyThroughputSummary AS (
+-- Exact percentiles. The approximate quantile aggregate is not reproducible across
+-- runs (step 02 dropped it for the same reason). PERCENTILE_DISC keeps the old
+-- meaning: an actual sample value at that rank.
+CitySamples AS (
   SELECT
     ndt.detection_src_city AS src_city,
     ndt.client.Network.ASNumber AS src_asn,
     ndt.server.Site AS dst_site,
     ndt.ip_version,
-    APPROX_QUANTILES(ndt.download_min_rtt, 100)[OFFSET(1)]   AS oneth_percentile_rtt,
-    APPROX_QUANTILES(ndt.download_min_rtt, 100)[OFFSET(10)]  AS tenth_percentile_rtt,
-    APPROX_QUANTILES(ndt.download_min_rtt, 100)[OFFSET(50)]  AS median_rtt,
-    APPROX_QUANTILES(ndt.download_min_rtt, 100)[OFFSET(90)]  AS ninetyth_percentile_rtt,
-
-    APPROX_QUANTILES(ndt.download_throughput_mbps, 100)[OFFSET(50)] AS median_throughput,
-    APPROX_QUANTILES(ndt.download_throughput_mbps, 100)[OFFSET(90)] AS ninetyth_percentile_throughput
+    ARRAY_AGG(ndt.download_min_rtt IGNORE NULLS ORDER BY ndt.download_min_rtt) AS rtts,
+    ARRAY_AGG(ndt.download_throughput_mbps IGNORE NULLS ORDER BY ndt.download_throughput_mbps)
+      AS throughputs
   FROM MeasurementsWithGroup ndt
   WHERE ndt.partition_date = '${DAY}'
   GROUP BY src_city, ndt.client.Network.ASNumber, ndt.server.Site, ndt.ip_version
+),
+
+CityServerLatencyThroughputSummary AS (
+  SELECT
+    src_city,
+    src_asn,
+    dst_site,
+    ip_version,
+    (SELECT PERCENTILE_DISC(x, 0.01) OVER() FROM UNNEST(rtts) x LIMIT 1) AS oneth_percentile_rtt,
+    (SELECT PERCENTILE_DISC(x, 0.10) OVER() FROM UNNEST(rtts) x LIMIT 1) AS tenth_percentile_rtt,
+    (SELECT PERCENTILE_DISC(x, 0.50) OVER() FROM UNNEST(rtts) x LIMIT 1) AS median_rtt,
+    (SELECT PERCENTILE_DISC(x, 0.90) OVER() FROM UNNEST(rtts) x LIMIT 1) AS ninetyth_percentile_rtt,
+    (SELECT PERCENTILE_DISC(x, 0.50) OVER() FROM UNNEST(throughputs) x LIMIT 1)
+      AS median_throughput,
+    (SELECT PERCENTILE_DISC(x, 0.90) OVER() FROM UNNEST(throughputs) x LIMIT 1)
+      AS ninetyth_percentile_throughput
+  FROM CitySamples
 ),
 
 with_median_lat_throughput AS (

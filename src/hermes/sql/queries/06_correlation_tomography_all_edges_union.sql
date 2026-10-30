@@ -47,8 +47,9 @@ SELECT
 FROM base_events AS fr
 CROSS JOIN UNNEST(
   ARRAY(SELECT STRUCT(
-          ARRAY_AGG(CONCAT(n.associated_asn, '-', COALESCE(n.metro, n.place))) AS asn_city,
-          ARRAY_AGG(IFNULL(n.associated_ixp, 'None')) AS ixp_arr)
+          -- ORDER BY n.ttl: edges pair adjacent elements, and UNNEST order is not guaranteed
+          ARRAY_AGG(CONCAT(n.associated_asn, '-', COALESCE(n.metro, n.place)) ORDER BY n.ttl) AS asn_city,
+          ARRAY_AGG(IFNULL(n.associated_ixp, 'None') ORDER BY n.ttl) AS ixp_arr)
         FROM UNNEST(fr.forward_updated_node_details) n
         WHERE n.associated_asn IS NOT NULL AND COALESCE(n.metro, n.place) IS NOT NULL)
 ) AS fwd
@@ -71,8 +72,9 @@ SELECT
 FROM base_events AS fr
 CROSS JOIN UNNEST(
   ARRAY(SELECT STRUCT(
-          ARRAY_AGG(CONCAT(n.associated_asn, '-', COALESCE(n.metro, n.place))) AS asn_city,
-          ARRAY_AGG(IFNULL(n.associated_ixp, 'None')) AS ixp_arr)
+          -- ORDER BY n.ttl: edges pair adjacent elements, and UNNEST order is not guaranteed
+          ARRAY_AGG(CONCAT(n.associated_asn, '-', COALESCE(n.metro, n.place)) ORDER BY n.ttl) AS asn_city,
+          ARRAY_AGG(IFNULL(n.associated_ixp, 'None') ORDER BY n.ttl) AS ixp_arr)
         FROM UNNEST(fr.reverse_updated_node_details) n
         WHERE n.associated_asn IS NOT NULL AND COALESCE(n.metro, n.place) IS NOT NULL)
 ) AS rev

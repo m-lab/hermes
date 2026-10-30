@@ -43,3 +43,42 @@ def test_public_output_orders_observed_ips_and_avoids_any_value():
 def test_mode_breaks_frequency_ties_by_value():
     values = pd.Series(["zeta", "alpha", "zeta", "alpha"])
     assert _deterministic_mode(values) == "alpha"
+
+
+def _q(name: str) -> str:
+    return loader.load_query(name, {"DAY": "2026-10-14", "DETECTION_GRANULARITY": "metro"})
+
+
+def test_detector_summarizes_the_current_day_once_per_detection_group():
+    """Medians, differences and flags must describe the same group the baseline and
+    the statistical tests describe, not a split of it (2026-10 identity fix)."""
+    sql = _q("02_detect_anomalies_union.sql")
+    base = sql[sql.index("\nCurrentDayAggregatedBase AS (") :]
+    base = base[: base.index("\n),")]
+    for col in ("src_country", "src_asn_name", "src_state", "dst_asn", "dst_country", "dst_city"):
+        assert f"gd.d.{col} AS {col}" in base
+    assert "JOIN GroupDescriptors gd" in base
+    descriptors = sql[sql.index("\nGroupDescriptors AS (") :]
+    assert "ORDER BY n DESC, src_state, src_country, src_asn_name, dst_city" in descriptors
+    assert "AVG(CAST(ndt.client.Geo.Latitude AS NUMERIC))" in base
+
+
+def test_transient_events_is_reproducible():
+    sql = _q("03_build_transient_events_union.sql")
+    assert "APPROX_QUANTILES" not in sql
+    assert "PERCENTILE_DISC(x, 0.50) OVER() FROM UNNEST(rtts) x LIMIT 1" in sql
+    assert "raw.date DESC,\n      raw.id" in sql
+    # refuses a split group instead of mixing its rows column by column
+    guard = sql.index("ASSERT NOT EXISTS")
+    assert guard < sql.index("INSERT INTO `mlab-collaboration.hermes_union.transient_events_union`")
+    assert "GROUP BY src_group_label, src_asn, dst_site, ip_version" in sql[guard:]
+    # a test id shared by several tests is dropped, not resolved by ANY_VALUE
+    # (2026-08-12: one 'Speedtest_*' id took its start from a different test per run)
+    mwg = sql[sql.index("MeasurementsWithGroup AS (") : sql.index("AnomalyCounts AS (")]
+    assert "QUALIFY COUNT(*) OVER (PARTITION BY ndt.id) = 1" in mwg
+
+
+def test_all_edges_orders_hops_before_pairing_neighbours():
+    sql = _q("06_correlation_tomography_all_edges_union.sql")
+    assert sql.count("COALESCE(n.metro, n.place)) ORDER BY n.ttl) AS asn_city") == 2
+    assert sql.count("IFNULL(n.associated_ixp, 'None') ORDER BY n.ttl) AS ixp_arr") == 2
