@@ -829,6 +829,8 @@ node_with_geo_info AS (
     CASE
       WHEN nwp.is_private THEN NULL
       WHEN nwp.ttl = 1 THEN 'server_metadata'
+      -- a hop that sent no reply has no address at all: it is not unannounced space
+      WHEN nwp.addr IS NULL OR nwp.addr = '*' THEN NULL
       WHEN nwp.associated_asn IS NULL THEN 'unannounced'
       WHEN hv.addr IS NOT NULL THEN hv.geo_source
       WHEN geo.hostname IS NOT NULL THEN 'hoiho'
@@ -1041,6 +1043,8 @@ reverse_node_with_geo_info AS (
     -- Geo mapping provenance
     CASE
       WHEN nwp.is_private THEN NULL
+      -- a hop that sent no reply has no address at all: it is not unannounced space
+      WHEN nwp.addr IS NULL OR nwp.addr = '*' THEN NULL
       WHEN nwp.associated_asn IS NULL THEN 'unannounced'
       WHEN hv.addr IS NOT NULL THEN hv.geo_source
       WHEN geo.hostname IS NOT NULL THEN 'hoiho'

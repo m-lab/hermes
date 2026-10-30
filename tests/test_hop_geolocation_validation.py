@@ -42,6 +42,15 @@ def test_both_paths_apply_the_decision_and_never_geolocate_unannounced_space():
     assert sql.count("WHEN nwp.associated_asn IS NULL THEN 'unannounced'") == 2
 
 
+def test_no_reply_hops_are_not_labelled_unannounced():
+    # '*' hops also have NULL associated_asn; on 2026-10-14 all 23.6M of them were
+    # labelled 'unannounced' before this guard existed.
+    sql = _sql()
+    guard = "WHEN nwp.addr IS NULL OR nwp.addr = '*' THEN NULL\n"
+    label = "WHEN nwp.associated_asn IS NULL THEN 'unannounced'"
+    assert len(re.findall(re.escape(guard) + r"\s*" + re.escape(label), sql)) == 2
+
+
 def test_forward_check_is_per_hop_and_reverse_check_is_unchanged():
     sql = _sql()
     cte = sql[sql.index("\ndistance_rtt_checks AS (") :]
