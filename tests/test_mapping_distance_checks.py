@@ -32,5 +32,8 @@ def test_forward_fiber_rtt_closes_the_return_leg_to_the_server():
         "OR dst_lat IS NULL OR dst_lon IS NULL"
     )
 
-    assert checks.count(server_guard) == 2
-    assert checks.count("ST_GEOGPOINT(dst_lon, dst_lat)) / (200 * 1000)") == 2
+    # speed_of_internet_fiber keeps the path-cumulative value, return leg included.
+    # distance_rtt_check moved to a per-hop bound in 2026-10 (one mislocated hop no
+    # longer fails every later hop); see test_hop_geolocation_validation.py.
+    assert checks.count(server_guard) == 1
+    assert checks.count("ST_GEOGPOINT(dst_lon, dst_lat)) / (200 * 1000)") == 1

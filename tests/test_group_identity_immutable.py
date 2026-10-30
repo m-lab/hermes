@@ -206,7 +206,12 @@ def test_path_local_uses_the_same_pair_identity_as_the_main_prepare(
 def test_temporal_consumers_key_on_the_detection_group(step05_temporal, step05_prevalences):
     assert "CONCAT(src_asn, ' - ', src_group_label, ' - ', dst_site)" in step05_temporal
     assert "GROUP BY src_asn, src_group_label, dst_site" in step05_temporal
-    assert "CONCAT(src_asn, ' - ', src_group_label, ' - ', dst_site)" in step05_prevalences
+    # The prevalence key is looked up in the correlation culprits, so it carries
+    # ip_version exactly like 06 (see tests/test_temporal_keys.py).
+    assert (
+        "CONCAT(src_asn, ' - ', src_group_label, ' - ', dst_site, ' - ', ip_version)"
+        in step05_prevalences
+    )
     assert "CONCAT(src_asn, ' - ', src_city, ' - ', dst_site)" not in step05_prevalences
 
 

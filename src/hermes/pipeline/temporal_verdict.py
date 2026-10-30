@@ -52,6 +52,18 @@ from hermes.pipeline.correlation_tomography import (  # noqa: E402
 _PREV_SQL = "05_temporal_edge_prevalences_union.sql"
 
 
+def _stored_pair(key: str, ip_version) -> str:
+    """The `temporal_path_verdicts.src_dst_pair` value for a 05/06 group key.
+
+    The prevalence SQL emits the same 4-field key as the correlation SQL
+    (`asn - group - site - ip_version`) so culprits can be looked up by it. The
+    table keeps its established 3-field form plus a separate `ip_version` column,
+    which the dashboard joins on, so the ip_version suffix is stripped on write.
+    """
+    suffix = f" - {ip_version}"
+    return key[: -len(suffix)] if ip_version is not None and key.endswith(suffix) else key
+
+
 def _read_prevalences(
     client,
     day_str: str,
@@ -72,6 +84,12 @@ def _culprit_edges(
 ) -> dict[str, set[str]]:
     """Return src_dst_pair -> set of culprit edge strings, in the SAME
     `<full-node>-<full-node>` format the prevalence SQL emits.
+
+    Keys are the correlation SQL's 4-field `asn - group - site - ip_version`
+    strings, which the prevalence SQL reproduces byte for byte. Matching ignores
+    direction and `information_source`: both orderings are emitted, so a culprit
+    found on the reverse path also matches the same AS-metro edge on the forward
+    path.
 
     Build from the full `edge_asn_metro` ("nodeA - nodeB", full metros) rather than
     `from_asn_metro`/`to_asn_metro`, which truncate the place to its first hyphen
@@ -160,7 +178,7 @@ def compute_temporal_verdicts(
         rows.append(
             {
                 "partition_date": day_str,
-                "src_dst_pair": pair,
+                "src_dst_pair": _stored_pair(pair, ipv),
                 "ip_version": ipv,
                 "verdict": verdict,
                 "change_dir": change_dir,

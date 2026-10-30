@@ -833,22 +833,74 @@ StatisticalTestsResults AS (
   FROM CandidateGroups
 ),
 
+-- One set of descriptive attributes per tested group (src_asn, src_city,
+-- dst_site, ip_version), the key the baselines and statistical tests use. The
+-- current-day sample used to be split further by these attributes (a metro spans
+-- several states; a site's servers can differ in city/AS/coordinates), so medians,
+-- differences and anomaly flags were computed per split and compared with the
+-- WHOLE group's baseline, and step 03 then picked among the splits with
+-- ANY_VALUE, column by column. The group's most common attribute combination is
+-- used instead, chosen with a total order so reruns agree.
+GroupDescriptors AS (
+  SELECT
+    src_asn, src_city, dst_site, ip_version,
+    ARRAY_AGG(
+      STRUCT(src_country, src_asn_name, src_state, dst_asn, dst_country, dst_city, dst_lat, dst_lon)
+      ORDER BY n DESC, src_state, src_country, src_asn_name, dst_city, dst_asn, dst_country,
+        dst_lat, dst_lon
+      LIMIT 1
+    )[OFFSET(0)] AS d
+  FROM (
+    SELECT
+      ndt.client.Network.ASNumber AS src_asn,
+      ndt.detection_src_city AS src_city,
+      ndt.server.Site AS dst_site,
+      ndt.ip_version,
+      ndt.client.Geo.CountryCode AS src_country,
+      ndt.client.Network.ASName AS src_asn_name,
+      ndt.detection_src_state AS src_state,
+      ndt.server.Network.ASNumber AS dst_asn,
+      ndt.server.Geo.CountryCode AS dst_country,
+      ndt.server.Geo.city AS dst_city,
+      ndt.server.Geo.Latitude AS dst_lat,
+      ndt.server.Geo.Longitude AS dst_lon,
+      COUNT(*) AS n
+    -- the same measurements CurrentDayAggregatedBase summarizes
+    FROM MeasurementsWithGroup ndt
+    JOIN ConsistentSRCCounts c
+      ON ndt.client_ip = c.client_ip
+     AND ndt.ip_version = c.ip_version
+    JOIN ConsistentIPs cip
+      ON ndt.client_ip = cip.client_ip
+     AND ndt.ip_version = cip.ip_version
+    JOIN BaselineMetricsAggregated b
+      ON ndt.client.Network.ASNumber = b.src_asn
+     AND ndt.detection_src_city = b.src_city
+     AND ndt.server.Site = b.dst_site
+     AND ndt.ip_version = b.ip_version
+    WHERE ndt.partition_date = '${DAY}'
+    GROUP BY 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12
+  )
+  GROUP BY src_asn, src_city, dst_site, ip_version
+),
+
 CurrentDayAggregatedBase AS (
   SELECT
     TRUE AS is_consistent,
     ndt.client.Network.ASNumber AS src_asn,
-    ndt.client.Geo.CountryCode AS src_country,
-    ndt.client.Network.ASName AS src_asn_name,
-    AVG(ndt.client.Geo.Latitude) AS src_lat,
-    AVG(ndt.client.Geo.Longitude) AS src_lon,
+    gd.d.src_country AS src_country,
+    gd.d.src_asn_name AS src_asn_name,
+    -- NUMERIC sums exactly, so the mean does not depend on summation order.
+    CAST(AVG(CAST(ndt.client.Geo.Latitude AS NUMERIC)) AS FLOAT64) AS src_lat,
+    CAST(AVG(CAST(ndt.client.Geo.Longitude AS NUMERIC)) AS FLOAT64) AS src_lon,
     ndt.detection_src_city AS src_city,
-    ndt.detection_src_state AS src_state,
-    ndt.server.Network.ASNumber AS dst_asn,
-    ndt.server.Geo.CountryCode AS dst_country,
+    gd.d.src_state AS src_state,
+    gd.d.dst_asn AS dst_asn,
+    gd.d.dst_country AS dst_country,
     ndt.server.Site AS dst_site,
-    ndt.server.Geo.city AS dst_city,
-    ndt.server.Geo.Latitude AS dst_lat,
-    ndt.server.Geo.Longitude AS dst_lon,
+    gd.d.dst_city AS dst_city,
+    gd.d.dst_lat AS dst_lat,
+    gd.d.dst_lon AS dst_lon,
     ndt.ip_version,
     CAST(AVG(b.number_of_unique_src_ips_baseline) AS INT64) AS unique_ip_count_per_site,
     CAST(AVG(b.number_of_measurements_baseline) AS INT64) AS measurement_count_per_site,
@@ -888,7 +940,14 @@ CurrentDayAggregatedBase AS (
    AND ndt.detection_src_city = b.src_city
    AND ndt.server.Site = b.dst_site
    AND ndt.ip_version = b.ip_version
+  JOIN GroupDescriptors gd
+    ON ndt.client.Network.ASNumber = gd.src_asn
+   AND ndt.detection_src_city = gd.src_city
+   AND ndt.server.Site = gd.dst_site
+   AND ndt.ip_version = gd.ip_version
   WHERE ndt.partition_date = '${DAY}'
+  -- The descriptive columns come from gd (one value per group), so this is one
+  -- row per tested group.
   GROUP BY
     src_asn, src_city, dst_site, dst_city, dst_asn, dst_country,
     src_country, src_asn_name, is_consistent, src_state, dst_lat, dst_lon,
