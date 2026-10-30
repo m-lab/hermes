@@ -147,14 +147,14 @@ measured server-to-client direction.
 | `cc` | `STRING` | Country code of the hop |
 | `metro` | `STRING` | Metro area of the hop |
 | `score` | `INT64` | Geolocation confidence score (`-1` if unknown) |
-| `geo_source` | `STRING` | Provenance of geolocation: `"server_metadata"`, `"hoiho"`, `"ipinfo"`, or `"ripe_ipmap"` |
+| `geo_source` | `STRING` | Provenance of geolocation: `"server_metadata"`, `"hoiho"`, `"ipinfo"`, `"ripe_ipmap"`; since 2026-10 also `"server_proximity"` (database location refuted by RTT; the router answers within 1.5 ms of an M-Lab site, so the site's location is used), `"rtt_checked_<source>"` (database location refuted; another source's location that no RTT refutes, which is weaker than verified), `"refuted"` (location removed; AS kept), `"refuted_observation"` (this observation's RTT cannot reach the location, with too little evidence to judge the address), `"unannounced"` (a replying public address with no announcing AS; never geolocated; no-reply `*` hops are NULL). See step 04, section 5b. |
 | `geo_partition_date` | `DATE` | Date of the geolocation data used (NULL for HOIHO/server metadata) |
 | `ixp_partition_date` | `DATE` | Date of the IXP membership data used |
 | `facilities_info` | `ARRAY<STRUCT>` | Reserved for colocation facility data (currently NULL) |
 | `cumulative_distance_km` | `FLOAT64` | Cumulative geographic distance from the M-Lab server to this hop (km) |
 | `distance_to_destination_km` | `FLOAT64` | Great-circle remaining distance from this hop to the client (km) |
 | `speed_of_internet_fiber` | `FLOAT64` | Lower-bound RTT to this hop: traced server-to-hop distance plus a geodesic hop-to-server return leg, at 200 km/ms (ms) |
-| `distance_rtt_check` | `STRING` | `"Above threshold"` if fiber-speed RTT > observed RTT (potential geolocation error); `"Below threshold"` otherwise |
+| `distance_rtt_check` | `STRING` | Forward path, since 2026-10: `"Above threshold"` if this hop's own RTT cannot reach its location and back (RTT x 100 km < distance to the server - 100 km); `"Below threshold"` otherwise. Earlier partitions (and the reverse path) use the path-cumulative bound, where one mislocated hop fails every later hop. |
 | `above_baseline_flag` | `STRING` | Always NULL on forward path (computed only for reverse) |
 | `increasing_latency_flag` | `STRING` | Always NULL on forward path |
 | `baseline_consistency_flag` | `STRING` | Always NULL on forward path |
