@@ -129,12 +129,39 @@ def copy_input_partitions(
     return job.num_dml_affected_rows or 0
 
 
+#: Unpartitioned lookup that step 04 reads from ${DS} to pick the GIGA subset. It is
+#: loaded into production separately, so a staging copy goes stale: on 2026-10-30
+#: staging had no month after 2026-06, so a staging run of 2026-08-12 wrote only
+#: 'giga-meter'-named tests and looked as if 18% of the GIGA rows were lost.
+LOOKUP_TABLES = ["giga_school_ips"]
+
+
+def refresh_lookups(client: bigquery.Client, dry_run: bool = False) -> None:
+    """Replace staging's lookup tables with production's current contents."""
+    for table in LOOKUP_TABLES:
+        sql = (
+            f"CREATE OR REPLACE TABLE `{PROJECT}.{STAGING_DATASET}.{table}` AS "
+            f"SELECT * FROM `{PROJECT}.{DEFAULT_DATASET}.{table}`"
+        )
+        if dry_run:
+            job = client.query(sql, job_config=bigquery.QueryJobConfig(dry_run=True))
+            logger.info("[dry-run] refresh %s: %.2f GiB", table, job.total_bytes_processed / 2**30)
+            continue
+        job = client.query(sql)
+        job.result()
+        logger.info("refreshed staging %s (%.2f GiB billed)", table, job.total_bytes_billed / 2**30)
+
+
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--project-id", default=PROJECT, help="billing/job project")
     ap.add_argument("--create", action="store_true", help="create missing staging tables")
-    ap.add_argument("--copy-inputs", action="store_true", help=f"seed staging {INPUT_TABLE}")
+    ap.add_argument(
+        "--copy-inputs",
+        action="store_true",
+        help=f"seed staging {INPUT_TABLE} and refresh lookups ({', '.join(LOOKUP_TABLES)})",
+    )
     ap.add_argument("--start", help="first date for --copy-inputs (YYYY-MM-DD)")
     ap.add_argument("--end", help="last date for --copy-inputs (YYYY-MM-DD)")
     ap.add_argument(
@@ -169,6 +196,7 @@ def main() -> None:
             f"  copying {INPUT_TABLE} {start}..{end} (includes {args.baseline_days} baseline days)"
         )
         copy_input_partitions(client, start, end, dry_run=args.dry_run)
+        refresh_lookups(client, dry_run=args.dry_run)
 
 
 if __name__ == "__main__":
