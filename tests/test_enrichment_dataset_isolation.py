@@ -68,3 +68,47 @@ def test_run_enrichment_skips_rdns_and_hoiho_for_clients():
     )
     # And the calls must still exist for topology.
     assert "process_rdns" in src and "process_hoiho_geolocation" in src
+
+
+# 3. HermesEnrichment writes the shared `hermes.*` reference tables whatever the
+#    target, so a `--target staging` run used to write production geolocation/rDNS
+#    while logging "Production tables are untouched" (found 2026-10-30).
+
+
+def test_staging_run_never_constructs_the_enricher(monkeypatch):
+    built = mock.Mock(side_effect=AssertionError("enricher built for a staging run"))
+    monkeypatch.setattr(union, "HermesEnrichment", built)
+    for source in ("clients", "topology"):
+        union.run_enrichment(
+            "2026-08-12",
+            "mlab-collaboration",
+            lookback_days=0,
+            source=source,
+            dataset="hermes_staging",
+        )
+    built.assert_not_called()
+
+
+def test_production_run_still_enriches(monkeypatch):
+    built = mock.MagicMock()
+    monkeypatch.setattr(union, "HermesEnrichment", built)
+    union.run_enrichment(
+        "2026-08-12",
+        "mlab-collaboration",
+        lookback_days=0,
+        source="clients",
+        dataset="hermes_union",
+    )
+    assert built.call_count == 2  # IPv4 and IPv6
+
+
+def test_integrity_check_reads_the_target_dataset(monkeypatch):
+    client = mock.MagicMock()
+    client.query.return_value.result.return_value = []
+    monkeypatch.setattr(union.bigquery, "Client", lambda project: client)
+    union.find_unattributed_partitions(
+        "mlab-collaboration", [union.date(2026, 8, 12)], dataset="hermes_staging"
+    )
+    sql = client.query.call_args[0][0]
+    assert "`mlab-collaboration.hermes_staging.events_explained_daily`" in sql
+    assert "hermes_union" not in sql

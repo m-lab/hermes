@@ -13,6 +13,9 @@ copied, so a staging run exercises the same DDL constraints production does.
 Reference datasets (``hermes``, ``measurement-lab``) are deliberately shared with
 production and are never copied: a staging run must resolve the same geolocation,
 AS metadata and IXP data, or the comparison against production is meaningless.
+They are also never *written* by a staging run: enrichment (which writes them) is
+skipped for any non-production target, so IPs production has not yet enriched have
+no geolocation/rDNS in staging output.
 
 ``--copy-inputs`` exists because step 02's baseline reads a trailing week of
 ``merged_download_upload``. Copying those partitions from production is far cheaper
