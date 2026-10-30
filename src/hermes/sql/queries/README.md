@@ -209,7 +209,7 @@ Three details worth knowing before editing this query:
   `DATE_SUB(DATE('${DAY}'), INTERVAL 1 MONTH) .. ${DAY}`. Do not replace this
   with a fixed start date — that makes the scan grow without limit as time passes.
 
-Also writes the GIGA-meter subset: rows where `client_name = 'giga-meter'` OR the client IP appears in `hermes_union.giga_school_ips` (for older measurements before the explicit flag was adopted).
+Also writes the GIGA-meter subset: rows where `client_name = 'giga-meter'` OR the client IP appears in `hermes_union.giga_school_ips` for any month the trace window (`${DAY}`−8 .. `${DAY}`) touches. This is the definition the 2026-10 production correction (`scripts/correct_giga_client_name.py`) applied to history.
 
 ### Canonical compatibility view: `events_enriched`
 
