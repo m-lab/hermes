@@ -1031,8 +1031,11 @@ reverse_distance_rtt_checks AS (
       ELSE (cumulative_distance_km / 200)
         + (ST_DISTANCE(ST_GEOGPOINT(longitude, latitude), ST_GEOGPOINT(dst_lon, dst_lat)) / (200 * 1000))
     END AS speed_of_internet_fiber,
+    -- No RTT of its own (scamper1 keeps no TTL-1 reply, so usually the first router)
+    -- means the check cannot run: NULL, like a hop without a location, not 'Below threshold'.
     CASE
       WHEN cumulative_distance_km IS NULL OR latitude IS NULL OR longitude IS NULL OR dst_lat IS NULL OR dst_lon IS NULL THEN NULL
+      WHEN rtts IS NULL THEN NULL
       WHEN (
         (cumulative_distance_km / 200)
         + ST_DISTANCE(ST_GEOGPOINT(longitude, latitude), ST_GEOGPOINT(dst_lon, dst_lat)) / (200 * 1000)
@@ -1295,8 +1298,11 @@ distance_rtt_checks AS (
       ELSE (cumulative_distance_km / 200)
         + (ST_DISTANCE(ST_GEOGPOINT(longitude, latitude), ST_GEOGPOINT(dst_lon, dst_lat)) / (200 * 1000))
     END AS speed_of_internet_fiber,
+    -- No RTT of its own (scamper1 keeps no TTL-1 reply, so usually the first router)
+    -- means the check cannot run: NULL, like a hop without a location, not 'Below threshold'.
     CASE
       WHEN cumulative_distance_km IS NULL OR latitude IS NULL OR longitude IS NULL OR dst_lat IS NULL OR dst_lon IS NULL THEN NULL
+      WHEN rtts IS NULL THEN NULL
       WHEN (
         (cumulative_distance_km / 200)
         + ST_DISTANCE(ST_GEOGPOINT(longitude, latitude), ST_GEOGPOINT(dst_lon, dst_lat)) / (200 * 1000)

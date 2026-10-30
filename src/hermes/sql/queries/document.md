@@ -135,7 +135,7 @@ measured server-to-client direction.
 | `ttl` | `INT64` | Time-to-live / hop number (1 = first hop from the M-Lab server) |
 | `addr` | `STRING` | IP address of the router at this hop (`"*"` if non-responsive) |
 | `rdns_name` | `STRING` | Reverse DNS hostname of the hop IP |
-| `rtts` | `FLOAT64` | Round-trip time to this hop (ms); `-1` if no response |
+| `rtts` | `FLOAT64` | Round-trip time of this hop's own reply (ms); `-1` if the hop did not answer; `NULL` if it answered but its own RTT was not recorded (scamper1 keeps no TTL-1 replies, so usually the first router). Before 2026-10, scamper1 hops carried the NEXT hop's RTT |
 | `associated_asn` | `INT64` | ASN that owns this hop's IP (NULL for private/RFC1918 addresses) |
 | `associated_org` | `STRING` | Organization name of the ASN (from PeeringDB/WHOIS) |
 | `associated_peeringdb_name` | `STRING` | PeeringDB network name of the ASN |
