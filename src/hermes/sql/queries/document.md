@@ -172,7 +172,7 @@ Same sub-fields as the forward path, plus:
 | `above_baseline_flag` | `STRING` | `"Above baseline"` if hop RTT exceeds the event's baseline median RTT; `"Within baseline"` otherwise; `"Not responsive"` if no RTT |
 | `increasing_latency_flag` | `STRING` | `"Increasing"` if RTT increased by >3ms vs. previous hop; `"Stable/Decreasing"` otherwise; `"Not responsive"` if no RTT |
 
-Note: reverse-path RTTs are converted from microseconds to seconds (divided by 1000) during enrichment.
+Note: reverse-path RTTs are converted from microseconds to milliseconds (divided by 1000) during enrichment. Each is the RTT of a separate ping from the M-Lab server to that hop (revtr's `rtt_measurement_id` → `revtr_raw.ping1`), not the latency of the reverse path up to the hop. A revtr `rtt` of 0 means that ping got no reply and becomes NULL.
 
 ### Partition field
 

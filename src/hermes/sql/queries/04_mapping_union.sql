@@ -627,7 +627,10 @@ reverse_flattened_node_details AS (
     reverse_node.hop_ip AS addr,
     reverse_node.hop_number AS ttl,
     rdns.hostname AS rdns_name,
-    reverse_node.rtt AS rtts,
+    -- revtr hop rtt is a separate ping from the M-Lab server to the hop (us);
+    -- 0 means that ping got no reply, not a 0 ms RTT. Verified 2026-10-28 against
+    -- revtr_raw.ping1: 20-42% of hops per type are 0 and none of those have a ping.
+    NULLIF(reverse_node.rtt, 0) AS rtts,
     reverse_node.hop_type AS hop_type
   FROM `mlab-collaboration.${DS}.transient_events_union` t,
        UNNEST(t.reverse_node_details) AS reverse_node

@@ -145,9 +145,11 @@ def compute_temporal_verdicts(
             elif verdict == "congestion_in_place":
                 labels = label_edges(u, dd, delta)
                 stable = sub[sub["edge"].map(lambda e: labels.get(e) == "stable")]  # noqa: B023
-                stable = stable.assign(
-                    jump=stable["day_hop_rtt"].fillna(0) - stable["base_hop_rtt"].fillna(0)
-                )
+                # A jump needs an RTT on both sides. Filling a missing side with 0
+                # made an edge with no baseline RTT "jump" by its whole day-of RTT,
+                # so it tended to be named the congested segment.
+                stable = stable.dropna(subset=["day_hop_rtt", "base_hop_rtt"])
+                stable = stable.assign(jump=stable["day_hop_rtt"] - stable["base_hop_rtt"])
                 congested_segment = (
                     stable.sort_values(["jump", "edge"], ascending=[False, True], kind="mergesort")[
                         "edge"
