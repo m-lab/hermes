@@ -105,7 +105,7 @@ Phase A ── SQL steps 01-03 (parallel across dates)
   │
 Phase B ── Enrichment: geolocate + rDNS new topology IPs (once per batch)
   │
-Phase C ── SQL steps 04 + temporal tomography (parallel across dates)
+Phase C ── SQL step 04 (one date at a time, ascending) then temporal tomography (parallel)
   │
 Phase D ── Python v2 correlation tomography + temporal verdict (parallel across dates)
   │         writes: correlation_hyperedges_tomography_v2, temporal_path_verdicts
@@ -114,7 +114,11 @@ Phase E ── SQL step 07: public-format aggregation (parallel across dates)
             writes: events_explained_daily
 ```
 
-Multiple dates in a batch run in parallel (one worker per date). Within each date, steps run sequentially.
+Multiple dates in a batch run in parallel (one worker per date), except step 04,
+which runs one date at a time in ascending order (see "giga ordering rule" below).
+Within each date, steps run sequentially. A date only enters a phase if every
+earlier phase succeeded for it; a date that does not complete Phase E is listed at
+the end and the process exits **1**.
 
 ### Step 01: Merge upload + download measurements
 
@@ -415,14 +419,43 @@ To re-run only the parts that are missing, prefer `--fill-missing`: it selects
 which *dates* to run, while the per-step guard still decides which *steps*
 execute, so a date needing only Phase E does not redo Phases A–D.
 
-### Tables `--delete-first` does not clear
+### `--delete-first` fails loudly
 
-`delete_dates()` covers `OUTPUT_TABLES` only. It does **not** touch
-`giga_meter_measurements` (written by Step 04 alongside `events_with_as_and_geoloc`),
-`correlation_culprits_multigranularity`, `correlation_entity_stats_multigranularity`,
-or `temporal_path_verdicts`. Because Step 04 and the tomography writers append,
-re-running a date without clearing these yourself produces duplicate rows. Use
-`hermes-table-rerun --table … --delete-first` or an explicit `DELETE`.
+`delete_dates()` clears every table in `DELETE_TABLES` (resume targets plus the
+Phase-D tables) and, in metro mode, `giga_meter_measurements`. Any failed DELETE
+now raises `DeleteFailedError` and the run stops — it used to be logged and
+swallowed, leaving old rows that the resume guards then reused. Before the first
+DELETE it checks each table's BigQuery streaming buffer (the Phase-D tables are
+written with `insert_rows_json`, and DML cannot touch buffered rows for up to
+~90 min) and waits up to `--streaming-buffer-timeout-minutes` (default 100;
+0 = fail immediately). `--dry-run` never deletes.
+
+### giga ordering rule
+
+`giga_meter_measurements` dedups first-writer-wins and step 04 looks only
+**backward** (`partition_date BETWEEN DAY-7 AND DAY`). A measurement can be pulled
+in by any analysis date within 7 days of it, so step 04 for day D writes a
+duplicate of anything a later partition D+1..D+7 already holds. Therefore:
+
+- Step 04 runs in ascending date order, one date at a time.
+- Before deleting or running anything, `check_giga_order()` refuses (exit **2**)
+  if step 04 would run for D while a giga partition in D+1..D+7 will still exist.
+  It reads `INFORMATION_SCHEMA.PARTITIONS` only (free). Dates whose
+  `events_with_as_and_geoloc` already exists are exempt (04 is skipped for them).
+- If 04 fails for D, 04 is withheld for D+1..D+7 in the same batch.
+- To re-run an older date safely, include its later neighbours in the same
+  metro `--delete-first` run so they are rebuilt after it.
+  `--allow-giga-out-of-order` overrides both checks and accepts the duplicates.
+- Consequence: a descending walk (`scripts/backfill_walk.sh`) is refused on each
+  chunk whose newest date is within 7 days of existing coverage.
+
+### Phase 4 (multigranularity) resume
+
+`run_correlation_tomography` checks hyperedges and
+`correlation_culprits_multigranularity` separately. If hyperedges exist but
+multigran does not, only Phase 1 + Phase 4 re-run. To repair dates missing
+multigran output, use `--rerun-dates <day>` **without** `--delete-first`: steps
+01–05 and 07 are skipped by their guards and only Phase 4 runs.
 
 ## Monitoring cost
 

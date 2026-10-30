@@ -62,7 +62,10 @@ def test_giga_is_excluded_from_delete_by_design():
 def test_metro_conversion_can_explicitly_clear_giga(monkeypatch):
     queries = []
     query_job = SimpleNamespace(result=lambda: None)
-    client = SimpleNamespace(query=lambda query: queries.append(query) or query_job)
+    client = SimpleNamespace(
+        query=lambda query: queries.append(query) or query_job,
+        get_table=lambda table: SimpleNamespace(streaming_buffer=None),
+    )
     monkeypatch.setattr(union.bigquery, "Client", lambda **kwargs: client)
 
     union.delete_dates(

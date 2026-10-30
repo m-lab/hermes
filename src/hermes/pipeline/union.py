@@ -2,9 +2,13 @@ import argparse
 import concurrent.futures as cf
 import logging
 import multiprocessing as mp
+import sys
+import time
+from collections.abc import Set as AbstractSet
 from datetime import date, datetime, timedelta
 from typing import Literal, cast
 
+from google.api_core.exceptions import NotFound
 from google.auth import default
 from google.cloud import bigquery
 
@@ -412,8 +416,13 @@ def ensure_baseline(
     window_days: int = 7,
     detection_granularity: DetectionGranularity = "metro",
     dataset: str = DEFAULT_DATASET,
-) -> None:
+) -> list[date]:
     """Auto-fill missing baseline days by running step 01 for them.
+
+    Returns the fill days whose step 01 FAILED, so the caller can withhold any
+    target date whose baseline window contains one. (These used to be logged as a
+    warning only, and the target date was then detected against a short baseline
+    and reported as a success.)
 
     Makes an isolated/sparse run self-sufficient: e.g. processing a single recent
     date will first populate ``merged_download_upload`` (step 01 only) for any of
@@ -422,13 +431,13 @@ def ensure_baseline(
     also removes the multi-date Phase-A race (all step 01 commit before any step 02).
     """
     if not dates:
-        return
+        return []
     present = _present_in_merged(
         project_id, min(dates) - timedelta(days=window_days), max(dates), dataset
     )
     to_fill = baseline_fill_dates(dates, present, window_days)
     if not to_fill:
-        return
+        return []
     logger.info(
         f"Auto-baseline: running step 01 for {len(to_fill)} day(s) missing from "
         f"merged_download_upload: {', '.join(d.strftime('%Y-%m-%d') for d in to_fill)}"
@@ -443,9 +452,30 @@ def ensure_baseline(
         detection_granularity=detection_granularity,
         dataset=dataset,
     )
-    for r in results:
+    failed = []
+    for day, r in zip(to_fill, results, strict=True):
         if not r.startswith("Success:"):
-            logger.warning(f"Auto-baseline: {r}")
+            logger.error(f"Auto-baseline: {r}")
+            failed.append(day)
+    return failed
+
+
+def dates_with_failed_baseline(
+    dates: list[date], failed_fill: list[date], window_days: int = BASELINE_DAYS
+) -> dict[date, list[date]]:
+    """Target date -> failed baseline days inside its ``[d - window, d - 1]`` window.
+
+    A target date that is itself in ``dates`` is excluded as a blocker: Phase A1
+    re-runs its step 01 anyway, and a failure there is handled by A1.
+    """
+    batch = set(dates)
+    blockers = sorted(set(failed_fill) - batch)
+    out: dict[date, list[date]] = {}
+    for d in dates:
+        hit = [f for f in blockers if d - timedelta(days=window_days) <= f < d]
+        if hit:
+            out[d] = hit
+    return out
 
 
 def warn_thin_baselines(project_id: str, dates: list[date], window_days: int = 7) -> None:
@@ -474,11 +504,162 @@ def warn_thin_baselines(project_id: str, dates: list[date], window_days: int = 7
             )
 
 
+#: giga_meter_measurements dedups first-writer-wins, looking only BACKWARD: step
+#: 04 for day D skips a measurement already present in partitions D-7..D (see the
+#: NOT EXISTS in 04_mapping_union.sql). A trace can be pulled in by any analysis
+#: date within 7 days of it, so if a LATER partition (D+1..D+7) already holds it,
+#: D cannot see that copy and writes it a second time. Hence: step 04 must run in
+#: ascending date order, and never for D while D+1..D+7 already hold giga rows.
+GIGA_LOOKBACK_DAYS = 7
+
+
+class GigaOrderError(RuntimeError):
+    """Running step 04 for these dates would duplicate giga_meter_measurements rows."""
+
+
+def giga_order_conflicts(
+    dates: list[date],
+    giga_present: set[date],
+    mapping_present: set[date],
+    cleared: AbstractSet[date] = frozenset(),
+    giga_cleared: bool = False,
+    window_days: int = GIGA_LOOKBACK_DAYS,
+) -> dict[date, list[date]]:
+    """Dates whose step 04 would run while a LATER giga partition already exists.
+
+    Pure function so the rule is testable without BigQuery.
+
+    Parameters
+    ----------
+    dates
+        Dates about to be processed.
+    giga_present
+        Dates with a non-empty ``giga_meter_measurements`` partition (pre-delete).
+    mapping_present
+        Dates with a non-empty ``events_with_as_and_geoloc`` partition (pre-delete).
+        Step 04 is skipped by the resume guard for these unless they are cleared,
+        so they write no giga rows and cannot conflict.
+    cleared
+        Dates --delete-first will clear before the run.
+    giga_cleared
+        Whether that delete includes ``giga_meter_measurements`` (metro mode).
+
+    Returns
+    -------
+    dict
+        Date whose step 04 would run -> the later giga partitions (within
+        ``window_days``) that would still exist when it does. Empty = safe.
+    """
+    will_run_04 = {d for d in dates if d not in mapping_present or d in cleared}
+    giga_after_delete = set(giga_present) - (set(cleared) if giga_cleared else set())
+    conflicts: dict[date, list[date]] = {}
+    for d in sorted(will_run_04):
+        later = sorted(g for g in giga_after_delete if d < g <= d + timedelta(days=window_days))
+        if later:
+            conflicts[d] = later
+    return conflicts
+
+
+def check_giga_order(
+    project_id: str,
+    dates: list[date],
+    dataset: str = DEFAULT_DATASET,
+    cleared: AbstractSet[date] = frozenset(),
+    giga_cleared: bool = False,
+    allow: bool = False,
+) -> dict[date, list[date]]:
+    """Refuse (or, with ``allow``, loudly warn about) an out-of-order giga write.
+
+    Reads ``INFORMATION_SCHEMA.PARTITIONS`` only, so it bills nothing.
+    """
+    conflicts = giga_order_conflicts(
+        dates,
+        get_populated_dates(project_id, giga_output_table(dataset)),
+        get_populated_dates(project_id, _t("events_with_as_and_geoloc", dataset)),
+        cleared=cleared,
+        giga_cleared=giga_cleared,
+    )
+    if not conflicts:
+        return conflicts
+    detail = "; ".join(
+        f"{d:%Y-%m-%d} (later giga partitions: {', '.join(f'{g:%Y-%m-%d}' for g in gs)})"
+        for d, gs in conflicts.items()
+    )
+    msg = (
+        f"GIGA ORDER: step 04 would run for {len(conflicts)} date(s) while "
+        f"giga_meter_measurements already holds a later partition within "
+        f"{GIGA_LOOKBACK_DAYS} days. 04 dedups only backward, so these runs would "
+        f"write duplicate measurements: {detail}. Fix: include the later dates in the "
+        "same --delete-first run (metro), so they are rebuilt after, in ascending order."
+    )
+    if allow:
+        logger.error(msg + " PROCEEDING because --allow-giga-out-of-order was given.")
+        return conflicts
+    raise GigaOrderError(msg + " Pass --allow-giga-out-of-order to accept the duplicates.")
+
+
+#: How long :func:`delete_dates` waits for a table's streaming buffer to drain
+#: before giving up. BigQuery documents rows staying in the buffer for "up to 90
+#: minutes"; DML that would touch them fails with "would affect rows in the
+#: streaming buffer". The Phase-D tables are written with insert_rows_json, so a
+#: --delete-first started shortly after a nightly hits exactly this.
+STREAMING_BUFFER_TIMEOUT_S = 100 * 60
+STREAMING_BUFFER_POLL_S = 60
+
+
+class DeleteFailedError(RuntimeError):
+    """A --delete-first DELETE did not complete; the run must not proceed.
+
+    Proceeding would let the per-step resume guards find the old rows and skip
+    the step, so the "re-run" would silently re-publish the stale partition.
+    """
+
+
+def wait_for_streaming_buffer(
+    client: bigquery.Client,
+    table: str,
+    timeout_s: float = STREAMING_BUFFER_TIMEOUT_S,
+    poll_s: float = STREAMING_BUFFER_POLL_S,
+) -> bool:
+    """Block until ``table`` has no streaming buffer, or raise after ``timeout_s``.
+
+    Returns ``False`` if the table does not exist (nothing to delete), ``True``
+    once its streaming buffer is empty. ``timeout_s=0`` checks once and raises
+    immediately if a buffer is present.
+    """
+    deadline = time.monotonic() + timeout_s
+    while True:
+        try:
+            buffer = client.get_table(table).streaming_buffer
+        except NotFound:
+            logger.warning(f"{table} does not exist; nothing to delete there")
+            return False
+        if buffer is None:
+            return True
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise DeleteFailedError(
+                f"{table} still has a streaming buffer (~{buffer.estimated_rows} rows, "
+                f"oldest entry {buffer.oldest_entry_time}) after waiting "
+                f"{timeout_s / 60:.0f} min. DELETE would fail with 'would affect rows in "
+                "the streaming buffer'. Re-run later, or raise "
+                "--streaming-buffer-timeout-minutes."
+            )
+        logger.warning(
+            f"{table} has a streaming buffer (~{buffer.estimated_rows} rows, oldest "
+            f"{buffer.oldest_entry_time}); waiting up to {remaining / 60:.0f} more min "
+            "before deleting"
+        )
+        time.sleep(min(poll_s, remaining))
+
+
 def delete_dates(
     project_id: str,
     dates: list[date],
     include_giga: bool = False,
     dataset: str = DEFAULT_DATASET,
+    streaming_buffer_timeout_s: float = STREAMING_BUFFER_TIMEOUT_S,
+    streaming_buffer_poll_s: float = STREAMING_BUFFER_POLL_S,
 ) -> None:
     """Delete rows for specific dates from all union pipeline output tables.
 
@@ -496,14 +677,38 @@ def delete_dates(
     include_giga
         Also clear ``giga_meter_measurements``. Use only for a complete
         granularity-changing rerun whose step 04 will rebuild the date.
+    streaming_buffer_timeout_s, streaming_buffer_poll_s
+        How long to wait (and how often to re-check) for a table's streaming
+        buffer to drain before deleting from it. See
+        :func:`wait_for_streaming_buffer`.
+
+    Raises
+    ------
+    DeleteFailedError
+        If any table still has a streaming buffer after the timeout, or any
+        DELETE fails. This used to be logged and swallowed, which left the old
+        rows in place for the resume guards to reuse -- a "re-run" that silently
+        re-published the stale partition.
     """
     client = bigquery.Client(project=project_id)
 
     date_strings = [f"'{date.strftime('%Y-%m-%d')}'" for date in dates]
     date_list = ", ".join(date_strings)
-
     tables = delete_tables(dataset, include_giga=include_giga)
-    for table in tables:
+
+    # Pre-flight every table BEFORE the first DELETE, so the common failure (a
+    # streaming buffer still draining after a recent run) aborts with nothing
+    # deleted rather than with half the tables cleared.
+    present = [
+        t
+        for t in tables
+        if wait_for_streaming_buffer(
+            client, t, timeout_s=streaming_buffer_timeout_s, poll_s=streaming_buffer_poll_s
+        )
+    ]
+
+    failures: list[str] = []
+    for table in present:
         logger.info(
             f"Deleting entries for dates: {', '.join(d.strftime('%Y-%m-%d') for d in dates)} from table: {table}"
         )
@@ -512,12 +717,17 @@ def delete_dates(
             WHERE DATE(partition_date) IN ({date_list})
         """
         try:
-            query_job = client.query(query)
-            query_job.result()
+            client.query(query).result()
             logger.info(f"Successfully deleted from {table}")
-        except Exception as e:
-            logger.error(f"Error deleting from {table}: {str(e)}")
+        except Exception as e:  # noqa: BLE001 - collected and re-raised below
+            logger.error(f"Error deleting from {table}: {e}")
+            failures.append(f"{table}: {e}")
 
+    if failures:
+        raise DeleteFailedError(
+            f"--delete-first failed for {len(failures)} table(s); refusing to run, "
+            "because the resume guards would reuse the rows still present. " + " | ".join(failures)
+        )
     logger.info("Deletion completed for all tables")
 
 
@@ -1204,8 +1414,13 @@ def run_dates(
     tomography_workers: int | None = None,
     detection_granularity: DetectionGranularity = "metro",
     dataset: str = DEFAULT_DATASET,
-) -> None:
+    allow_giga_out_of_order: bool = False,
+) -> list[date]:
     """Run the full union pipeline for a batch of dates.
+
+    Returns the dates that did NOT complete every phase (empty = all good), so
+    ``main()`` can exit non-zero. A date only advances to a phase if every
+    earlier phase succeeded for it.
 
     Executes four phases:
 
@@ -1215,8 +1430,11 @@ def run_dates(
     - **Phase A2** — SQL steps 02-03 for the dates that merged.
     - **Phase B** — Enrichment once (geolocation + rDNS for topology IPs,
       covering all dates via the 30-day lookback window).
-    - **Phase C** — SQL steps 04 + temporal tomography for all dates in parallel.
-    - **Phase D** — Python v2 correlation tomography for all dates.
+    - **Phase C** — SQL step 04 sequentially in ASCENDING date order (giga
+      first-writer-wins dedup looks only backward), then temporal tomography (05)
+      in parallel for the dates whose 04 succeeded.
+    - **Phase D** — Python v2 correlation tomography for dates that passed C.
+    - **Phase E** — step 07 for dates that passed D.
 
     Parameters
     ----------
@@ -1240,8 +1458,10 @@ def run_dates(
     """
     if not dates:
         logger.info("No dates to process.")
-        return
+        return []
 
+    dates = sorted(set(dates))
+    all_dates = list(dates)
     detection_granularity = parse_detection_granularity(detection_granularity)
 
     if dry_run:
@@ -1257,18 +1477,32 @@ def run_dates(
                 f"[DRY RUN] Would run correlation + temporal tomography (python v2) for DAY={day_str}"
             )
             logger.info(f"[DRY RUN] Would run public-format step (Phase E) for DAY={day_str}")
-        return
+        return []
 
     # Pre-flight: ensure every date's anomaly-detection baseline window exists.
     # By default, auto-fill missing baseline days (step 01 only); otherwise just warn.
+    baseline_errors: list[str] = []
     if auto_baseline:
-        ensure_baseline(
+        failed_fill = ensure_baseline(
             project_id,
             dates,
             max_workers,
             detection_granularity=detection_granularity,
             dataset=dataset,
         )
+        # A target whose baseline day failed step 01 would be detected against a
+        # short baseline (under-reporting) and still be reported as a success.
+        blocked = dates_with_failed_baseline(dates, failed_fill)
+        for d, fs in blocked.items():
+            baseline_errors.append(
+                f"Error: {d:%Y-%m-%d} - baseline step 01 failed for "
+                f"{', '.join(f'{f:%Y-%m-%d}' for f in fs)}; date withheld"
+            )
+            logger.error(baseline_errors[-1])
+        dates = [d for d in dates if d not in blocked]
+        if not dates:
+            logger.error("Every date's baseline fill failed; nothing to run.")
+            return sorted(blocked)
     else:
         warn_thin_baselines(project_id, dates)
 
@@ -1355,8 +1589,10 @@ def run_dates(
             logger.info(f"  {result}")
 
     if not successful_dates:
-        logger.info("No dates completed phase A. Nothing to enrich or map.")
-        return
+        logger.error("No dates completed phase A. Nothing to enrich or map.")
+        for r in baseline_errors:
+            logger.warning(f"  {r}")
+        return all_dates
 
     # ── Post-Phase-A volume check ─────────────────────────────────────────
     # Step 01 can write a present, non-empty, badly-short partition that no
@@ -1396,23 +1632,38 @@ def run_dates(
     )
     run_enrichment(enrichment_date, project_id, lookback_days=enrichment_lookback, dataset=dataset)
 
-    # ── Phase C: steps 04 + temporal tomography in parallel ─────────────
+    # ── Phase C: step 04 (sequential, ascending), then 05 (parallel) ─────
     logger.info(
         f"═══ Phase C: Running post-enrichment SQL (04 + temporal) for {len(successful_dates)} date(s) ═══"
     )
-    results_c = _run_parallel_sql(
+    results_c = _run_phase_c(
         successful_dates,
         project_id,
-        SQL_FILES_POST_ENRICHMENT,
         max_workers,
-        skip_data_check=True,  # no data check needed for step 04
         detection_granularity=detection_granularity,
         dataset=dataset,
+        allow_giga_out_of_order=allow_giga_out_of_order,
     )
+
+    # Phase D/E are gated on Phase C. Without this, a date whose 04 failed still
+    # ran tomography over an empty/partial events_with_as_and_geoloc partition,
+    # "succeeded" with no culprits, and Phase E then published it.
+    dates_for_d = [
+        day
+        for day, result in zip(successful_dates, results_c, strict=True)
+        if result.startswith("Success:")
+    ]
+    phase_c_failed = [day for day in successful_dates if day not in set(dates_for_d)]
+    if phase_c_failed:
+        logger.error(
+            "Phase D/E SKIPPED for %d date(s) whose Phase C (04/05) failed: %s",
+            len(phase_c_failed),
+            ", ".join(day.strftime("%Y-%m-%d") for day in phase_c_failed),
+        )
 
     # ── Phase D: Python v2 correlation + temporal tomography (parallel across dates) ──
     logger.info(
-        f"═══ Phase D: Running correlation + temporal tomography for {len(successful_dates)} date(s) ═══"
+        f"═══ Phase D: Running correlation + temporal tomography for {len(dates_for_d)} date(s) ═══"
     )
     # Phase D is throttled INDEPENDENTLY of max_workers and defaults to a SINGLE
     # worker: one date can spike to ~20 GB RSS, so 2+ workers OOM the container
@@ -1422,9 +1673,11 @@ def run_dates(
     # deadlocking — see _run_phase_d_tomography.
     tomo_workers = tomography_workers or 1
     logger.info(f"  Phase D parallelism: {tomo_workers} worker(s)")
-    worker_args = [(date, project_id, tomography_backend, dataset) for date in successful_dates]
+    worker_args = [(date, project_id, tomography_backend, dataset) for date in dates_for_d]
 
-    if len(successful_dates) == 1:
+    if not dates_for_d:
+        results_d = []
+    elif len(dates_for_d) == 1:
         results_d = [_run_tomography_worker(worker_args[0])]
     else:
         results_d = _run_phase_d_tomography(worker_args, tomo_workers)
@@ -1444,11 +1697,12 @@ def run_dates(
     # gate existed.)
     tomography_ok = {
         day
-        for day, result in zip(successful_dates, results_d, strict=True)
+        for day, result in zip(dates_for_d, results_d, strict=True)
         if result.startswith("Success:")
     }
-    dates_for_e = [day for day in successful_dates if day in tomography_ok]
-    tomography_failed = [day for day in successful_dates if day not in tomography_ok]
+    results_d += [f"Error: {day} - Phase C failed, Phase D skipped" for day in phase_c_failed]
+    dates_for_e = [day for day in dates_for_d if day in tomography_ok]
+    tomography_failed = [day for day in dates_for_d if day not in tomography_ok]
     if tomography_failed:
         logger.error(
             "Phase E SKIPPED for %d date(s) whose Phase D failed — writing the public "
@@ -1467,6 +1721,11 @@ def run_dates(
         detection_granularity=detection_granularity,
         dataset=dataset,
     )
+    e_ok = {
+        day
+        for day, result in zip(dates_for_e, results_e, strict=True)
+        if result.startswith("Success:")
+    }
     results_e += [f"Error: {day} - Phase D failed, Phase E skipped" for day in tomography_failed]
 
     # ── Post-Phase-E integrity check ──────────────────────────────────────
@@ -1485,12 +1744,14 @@ def run_dates(
         degraded_set = set(degraded)
         results_e = [r for r in results_e if not _result_is_success_for(r, degraded_set)]
         results_e += [f"Error: {day} - Phase E wrote 100% NULL attribution" for day in degraded]
+        e_ok -= degraded_set
 
     # ── Summary ───────────────────────────────────────────────────────────
-    all_results = results_a + results_c + results_d + results_e
+    all_results = baseline_errors + results_a + results_c + results_d + results_e
     successful = [r for r in all_results if r.startswith("Success:")]
     skipped = [r for r in all_results if r.startswith("Skipped:")]
     failed = [r for r in all_results if r.startswith("Error:")]
+    incomplete = [d for d in all_dates if d not in e_ok]
 
     logger.info("Pipeline completed:")
     logger.info(f"  Pipeline steps successful: {len(successful)}")
@@ -1500,6 +1761,79 @@ def run_dates(
         logger.warning("Failed steps:")
         for f in failed:
             logger.warning(f"  {f}")
+    if incomplete:
+        logger.error(
+            "%d of %d date(s) did NOT complete every phase: %s",
+            len(incomplete),
+            len(all_dates),
+            ", ".join(d.strftime("%Y-%m-%d") for d in incomplete),
+        )
+    return incomplete
+
+
+def _run_phase_c(
+    dates: list[date],
+    project_id: str,
+    max_workers: int | None,
+    detection_granularity: DetectionGranularity = "metro",
+    dataset: str = DEFAULT_DATASET,
+    allow_giga_out_of_order: bool = False,
+) -> list[str]:
+    """Phase C: step 04 one date at a time in ascending order, then 05 in parallel.
+
+    Step 04 is serialized because ``giga_meter_measurements`` dedups
+    first-writer-wins looking only BACKWARD (D-7..D). Two adjacent dates running
+    04 concurrently cannot see each other's rows, and a date running after a later
+    one cannot see the later copy -- both write the same measurement twice. So
+    once 04 fails for a date, 04 is withheld for the next
+    :data:`GIGA_LOOKBACK_DAYS` days of the batch (unless
+    ``allow_giga_out_of_order``): running them would make the failed date
+    un-rerunnable without duplicating.
+
+    Returns one result string per date in ``dates`` order.
+    """
+    dates = sorted(dates)
+    step04 = [f for f in SQL_FILES_POST_ENRICHMENT if f.startswith("04_")]
+    rest = [f for f in SQL_FILES_POST_ENRICHMENT if f not in step04]
+
+    results_04: dict[date, str] = {}
+    failed_04: list[date] = []
+    for day in dates:
+        blockers = [f for f in failed_04 if f < day <= f + timedelta(days=GIGA_LOOKBACK_DAYS)]
+        if blockers and not allow_giga_out_of_order:
+            results_04[day] = (
+                f"Error: {day:%Y-%m-%d} - step 04 withheld: 04 failed for "
+                f"{', '.join(f'{f:%Y-%m-%d}' for f in blockers)} within "
+                f"{GIGA_LOOKBACK_DAYS} days; running this date first would duplicate "
+                "giga_meter_measurements rows when that date is re-run"
+            )
+            logger.error(results_04[day])
+            failed_04.append(day)
+            continue
+        result = _run_sql_steps_worker(
+            (day, project_id, step04, True, detection_granularity, dataset)
+        )
+        results_04[day] = result
+        if not result.startswith("Success:"):
+            failed_04.append(day)
+
+    ok_04 = [d for d in dates if results_04[d].startswith("Success:")]
+    results_05 = dict(
+        zip(
+            ok_04,
+            _run_parallel_sql(
+                ok_04,
+                project_id,
+                rest,
+                max_workers,
+                skip_data_check=True,
+                detection_granularity=detection_granularity,
+                dataset=dataset,
+            ),
+            strict=True,
+        )
+    )
+    return [results_05.get(d, results_04[d]) for d in dates]
 
 
 def main() -> None:
@@ -1588,6 +1922,25 @@ def main() -> None:
         f"(default: {FINAL_OUTPUT_TABLE}).",
     )
 
+    parser.add_argument(
+        "--allow-giga-out-of-order",
+        action="store_true",
+        help="Proceed even though step 04 would run for a date while "
+        "giga_meter_measurements already holds a LATER partition within 7 days "
+        "(04 dedups only backward, so this writes duplicate measurements). Also "
+        "lets 04 run for dates within 7 days after a date whose 04 failed. "
+        "Default: refuse.",
+    )
+    parser.add_argument(
+        "--streaming-buffer-timeout-minutes",
+        type=float,
+        default=STREAMING_BUFFER_TIMEOUT_S / 60,
+        help="With --delete-first: how long to wait for a table's BigQuery streaming "
+        "buffer to drain before failing (DELETE cannot touch buffered rows; the "
+        "Phase-D tables are streamed). 0 = fail immediately (default: "
+        f"{STREAMING_BUFFER_TIMEOUT_S // 60}).",
+    )
+
     args = parser.parse_args()
 
     if args.fill_missing and args.force_rerun:
@@ -1633,25 +1986,7 @@ def main() -> None:
     # Handle specific dates to rerun
     if args.rerun_dates:
         rerun_dates = sorted(datetime.strptime(d, "%Y-%m-%d").date() for d in args.rerun_dates)
-        if args.delete_first:
-            delete_dates(
-                project_id,
-                rerun_dates,
-                include_giga=args.detection_granularity == "metro",
-                dataset=dataset,
-            )
-        run_dates(
-            rerun_dates,
-            project_id,
-            args.max_workers,
-            args.skip_data_check,
-            args.dry_run,
-            tomography_backend=args.tomography_backend,
-            tomography_workers=args.tomography_workers,
-            auto_baseline=not args.no_auto_baseline,
-            detection_granularity=args.detection_granularity,
-            dataset=dataset,
-        )
+        _execute_batch(args, project_id, rerun_dates, dataset, delete_first=args.delete_first)
         return
 
     # Get existing dates from the final output table
@@ -1691,29 +2026,14 @@ def main() -> None:
             args.fill_missing_table,
             ", ".join(day.strftime("%Y-%m-%d") for day in missing),
         )
-        run_dates(
-            missing,
-            project_id,
-            args.max_workers,
-            args.skip_data_check,
-            args.dry_run,
-            tomography_backend=args.tomography_backend,
-            tomography_workers=args.tomography_workers,
-            auto_baseline=not args.no_auto_baseline,
-            detection_granularity=args.detection_granularity,
-            dataset=dataset,
-        )
+        _execute_batch(args, project_id, missing, dataset, delete_first=False)
         return
 
     # Delete complete pipeline outputs before changing a date's analytical
-    # regime. This is intentionally explicit and opt-in.
+    # regime. This is intentionally explicit and opt-in. The delete itself now
+    # happens inside _execute_batch, AFTER the giga ordering guard, so a refused
+    # run deletes nothing.
     if args.delete_first:
-        delete_dates(
-            project_id,
-            dates_to_process,
-            include_giga=args.detection_granularity == "metro",
-            dataset=dataset,
-        )
         existing_dates.difference_update(dates_to_process)
 
     # Filter out already-processed dates
@@ -1734,8 +2054,63 @@ def main() -> None:
         logger.info("No dates to process (all dates already exist and force-rerun not specified)")
         return
 
-    run_dates(
+    # --delete-first clears the whole requested range (as before), but only the
+    # dates actually processed are run.
+    _execute_batch(
+        args,
+        project_id,
         dates_to_actually_process,
+        dataset,
+        delete_first=args.delete_first,
+        delete_range=dates_to_process,
+    )
+
+
+def _execute_batch(
+    args: argparse.Namespace,
+    project_id: str,
+    dates: list[date],
+    dataset: str,
+    delete_first: bool,
+    delete_range: list[date] | None = None,
+) -> None:
+    """Guard, optionally delete, run, and exit non-zero if any date is incomplete.
+
+    Order matters: the giga ordering guard runs BEFORE --delete-first so a refused
+    run deletes nothing; dates are processed in ascending order.
+    """
+    dates = sorted(set(dates))
+    to_delete = sorted(set(delete_range if delete_range is not None else dates))
+    giga_cleared = delete_first and args.detection_granularity == "metro"
+
+    try:
+        check_giga_order(
+            project_id,
+            dates,
+            dataset=dataset,
+            cleared=set(to_delete) if delete_first else set(),
+            giga_cleared=giga_cleared,
+            allow=args.allow_giga_out_of_order,
+        )
+    except GigaOrderError as e:
+        logger.error(str(e))
+        sys.exit(2)
+
+    if delete_first and not args.dry_run:
+        delete_dates(
+            project_id,
+            to_delete,
+            include_giga=giga_cleared,
+            dataset=dataset,
+            streaming_buffer_timeout_s=args.streaming_buffer_timeout_minutes * 60,
+        )
+    elif delete_first:
+        logger.info(
+            f"[DRY RUN] Would delete {len(to_delete)} date(s) from {len(delete_tables(dataset, giga_cleared))} table(s)"
+        )
+
+    incomplete = run_dates(
+        dates,
         project_id,
         args.max_workers,
         args.skip_data_check,
@@ -1745,7 +2120,15 @@ def main() -> None:
         auto_baseline=not args.no_auto_baseline,
         detection_granularity=args.detection_granularity,
         dataset=dataset,
+        allow_giga_out_of_order=args.allow_giga_out_of_order,
     )
+    if incomplete:
+        logger.error(
+            "Exiting non-zero: %d date(s) incomplete: %s",
+            len(incomplete),
+            ", ".join(d.strftime("%Y-%m-%d") for d in incomplete),
+        )
+        sys.exit(1)
 
 
 if __name__ == "__main__":
