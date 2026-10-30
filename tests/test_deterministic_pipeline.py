@@ -72,6 +72,10 @@ def test_transient_events_is_reproducible():
     guard = sql.index("ASSERT NOT EXISTS")
     assert guard < sql.index("INSERT INTO `mlab-collaboration.hermes_union.transient_events_union`")
     assert "GROUP BY src_group_label, src_asn, dst_site, ip_version" in sql[guard:]
+    # a test id shared by several tests is dropped, not resolved by ANY_VALUE
+    # (2026-08-12: one 'Speedtest_*' id took its start from a different test per run)
+    mwg = sql[sql.index("MeasurementsWithGroup AS (") : sql.index("AnomalyCounts AS (")]
+    assert "QUALIFY COUNT(*) OVER (PARTITION BY ndt.id) = 1" in mwg
 
 
 def test_all_edges_orders_hops_before_pairing_neighbours():
