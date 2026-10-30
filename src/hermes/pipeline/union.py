@@ -5,6 +5,7 @@ import multiprocessing as mp
 import sys
 import time
 from datetime import date, datetime, timedelta
+from collections.abc import Set as AbstractSet
 from typing import Literal, cast
 
 from google.api_core.exceptions import NotFound
@@ -520,7 +521,7 @@ def giga_order_conflicts(
     dates: list[date],
     giga_present: set[date],
     mapping_present: set[date],
-    cleared: set[date] = frozenset(),
+    cleared: AbstractSet[date] = frozenset(),
     giga_cleared: bool = False,
     window_days: int = GIGA_LOOKBACK_DAYS,
 ) -> dict[date, list[date]]:
@@ -563,7 +564,7 @@ def check_giga_order(
     project_id: str,
     dates: list[date],
     dataset: str = DEFAULT_DATASET,
-    cleared: set[date] = frozenset(),
+    cleared: AbstractSet[date] = frozenset(),
     giga_cleared: bool = False,
     allow: bool = False,
 ) -> dict[date, list[date]]:
