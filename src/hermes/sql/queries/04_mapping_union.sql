@@ -2113,10 +2113,17 @@ SELECT
 FROM _mapping_result
 WHERE (
         client_name = 'giga-meter'
+     -- A school IP listed for ANY month the trace window (DAY-8..DAY) touches: on
+     -- 3 October this partition still holds late-September traces, and
+     -- September's list is what identifies them. Same rule as the production
+     -- correction (scripts/correct_giga_client_name.py, window_list), so a date
+     -- this step rewrites keeps the rows that correction kept.
      OR src IN (
           SELECT ip_address
           FROM `mlab-collaboration.${DS}.giga_school_ips`
-          WHERE month_start = DATE_TRUNC(CAST('${DAY}' AS DATE), MONTH)
+          WHERE month_start BETWEEN DATE_TRUNC(DATE_SUB(CAST('${DAY}' AS DATE), INTERVAL 8 DAY), MONTH)
+                                AND DATE_TRUNC(CAST('${DAY}' AS DATE), MONTH)
+            AND ip_address IS NOT NULL
         )
       )
   -- Write each measurement exactly ONCE, without ever dropping one.

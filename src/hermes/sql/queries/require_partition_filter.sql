@@ -37,7 +37,7 @@
 --   steps 02/03  merged_download_upload      partition_date BETWEEN week .. day
 --   step  03     anomaly_counts_union        partition_date = day
 --   step  04     transient_events_union      partition_date = day  (x7 sites)
---   step  04     giga_school_ips             month_start = month of day
+--   step  04     giga_school_ips             month_start in months of day-8 .. day
 --   step  04     giga_meter_measurements     partition_date BETWEEN day-7 .. day
 --   steps 05/06  events_with_as_and_geoloc   partition_date = day
 --   step  07     events_explained_daily      partition_date = day (DELETE)
