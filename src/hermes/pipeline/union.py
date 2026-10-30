@@ -667,6 +667,19 @@ def run_enrichment(
         Operational dataset the client-IP scan reads from, so a ``--target staging``
         run collects its clients from staging rather than production.
     """
+    if dataset != DEFAULT_DATASET:
+        # HermesEnrichment writes the SHARED reference tables in `hermes.*`
+        # (unified_*_to_geoloc, unified_ip_to_rdns, geolocation, ixp_data); they are
+        # not retargeted by --target. A staging run must not write production, so it
+        # reads those tables as they are: IPs production has never enriched stay
+        # without geolocation/rDNS in the staging output.
+        logger.warning(
+            f"[enrichment] Skipping {source} enrichment for {date_str}: target dataset "
+            f"{dataset} is not production, and enrichment writes the shared hermes.* "
+            "reference tables. Staging reads them as they are."
+        )
+        return
+
     union_transient_table = f"mlab-collaboration.{dataset}.transient_events_union"
 
     for ipv6 in (False, True):
@@ -996,7 +1009,9 @@ def find_stale_merged_partitions(
         return []
 
 
-def find_unattributed_partitions(project_id: str, dates: list[date]) -> list[date]:
+def find_unattributed_partitions(
+    project_id: str, dates: list[date], dataset: str = DEFAULT_DATASET
+) -> list[date]:
     """Return dates whose ``events_explained_daily`` partition has NO attribution.
 
     A partition where *every* row has ``attribution_method IS NULL`` means the
@@ -1014,6 +1029,9 @@ def find_unattributed_partitions(project_id: str, dates: list[date]) -> list[dat
         GCP project ID to bill the check to.
     dates
         Dates to check. An empty list short-circuits without querying.
+    dataset
+        Dataset whose ``events_explained_daily`` is checked (staging checks its
+        own output, not production's).
 
     Returns
     -------
@@ -1026,7 +1044,7 @@ def find_unattributed_partitions(project_id: str, dates: list[date]) -> list[dat
     client = bigquery.Client(project=project_id)
     query = f"""
         SELECT partition_date
-        FROM `{FINAL_OUTPUT_TABLE}`
+        FROM `{final_output_table(dataset)}`
         WHERE partition_date IN UNNEST(@days)
         GROUP BY partition_date
         HAVING COUNTIF(attribution_method IS NOT NULL) = 0
@@ -1473,7 +1491,7 @@ def run_dates(
     # Belt-and-braces for the case the gate above cannot catch: Phase D
     # "succeeds" but writes zero hyperedges, so 06 still emits an
     # all-unattributed partition. Verify what actually landed.
-    degraded = find_unattributed_partitions(project_id, dates_for_e)
+    degraded = find_unattributed_partitions(project_id, dates_for_e, dataset=dataset)
     if degraded:
         logger.error(
             "INTEGRITY: %d partition(s) written by Phase E have 100%% NULL "
@@ -1624,7 +1642,8 @@ def main() -> None:
     if dataset != DEFAULT_DATASET:
         logger.warning(
             "TARGET=%s — reading and writing %s, metro polygons from %s. "
-            "Production tables are untouched.",
+            "Enrichment is skipped (it writes the shared hermes.* reference tables); "
+            "those are read as they are. Production tables are untouched.",
             args.target,
             dataset,
             metro_polygons_for(dataset),
