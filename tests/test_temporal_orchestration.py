@@ -83,3 +83,42 @@ def test_compute_verdicts(monkeypatch):
     assert out["G2"]["verdict"] == "congestion_in_place"
     assert out["G2"]["congested_segment"] == "m-n"  # biggest day-vs-base hop RTT jump
     assert out["G2"]["agrees_with_culprit"] is False
+
+
+def _congestion_group(edges):
+    return pd.DataFrame(
+        [
+            dict(
+                src_dst_pair="G",
+                ip_version="v4",
+                direction="forward",
+                edge=e,
+                prev_u=1.0,
+                prev_d=1.0,
+                base_hop_rtt=base,
+                day_hop_rtt=day,
+                healthy_n=20,
+                dayof_n=20,
+            )
+            for e, base, day in edges
+        ]
+    )
+
+
+def test_edge_missing_an_rtt_side_is_never_the_congested_segment(monkeypatch):
+    # p-q has no baseline RTT: with fillna(0) its "jump" was its whole 90 ms RTT
+    df = _congestion_group([("k-m", 10, 12), ("m-n", 15, 40), ("p-q", None, 90), ("q-r", 20, None)])
+    monkeypatch.setattr(tv, "_read_prevalences", lambda c, d, **kw: df)
+    monkeypatch.setattr(tv, "_culprit_edges", lambda c, d, **kw: {})
+    (row,) = tv.compute_temporal_verdicts("client", "2026-06-19")
+    assert row["verdict"] == "congestion_in_place"
+    assert row["congested_segment"] == "m-n"
+
+
+def test_no_edge_with_both_rtts_names_no_congested_segment(monkeypatch):
+    df = _congestion_group([("p-q", None, 90), ("q-r", 20, None)])
+    monkeypatch.setattr(tv, "_read_prevalences", lambda c, d, **kw: df)
+    monkeypatch.setattr(tv, "_culprit_edges", lambda c, d, **kw: {})
+    (row,) = tv.compute_temporal_verdicts("client", "2026-06-19")
+    assert row["verdict"] == "congestion_in_place"
+    assert row["congested_segment"] is None
