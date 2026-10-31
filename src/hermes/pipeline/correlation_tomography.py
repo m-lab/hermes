@@ -411,6 +411,9 @@ def run_greedy_set_cover(
         .reset_index()
     )
 
+    # Edges with an AS-only ('<asn>-unknown') endpoint: never edge-level culprits.
+    as_only_edges = {e for e in edges_df["edge"].dropna().unique() if edge_has_unknown_location(e)}
+
     logger.info("  Index built. Starting iterations...")
 
     for iteration in range(2, max_iterations + 1):
@@ -553,7 +556,7 @@ def run_greedy_set_cover(
             & (candidates["p_value"] <= alpha)
             & (candidates["odds_ratio"] >= min_odds)
             & (~candidates["edge"].str.contains(r"\*", na=False))
-            & (~candidates["edge"].map(edge_has_unknown_location).astype(bool))
+            & (~candidates["edge"].isin(as_only_edges))
         ]
         if len(candidates) == 0:
             break
