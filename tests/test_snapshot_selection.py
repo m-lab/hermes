@@ -80,7 +80,16 @@ def test_per_key_caches_rank_future_rows_last():
         body = _statement(_raw(), name)
         order = body[body.index("ORDER BY") :]
         first_key = order.split("\n")[1].strip()
-        assert first_key.startswith("(CASE WHEN partition_date > DATE '${DAY}' THEN 1"), name
+        # rDNS rows are dated by their lookup time (obs_date), not their label.
+        col = "obs_date" if name == "_closest_rdns" else "partition_date"
+        assert first_key.startswith(f"(CASE WHEN {col} > DATE '${{DAY}}' THEN 1"), name
+
+
+def test_rdns_is_dated_by_lookup_time():
+    body = _statement(_raw(), "_closest_rdns")
+    assert "COALESCE(DATE(timestamp), partition_date) AS obs_date" in body
+    order = body[body.index("ORDER BY") : body.index(") AS rn")]
+    assert "partition_date >" not in order and "DATE_DIFF(partition_date" not in order
 
 
 def test_prefix_snapshot_is_chosen_per_source_and_recorded():
@@ -134,16 +143,28 @@ def _literal(type_: str, rows: list[str]) -> str:
     return f"(SELECT * FROM UNNEST(ARRAY<{type_}>[{', '.join(rows)}]))"
 
 
-def _prefix_sql(day: str, v4_rows: list[str], ixp_rows: list[str] | None = None) -> str:
+_HOP_TYPE = (
+    "STRUCT<id STRING, date DATE, raw STRUCT<Annotations "
+    "STRUCT<Network STRUCT<CIDR STRING, ASNumber INT64>>>>"
+)
+
+
+def _prefix_sql(
+    day: str,
+    v4_rows: list[str],
+    ixp_rows: list[str] | None = None,
+    hop_rows: list[str] | None = None,
+) -> str:
     body = _statement(_rendered(day), "_extracted_prefixes")
     ixp_rows = ixp_rows or ["('80.81.192.1', 1, 'IX', DATE '2020-01-01')"]
+    hops = _literal(_HOP_TYPE, hop_rows) if hop_rows else _HOP_EMPTY
     body = (
         body.replace("`mlab-collaboration.hermes.unified_ip_to_as`", _literal(_AS_TYPE, v4_rows))
         .replace(
             "`mlab-collaboration.hermes.unified_ip_to_as_ipv6`",
             _literal(_AS_TYPE, ["('2001:db8::/32', 1, 'RouteViews', NULL, DATE '2020-01-01')"]),
         )
-        .replace("`measurement-lab.ndt_raw.hopannotation2`", _HOP_EMPTY)
+        .replace("`measurement-lab.ndt_raw.hopannotation2`", hops)
         .replace("`mlab-collaboration.ix_data.ixp_members`", _literal(_IXP_TYPE, ixp_rows))
     )
     assert "mlab-collaboration." not in body and "measurement-lab." not in body
@@ -249,6 +270,39 @@ def test_ixp_membership_uses_one_snapshot():
     ]
 
 
+def _hop(ip: str, d: str, cidr: str, asn: int) -> str:
+    return f"('2026x_{ip}', DATE '{d}', STRUCT(STRUCT(STRUCT('{cidr}', {asn}))))"
+
+
+@pytest.mark.bq
+def test_most_recent_hop_annotation_wins_per_prefix():
+    """A CIDR re-annotated within the window keeps only its latest origin(s)."""
+    hop_rows = [
+        # 10.5.0.0/16: AS 100 earlier, AS 200 most recently -> only 200 survives
+        _hop("10.5.0.1", "2026-08-05", "10.5.0.0/16", 100),
+        _hop("10.5.0.2", "2026-08-28", "10.5.0.0/16", 200),
+        # 10.6.0.0/16: MOAS on its latest date (two origins) -> both kept; the
+        # older third origin is dropped
+        _hop("10.6.0.1", "2026-08-10", "10.6.0.0/16", 300),
+        _hop("10.6.0.2", "2026-08-20", "10.6.0.0/16", 400),
+        _hop("10.6.0.3", "2026-08-20", "10.6.0.0/16", 500),
+        # a FUTURE annotation is outside the window and never counts
+        _hop("10.5.0.3", "2026-09-05", "10.5.0.0/16", 999),
+    ]
+    rows = [_rv("10.5.0.0/16", 777, "2026-08-20")] + _filler("2026-08-20")
+    body = _prefix_sql(DAY, rows, hop_rows=hop_rows)
+    got = _run(
+        _udf() + f"\nWITH ep AS ({body}) SELECT ip_prefix, asn, as_partition_date FROM ep "
+        "WHERE ip_prefix IN ('10.5.0.0/16', '10.6.0.0/16') ORDER BY ip_prefix, asn"
+    )
+    # annotations still take precedence over RouteViews (AS 777) for the same CIDR
+    assert [(r["ip_prefix"], r["asn"], r["as_partition_date"]) for r in got] == [
+        ("10.5.0.0/16", 200, None),
+        ("10.6.0.0/16", 400, None),
+        ("10.6.0.0/16", 500, None),
+    ]
+
+
 _GEO_TYPE = (
     "STRUCT<ip_address STRING, city STRING, country STRING, lat FLOAT64, lon FLOAT64, "
     "score FLOAT64, city_ip_info STRING, country_ip_info STRING, lat_ip_info FLOAT64, "
@@ -325,6 +379,34 @@ def test_rdns_cache_is_as_of_day_per_ip():
     }
 
 
+@pytest.mark.bq
+def test_rdns_is_ranked_by_lookup_time_not_label():
+    """A lookup made after DAY but labelled <= DAY (backfill) is a future row."""
+    rows = [
+        # .1: labelled before DAY, looked up after it -> loses to a genuinely older row
+        "('192.0.2.1', 'later.example', TIMESTAMP '2026-10-20 12:00:00', DATE '2026-08-31')",
+        "('192.0.2.1', 'older.example', TIMESTAMP '2026-07-01 12:00:00', DATE '2026-07-01')",
+        # .2: the same mislabelled row is still used when it is the only one
+        "('192.0.2.2', 'only.example', TIMESTAMP '2026-10-20 12:00:00', DATE '2026-08-31')",
+        # .3: NULL timestamp falls back to partition_date
+        "('192.0.2.3', 'nots-past.example', NULL, DATE '2026-08-15')",
+        "('192.0.2.3', 'ts-older.example', TIMESTAMP '2026-08-01 00:00:00', DATE '2026-08-01')",
+    ]
+    body = (
+        _statement(_rendered(), "_closest_rdns")
+        .replace("`mlab-collaboration.hermes.unified_ip_to_rdns`", _literal(_RDNS_TYPE, rows))
+        .replace("`mlab-collaboration.hermes.unified_ip_to_rdns_ipv6`", _literal(_RDNS_TYPE, []))
+    )
+    got = {
+        r["ip_address"]: r["hostname"] for r in _run(f"SELECT ip_address, hostname FROM ({body})")
+    }
+    assert got == {
+        "192.0.2.1": "older.example",
+        "192.0.2.2": "only.example",
+        "192.0.2.3": "nots-past.example",
+    }
+
+
 _ASM_TYPE = (
     "STRUCT<asn STRING, asnName STRING, rank INT64, "
     "cone STRUCT<numberAsns INT64, numberPrefixes INT64, numberAddresses INT64>, "
@@ -352,3 +434,50 @@ def test_as_metadata_uses_one_snapshot():
         for x in _run(_udf() + f"\nSELECT asn, asnName FROM ({body}) ORDER BY asn")
     }
     assert got == {"1": "one-2025", "2": "two-2025"}
+
+
+# --- step 07 uses the same AS-metadata rule ---------------------------------
+
+STEP07 = "07_translating_to_public_format_union.sql"
+
+
+def _step07_metadata_sql(day: str) -> str:
+    sql = loader.load_query(STEP07, {"DAY": day, "DS": "hermes_staging"})
+    a = sql.index("  as_metadata_snapshots AS (")
+    b = sql.index("\n  ),\n", sql.index("  closest_metadata AS (", a)) + len("\n  )")
+    return sql[a:b]
+
+
+def test_step07_declares_the_completeness_udf_and_no_closest_date():
+    raw = paths.query_path(STEP07).read_text(encoding="utf-8")
+    assert "snapshot_is_complete" in loader.required_udfs(raw)
+    cte = _step07_metadata_sql(DAY)
+    assert "ABS(DATE_DIFF" not in cte
+    assert "snapshot_is_complete(" in cte
+
+
+@pytest.mark.bq
+def test_step07_as_metadata_matches_step04_rule():
+    def r(asn: str, name: str, d: str, prefixes: int = 1) -> str:
+        return f"('{asn}', '{name}', 1, STRUCT(1, {prefixes}, 1), DATE '{d}')"
+
+    rows = [
+        r("1", "one-2026-06", "2026-06-01"),
+        r("2", "two-2026-06", "2026-06-01"),
+        # duplicate load of ASN 2 in the chosen snapshot: deterministic winner
+        r("2", "two-dup-a", "2026-06-01", prefixes=5),
+        r("2", "two-dup-b", "2026-06-01", prefixes=5),
+        # a FUTURE snapshot 1 day after DAY: the old closest-date rule picked it
+        r("1", "one-future", "2026-09-02"),
+        r("2", "two-future", "2026-09-02"),
+        r("3", "three-future", "2026-09-02"),
+    ]
+    cte = _step07_metadata_sql(DAY).replace(
+        "`mlab-collaboration.hermes.as_metadata`", _literal(_ASM_TYPE, rows)
+    )
+    assert "mlab-collaboration." not in cte
+    got = {
+        x["asn"]: x["asnName"]
+        for x in _run(_udf() + f"\nWITH\n{cte}\nSELECT asn, asnName FROM closest_metadata")
+    }
+    assert got == {"1": "one-2026-06", "2": "two-dup-a"}

@@ -34,6 +34,11 @@
 --   INCREMENTAL CACHES -- a key is written on the day it is looked up, so each
 --   partition holds only that day's keys: unified_ip_to_geoloc[_ipv6] and
 --   unified_ip_to_rdns[_ipv6]. Use, PER KEY, the latest row dated <= ${DAY}.
+--   "Dated" means when the row was OBSERVED, which is not always its
+--   partition_date: the rDNS enricher labels a row with the run's target date
+--   but records the real lookup time in `timestamp`, so a backfill (and ~7M
+--   existing rows) carry a past partition_date for a lookup made later. rDNS
+--   rows are therefore dated by COALESCE(DATE(timestamp), partition_date).
 --
 -- The previous rule ("partition closest to ${DAY}", per key) let FUTURE rows win:
 -- for ${DAY} = 2026-09-01, 1.23M of 2.48M winning prefixes came from snapshots
@@ -98,31 +103,40 @@ WHERE rn = 1;
 --    (backfill fallback: the EARLIEST future row).
 --    Undated v4 rows (13.5M; `timestamp` is NULL on them too) have no vintage to
 --    compare: they are non-future candidates, used after every dated past row.
+-- A row is dated by obs_date = COALESCE(DATE(timestamp), partition_date): the
+-- enricher writes partition_date = the run's TARGET date but `timestamp` = the
+-- actual lookup time, so on a backfill (and on ~7M existing rows) a lookup made
+-- after ${DAY} is labelled with a partition_date <= ${DAY}. Ranking on the label
+-- presented that future answer as a past observation; obs_date ranks it as the
+-- future row it is. Rows with no timestamp fall back to partition_date.
 -- Resilience: among NON-FUTURE rows, prefer one that actually HAS a hostname, so
 -- an empty rDNS row never shadows a known hostname for the same IP. That
 -- preference does not reach into the future: a future hostname never beats a
 -- past empty answer.
 CREATE TEMP TABLE _closest_rdns AS
-SELECT * EXCEPT(rn) FROM (
+SELECT * EXCEPT(rn, obs_date) FROM (
   SELECT
     *,
     ROW_NUMBER() OVER (
       PARTITION BY ip_address
       ORDER BY
-        (CASE WHEN partition_date > DATE '${DAY}' THEN 1 ELSE 0 END) ASC,
+        (CASE WHEN obs_date > DATE '${DAY}' THEN 1 ELSE 0 END) ASC,
         (CASE WHEN hostname IS NULL OR hostname = '' THEN 1 ELSE 0 END) ASC,
-        (CASE WHEN partition_date IS NULL THEN 1 ELSE 0 END) ASC,
+        (CASE WHEN obs_date IS NULL THEN 1 ELSE 0 END) ASC,
         -- past tier: latest first; future tier: earliest first.
-        ABS(DATE_DIFF(partition_date, DATE '${DAY}', DAY)) ASC,
+        ABS(DATE_DIFF(obs_date, DATE '${DAY}', DAY)) ASC,
         -- total order for duplicate rows of one IP within a partition.
-        timestamp DESC, hostname ASC
+        timestamp DESC, hostname ASC, partition_date DESC
     ) AS rn
   FROM (
-    SELECT *, 'v4' AS ip_version
-    FROM `mlab-collaboration.hermes.unified_ip_to_rdns`
-    UNION ALL
-    SELECT *, 'v6' AS ip_version
-    FROM `mlab-collaboration.hermes.unified_ip_to_rdns_ipv6`
+    SELECT *, COALESCE(DATE(timestamp), partition_date) AS obs_date
+    FROM (
+      SELECT *, 'v4' AS ip_version
+      FROM `mlab-collaboration.hermes.unified_ip_to_rdns`
+      UNION ALL
+      SELECT *, 'v6' AS ip_version
+      FROM `mlab-collaboration.hermes.unified_ip_to_rdns_ipv6`
+    )
   )
 )
 WHERE rn = 1;
@@ -259,7 +273,13 @@ ixp_ranked AS (
     WHERE is_complete
   )
 ),
-hop_prefixes AS (
+-- Annotation-derived prefixes (measured on or before ${DAY}) take precedence over
+-- RouteViews below. Only the MOST RECENT annotation date per prefix is kept: a
+-- CIDR re-annotated with another origin ASN within the month window must not
+-- keep its stale origin as an equal-mask candidate, where the downstream
+-- tiebreak (customer cone, then ASN) rather than recency would pick between
+-- them. Several ASNs on that latest date (MOAS) all survive.
+hop_prefixes_dated AS (
   SELECT DISTINCT
     CASE
       WHEN ix.ipv4 IS NOT NULL
@@ -282,7 +302,8 @@ hop_prefixes AS (
       ELSE CAST(REGEXP_EXTRACT(raw.Annotations.Network.CIDR, r'/(.*)') AS INT64)
     END AS mask,
     IFNULL(ix.name, 'None') AS ixp,
-    ix.partition_date AS ixp_partition_date
+    ix.partition_date AS ixp_partition_date,
+    hop.date AS annotation_date
   FROM `measurement-lab.ndt_raw.hopannotation2` hop
   LEFT JOIN (
     SELECT ipv4, asn, name, partition_date
@@ -291,6 +312,16 @@ hop_prefixes AS (
   ) ix
     ON ix.ipv4 = REGEXP_EXTRACT(hop.id, r'_([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)$')
   WHERE date BETWEEN DATE_SUB(DATE('${DAY}'), INTERVAL 1 MONTH) AND '${DAY}'
+),
+hop_prefixes AS (
+  SELECT * EXCEPT (annotation_date, latest_annotation_date)
+  FROM (
+    SELECT
+      *,
+      MAX(annotation_date) OVER (PARTITION BY ip_prefix) AS latest_annotation_date
+    FROM hop_prefixes_dated
+  )
+  WHERE annotation_date = latest_annotation_date
 ),
 -- Prefix -> AS as of ${DAY}. unified_ip_to_as[_ipv6] is an append-only stack of
 -- FULL snapshots, one series per `source`: RouteViews pfx2as dumps (v4: 21 dates
