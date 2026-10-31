@@ -66,10 +66,16 @@ edges AS (   -- consecutive resolved hops -> an edge, tagged U (healthy) or D (d
   WHERE a.node != '*' AND b.node != '*'
 ),
 totals AS (   -- per group/direction: # distinct healthy and day-of measurements
+  -- Counted over `edges`, i.e. only measurements that observed >= 1 resolved edge in
+  -- this direction. Counting every measurement (`ordered`) let a server-only or
+  -- all-'*' path -- which says nothing about the route -- enter the denominator and
+  -- the support: 10 healthy server-only paths made every edge of 10 anomalous
+  -- responding paths look "new" (prev_u = 0), i.e. a reroute out of nothing.
+  -- in_u / in_d are exactly the old healthy / day-of conditions.
   SELECT src_dst_pair, ip_version, direction,
-    COUNT(DISTINCT IF(NOT is_anomaly, id, NULL)) AS healthy_n,
-    COUNT(DISTINCT IF(is_anomaly AND is_day, id, NULL)) AS dayof_n
-  FROM ordered GROUP BY src_dst_pair, ip_version, direction
+    COUNT(DISTINCT IF(in_u, id, NULL)) AS healthy_n,
+    COUNT(DISTINCT IF(in_d, id, NULL)) AS dayof_n
+  FROM edges GROUP BY src_dst_pair, ip_version, direction
 ),
 agg AS (
   SELECT src_dst_pair, ip_version, direction, edge,

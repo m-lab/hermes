@@ -21,6 +21,32 @@ def label_edges(
     return out
 
 
+_DIRECTIONS = ("forward", "reverse")
+
+
+def classify_directions(
+    div: dict[str, float],
+    support: dict[str, tuple[int, int]],
+    tau: float = 0.3,
+    s_min: int = 5,
+) -> tuple[str, str | None]:
+    """Verdict from the directions that have enough support of their OWN.
+
+    ``support[d]`` is ``(healthy_n, dayof_n)`` for direction ``d``. A direction
+    decides only if both counts are >= ``s_min``; its divergence is never judged
+    against another direction's sample sizes. No qualifying direction ->
+    ``('indeterminate', None)``; one -> that direction alone; both -> the larger
+    divergence (forward on a tie), as before.
+    """
+    ok = [d for d in _DIRECTIONS if min(support.get(d, (0, 0))) >= s_min]
+    if not ok:
+        return ("indeterminate", None)
+    change_dir = ok[0] if len(ok) == 1 else max(ok, key=lambda d: (div[d], d == "forward"))
+    if div[change_dir] >= tau:
+        return ("reroute", change_dir)
+    return ("congestion_in_place", change_dir)
+
+
 def classify(
     div_forward: float,
     div_reverse: float,
@@ -29,12 +55,17 @@ def classify(
     tau: float = 0.3,
     s_min: int = 5,
 ) -> tuple[str, str | None]:
-    if healthy_n < s_min or dayof_n < s_min:
-        return ("indeterminate", None)
-    change_dir = "forward" if div_forward >= div_reverse else "reverse"
-    if max(div_forward, div_reverse) >= tau:
-        return ("reroute", change_dir)
-    return ("congestion_in_place", change_dir)
+    """:func:`classify_directions` with the same support for both directions."""
+    n = (healthy_n, dayof_n)
+    return classify_directions(
+        {"forward": div_forward, "reverse": div_reverse}, {"forward": n, "reverse": n}, tau, s_min
+    )
+
+
+def _count(sub, col: str) -> int:
+    """A direction's healthy_n / dayof_n (one value per direction; 0 if absent)."""
+    v = sub[col].max() if len(sub) else None
+    return int(v) if v is not None and v == v else 0
 
 
 # ---------------------------------------------------------------------------
@@ -144,9 +175,15 @@ def compute_temporal_verdicts(
             per_dir[d] = (u, dd, sub)
         div_f = divergence(*per_dir["forward"][:2])
         div_r = divergence(*per_dir["reverse"][:2])
-        healthy_n = int(g["healthy_n"].max() or 0)
-        dayof_n = int(g["dayof_n"].max() or 0)
-        verdict, change_dir = classify(div_f, div_r, healthy_n, dayof_n, tau, s_min)
+        # Support per direction. Taking max() across directions let a direction
+        # with 1 healthy measurement decide on the other direction's 20.
+        support = {
+            d: (_count(per_dir[d][2], "healthy_n"), _count(per_dir[d][2], "dayof_n"))
+            for d in _DIRECTIONS
+        }
+        verdict, change_dir = classify_directions(
+            {"forward": div_f, "reverse": div_r}, support, tau, s_min
+        )
         changed_segment = congested_segment = None
         if change_dir is not None:
             u, dd, sub = per_dir[change_dir]
