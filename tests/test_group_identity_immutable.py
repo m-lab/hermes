@@ -104,10 +104,13 @@ def test_04_emits_the_metro_as_an_annotation(step04):
     assert "m.detection_granularity = 'metro', m.src_group_label" in step04
 
 
-def test_04_giga_dedup_uses_the_immutable_identity_with_a_legacy_bridge(step04):
-    assert "g.src_group_label = _mapping_result.src_group_label" in step04
-    assert "OR g.src_group_label IS NULL" in step04
+def test_04_giga_dedup_identifies_a_trace_without_its_label(step04):
+    # The label can differ for the same trace across analysis dates (NULL when the
+    # group is absent that day, another metro when the client's geolocation row
+    # changes); keying on it duplicated 2% of October 2026 GIGA rows.
+    assert "g.src_group_label = _mapping_result.src_group_label" not in step04
     assert "g.src_city = _mapping_result.src_city" not in step04
+    assert "AND g.dst_site = _mapping_result.dst_site" in step04
 
 
 # ---------------------------------------------------------------------------

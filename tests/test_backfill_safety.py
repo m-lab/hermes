@@ -219,7 +219,7 @@ def test_missing_table_is_skipped_not_fatal(monkeypatch):
 def pipeline(monkeypatch):
     """Mock every BigQuery-touching call of run_dates; record what ran."""
     calls = {"04": [], "05": [], "D": [], "E": []}
-    state = {"fail_04": set(), "failed_fill": []}
+    state = {"fail_04": set(), "failed_fill": [], "fail_01": set()}
 
     monkeypatch.setattr(union, "ensure_baseline", lambda *a, **k: list(state["failed_fill"]))
     monkeypatch.setattr(union, "run_enrichment", lambda *a, **k: None)
@@ -231,6 +231,13 @@ def pipeline(monkeypatch):
             calls["E"].extend(dates)
         elif any(f.startswith("05_") for f in sql_files):
             calls["05"].extend(dates)
+        elif sql_files is union.SQL_FILES_MERGE:
+            return [
+                f"Error: {d:%Y-%m-%d} - 01 failed"
+                if d in state["fail_01"]
+                else f"Success: {d:%Y-%m-%d}"
+                for d in dates
+            ]
         return [f"Success: {d:%Y-%m-%d}" for d in dates]
 
     def fake_step04(args):
@@ -290,6 +297,19 @@ def test_failed_baseline_day_withholds_dependent_target(pipeline):
     state["failed_fill"] = [D - timedelta(days=3)]
     incomplete = _run([D, _d(10)])
     assert incomplete == [D]
+    assert calls["E"] == [_d(10)]
+
+
+def test_in_batch_step01_failure_withholds_dates_whose_baseline_it_is(pipeline):
+    # External review, 2026-10-31: D failed baseline fill AND its own step 01; D+1
+    # still ran detection and was published against a baseline missing D, and only D
+    # was reported incomplete. D+10 is outside D's 7-day window and must still run.
+    calls, state = pipeline
+    state["failed_fill"] = [D]
+    state["fail_01"] = {D}
+    incomplete = _run([D, _d(1), _d(10)])
+    assert incomplete == [D, _d(1)]
+    assert calls["04"] == [_d(10)]
     assert calls["E"] == [_d(10)]
 
 
