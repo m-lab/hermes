@@ -1,6 +1,7 @@
 -- CREATE OR REPLACE TABLE `mlab-collaboration.${DS}.events_explained_daily`
 -- PARTITION BY partition_date  -- This defines partitioning by the 'partition_date' column
 -- AS
+-- @requires-udf: snapshot_is_complete
 DELETE FROM `mlab-collaboration.${DS}.events_explained_daily`
 WHERE partition_date = '${DAY}';
 
@@ -132,15 +133,44 @@ WITH
       (fr.median_upload_throughput < fr.baseline_median_upload_throughput AND fr.anomaly_upload_throughput_count >= 0.5 AND fr.anomaly_ratio_upload_throughput >= 0.8))
     GROUP BY fr.src_asn, fr.src_group_label, fr.dst_site, fr.dst_asn, fr.src_country, fr.src_state, dst_city, dst_country, fr.ip_version
   ),
+  -- AS metadata as of ${DAY}: the SAME rule as step 04's _closest_as_metadata
+  -- (04_mapping_union.sql) -- ONE snapshot for the whole table, the latest
+  -- COMPLETE snapshot dated <= ${DAY}, else the earliest (backfill before the
+  -- first snapshot); deterministic within it. The old per-ASN "closest date"
+  -- rule let a snapshot taken after ${DAY} win and broke ties arbitrarily.
+  as_metadata_snapshots AS (
+    SELECT
+      partition_date,
+      snapshot_is_complete(n, ARRAY_CONCAT(
+        IFNULL(ARRAY_AGG(n) OVER (ORDER BY partition_date ROWS BETWEEN 2 PRECEDING AND 1 PRECEDING), []),
+        IFNULL(ARRAY_AGG(n) OVER (ORDER BY partition_date ROWS BETWEEN 1 FOLLOWING AND 2 FOLLOWING), [])
+      )) AS is_complete
+    FROM (
+      SELECT partition_date, COUNT(*) AS n
+      FROM `mlab-collaboration.hermes.as_metadata`
+      WHERE partition_date IS NOT NULL
+      GROUP BY partition_date
+    )
+  ),
+  as_metadata_chosen AS (
+    SELECT COALESCE(
+             MAX(IF(partition_date <= DATE '${DAY}', partition_date, NULL)),
+             MIN(partition_date)   -- backfill before the first snapshot
+           ) AS snapshot_date
+    FROM as_metadata_snapshots
+    WHERE is_complete
+  ),
   closest_metadata AS (
     SELECT * EXCEPT (partition_date)
     FROM (
-        SELECT *,
-               ROW_NUMBER() OVER (
-                 PARTITION BY asn
-                 ORDER BY ABS(DATE_DIFF(partition_date, DATE '${DAY}', DAY))
-               ) AS rn
-        FROM `hermes.as_metadata`
+        SELECT
+          m.*,
+          ROW_NUMBER() OVER (
+            PARTITION BY m.asn
+            ORDER BY m.cone.numberPrefixes DESC, m.asnName ASC, m.rank ASC
+          ) AS rn
+        FROM `mlab-collaboration.hermes.as_metadata` m
+        JOIN as_metadata_chosen c ON m.partition_date = c.snapshot_date
       )
       WHERE rn = 1
   ),
