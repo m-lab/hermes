@@ -12,11 +12,19 @@ the ``" - "`` that is followed by the next node's ASN token (digits or ``*``) an
 its ``-``. Measured over all 201,513 distinct edge culprits in
 ``hermes_staging.correlation_entity_stats_multigranularity`` (2026-10-31): every
 edge has exactly one such boundary, while 232 contain more than one ``" - "``.
+
+A node whose location is :data:`UNKNOWN_LOCATION` is a hop step 04 placed in a
+known AS but could not (or refused to) locate. It is evidence about the AS only:
+``ASN-unknown`` can merge different routers of that AS, so it must never become a
+node, metro, IXP or edge candidate. See ``06_correlation_tomography_prepare_union.sql``.
 """
 
 from __future__ import annotations
 
 import re
+
+#: The location label step 06 gives a hop with a known AS but no location.
+UNKNOWN_LOCATION = "unknown"
 
 # " - " followed by an ASN token (digits, or '*' for an unresolved hop) and then the
 # node's own '-' or the end of the edge (a bare '*' / bare-ASN node).
@@ -41,3 +49,14 @@ def node_asn(node: str) -> str:
 def node_location(node: str) -> str | None:
     """Everything after the ASN token, or ``None`` for a node without one."""
     return node.split("-", 1)[1] if "-" in node else None
+
+
+def is_unknown_location(node: object) -> bool:
+    """True for an ``ASN-unknown`` node: AS known, location not."""
+    return isinstance(node, str) and node_location(node) == UNKNOWN_LOCATION
+
+
+def edge_has_unknown_location(edge: object) -> bool:
+    """True if either endpoint of ``edge`` is an ``ASN-unknown`` node."""
+    parts = split_edge(edge)
+    return parts is not None and any(is_unknown_location(n) for n in parts)

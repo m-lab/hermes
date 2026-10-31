@@ -26,7 +26,11 @@ import pandas as pd
 from google.cloud import bigquery
 from scipy.stats import fisher_exact
 
-from hermes.pipeline.edge_format import split_edge
+from hermes.pipeline.edge_format import (
+    edge_has_unknown_location,
+    is_unknown_location,
+    split_edge,
+)
 from hermes.sql import loader
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -541,13 +545,15 @@ def run_greedy_set_cover(
         # HAVING (parameterized): minimum support, optional purity floor,
         # significance gate, a discriminative effect-size floor (odds_ratio) so
         # near-1.0 edges that merely happen to be common are not attributed, and
-        # exclude unresolved (*) hops.
+        # exclude unresolved (*) hops and AS-only ('<asn>-unknown') endpoints, which
+        # may merge several routers and so cannot name an edge.
         candidates = candidates[
             (candidates["anom_edge_count"] >= min_support)
             & (candidates["fraction_anomalous_paths"] >= purity_threshold)
             & (candidates["p_value"] <= alpha)
             & (candidates["odds_ratio"] >= min_odds)
             & (~candidates["edge"].str.contains(r"\*", na=False))
+            & (~candidates["edge"].map(edge_has_unknown_location).astype(bool))
         ]
         if len(candidates) == 0:
             break
@@ -1039,7 +1045,9 @@ def run_mixed_granularity_cover(
         return node_index[v]
 
     for i, ev in enumerate(edge_vals):
-        if "*" not in ev:
+        # An '<asn>-unknown' endpoint is AS-level evidence only (it can merge several
+        # routers of the AS), so such an edge is never an edge-level candidate.
+        if "*" not in ev and not edge_has_unknown_location(ev):
             edge_cand[i] = cand_of("edge", ev)
         ends = split_edge(ev)
         edge_a[i] = node_of(ends[0] if ends else ev)
@@ -1049,13 +1057,18 @@ def run_mixed_granularity_cover(
     node_cand = {
         g: np.full(len(node_vals), -1, dtype=np.int64) for g in ("node", "AS", "metro", "IXP")
     }
-    node_attrs = []  # (node, asn, metro, ixp) for coarse_children
+    node_attrs = []  # (node, asn, metro, ixp, as_only) for coarse_children
     for j, nv in enumerate(node_vals):
         asn = nv.split("-")[0]
         metro = nv.split("-", 1)[1] if "-" in nv else float("nan")
         ixp = node_to_ixp.get(nv, float("nan"))
-        node_attrs.append((nv, asn, metro, ixp))
+        # '<asn>-unknown' (step 04 kept the AS but not the location): an AS-level
+        # vote only. Not a node (it may be several routers), not a metro, not an IXP.
+        as_only = is_unknown_location(nv)
+        node_attrs.append((nv, asn, metro, ixp, as_only))
         for g, ent in (("node", nv), ("AS", asn), ("metro", metro), ("IXP", ixp)):
+            if as_only and g != "AS":
+                continue
             if _valid_entity(ent):
                 node_cand[g][j] = cand_of(g, str(ent))
 
@@ -1147,7 +1160,12 @@ def run_mixed_granularity_cover(
     # coarse entity -> its finer ⟨AS,metro⟩ node children (for distinctness + purity)
     coarse_children: dict = {}
     for node_j, info_j in node_info.itertuples(index=False):
-        nv, asn, metro, ixp = node_attrs[int(node_j)]
+        nv, asn, metro, ixp, as_only = node_attrs[int(node_j)]
+        if as_only:
+            # Not a finer node: it must not count toward the distinctness guard. An
+            # AS seen ONLY through unlocated hops therefore never passes the guard
+            # (no located node vouches for it) -- conservative by design.
+            continue
         inf = info_vals[int(info_j)]
         for gr, ent in (("AS", asn), ("metro", metro), ("IXP", ixp)):
             if not _valid_entity(ent):

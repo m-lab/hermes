@@ -291,7 +291,7 @@ Runs in Phase C alongside Step 04. Single-pass before/during comparison: for eac
 **Reads:** `hermes_union.events_with_as_and_geoloc`
 **Writes:** `hermes_union.temporal_path_verdicts`
 
-Runs in Phase D alongside Step 06 (correlation v2). Computes per-path temporal verdict scores that indicate whether a given path's edge prevalence during anomalies is statistically elevated vs. baseline. `temporal_verdict.py` orchestrates the SQL query and writes structured verdict rows to `temporal_path_verdicts`. The dashboard reads `temporal_path_verdicts` alongside `events_explained_daily`.
+Runs in Phase D alongside Step 06 (correlation v2). Support is per direction: `healthy_n` / `dayof_n` count only measurements that observed at least one resolved edge in that direction, and a direction decides the verdict only if both of its own counts reach `s_min` (none: `indeterminate`). Computes per-path temporal verdict scores that indicate whether a given path's edge prevalence during anomalies is statistically elevated vs. baseline. `temporal_verdict.py` orchestrates the SQL query and writes structured verdict rows to `temporal_path_verdicts`. The dashboard reads `temporal_path_verdicts` alongside `events_explained_daily`.
 
 ### Step 06: Correlation tomography
 
@@ -306,6 +306,26 @@ Runs in Phase D. Iterative greedy set-cover that identifies culprit network edge
 - `..._unexplained_hops_union.sql` performs path-local attribution for measurements not covered by the set-cover result.
 
 Pipeline: (1) pre-compute (measurement, edge) pairs from forward/reverse AS paths; (2) iteratively select the edge explaining the most unexplained anomalous (ASN, city, site) groups by anomalous-vs-non-anomalous frequency ratio; (3) stop at 95% explained, no candidate edges, or 200 iterations; (4) build a hyperedge summary with per-node culprit fractions at ASN-metro, ASN, and metro granularities.
+
+**Node and edge naming.** A hop becomes the node `<asn>-<location>`, location =
+`COALESCE(metro, place_canonical_metro, place)`; an edge is `"<node> - <node>"`.
+Two special nodes:
+
+- `*` — no AS (a non-responding or unannounced hop). Never a candidate at any granularity.
+- `<asn>-unknown` (prepare SQL only, since 2026-10) — the AS is known but step 04 has no
+  location (`geo_source` `refuted` / `refuted_observation`, or never located). It used
+  to be `*`, which hid the AS from the AS-level cover on ~7% of anomalous measurements.
+  Because `<asn>-unknown` can merge several routers of that AS, it is **AS-level
+  evidence only**: the covers never make it a node, metro, IXP or edge candidate, so no
+  edge-level culprit contains `-unknown`, and it does not count as a distinct finer node
+  for the AS distinctness guard (an AS seen only through unlocated hops is not reported).
+  Step 05 and the path-local hops query still name such a hop `*`, so an edge through it
+  matches in neither step.
+
+Place names may contain the delimiter (`Bà Rịa - Vũng Tàu`, `Rabat - Salé - Zemmour - Zaer`),
+so edges are split only at the ` - ` followed by an ASN token and `-`
+(`hermes.pipeline.edge_format.split_edge`); step 07 re-derives the hop ASNs from
+`edge_asn_metro` the same way.
 
 ### Step 07: Public-format (events_explained_daily)
 
