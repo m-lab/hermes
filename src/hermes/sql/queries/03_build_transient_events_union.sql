@@ -264,7 +264,18 @@ ScamperDataIntermediary AS (
     -- traces from groups absent that day were discarded before 04 ever saw them
     -- (measured 2026-08-05: 17.6% of giga measurements never reached 04, 99.6%
     -- of which DID have a trace available).
-    AND (a.src_asn IS NOT NULL OR ndt.client_name = 'giga-meter')
+    AND (a.src_asn IS NOT NULL OR ndt.client_name = 'giga-meter'
+         -- A listed Giga school IP, whatever client it ran: step 04 writes those
+         -- rows to the giga subset too, so dropping them here (ordinary client,
+         -- group with no anomaly-count row) lost them before 04 could see them.
+         -- Same list and window as 04's giga INSERT (any month DAY-8..DAY touches).
+         OR ndt.client_ip IN (
+              SELECT ip_address
+              FROM `mlab-collaboration.${DS}.giga_school_ips`
+              WHERE month_start BETWEEN DATE_TRUNC(DATE_SUB(CAST('${DAY}' AS DATE), INTERVAL 8 DAY), MONTH)
+                                    AND DATE_TRUNC(CAST('${DAY}' AS DATE), MONTH)
+                AND ip_address IS NOT NULL
+            ))
   GROUP BY
     scamper.id, src_city, src_asn, dst_site, window_start,
     ip_version
@@ -378,7 +389,18 @@ Scamper2DataIntermediary AS (
     -- measured capture rate 68.6% for BYOS-only traces vs 90.9% for scamper1,
     -- because BYOS deployments are sparser and their groups more often absent
     -- from anomaly_counts_union on a given day.
-    AND (a.src_asn IS NOT NULL OR ndt.client_name = 'giga-meter')
+    AND (a.src_asn IS NOT NULL OR ndt.client_name = 'giga-meter'
+         -- A listed Giga school IP, whatever client it ran: step 04 writes those
+         -- rows to the giga subset too, so dropping them here (ordinary client,
+         -- group with no anomaly-count row) lost them before 04 could see them.
+         -- Same list and window as 04's giga INSERT (any month DAY-8..DAY touches).
+         OR ndt.client_ip IN (
+              SELECT ip_address
+              FROM `mlab-collaboration.${DS}.giga_school_ips`
+              WHERE month_start BETWEEN DATE_TRUNC(DATE_SUB(CAST('${DAY}' AS DATE), INTERVAL 8 DAY), MONTH)
+                                    AND DATE_TRUNC(CAST('${DAY}' AS DATE), MONTH)
+                AND ip_address IS NOT NULL
+            ))
   GROUP BY
     scamper.raw.Metadata.UUID, src_city, src_asn, dst_site, window_start,
     ip_version
@@ -429,82 +451,108 @@ Scamper2FilteredData AS (
 -- furthest TTL, then lowest flow id). That removes the explosion and yields one
 -- coherent real path per trace.
 --
--- WHOSE RTT IS WHOSE. scamper stores probes on links, not on nodes: the probes on
--- a link node -> link_item were sent with link_item's TTL and ANSWERED BY
--- link_item (the link's far end). Verified on raw scamper1, 2026-10-14: under
--- links whose far end is the destination, 98.6% of replies are echo replies,
--- which only the destination sends. A hop row is keyed on the link's NEAR end
--- (node.addr, at position probe_ttl), so its own RTT is the one recorded on the
--- link INTO it, on the same flow. Until 2026-10 the row
--- carried the far end's RTT instead, pairing every router with the next one's
--- RTT. The first router has no link into it (TTL-1 probes are not stored), so
--- its own RTT is genuinely unknown: NULL, not 0 and not the next hop's.
+-- WHERE EACH HOP SITS, AND WHOSE RTT IS WHOSE. In M-Lab's scamper1 records
+-- node.links[] is the sequence of HOPS along the node's outgoing link(s), one
+-- entry per TTL step, and each inner Links[] holds the addresses that answered at
+-- that step ('*' for unanswered probes, which never carry replies). A reply to a
+-- probe sent with TTL t comes from that Links[] entry's address -- the far end --
+-- so the address sits at distance t, i.e. position t + 1, and the reply's RTT is
+-- its OWN RTT. Every hop row below is built from exactly that: one row per
+-- (flow, position, responder), RTT = that responder's fastest reply on that flow
+-- at that TTL. Nothing is copied from the node that owns the link.
 --
--- far_rtt keeps the previous value. It is used only where behaviour must stay
--- identical: choosing among several hops at one TTL (so every path keeps exactly
--- the same addresses) and traceroute_rtt, which was already the far end's
--- (normally the destination's) RTT and is correct.
+-- Until 2026-10 a hop row was the link's NEAR end (node.addr) at position =
+-- probe TTL. That is right only when the link spans one TTL. A "compressed" link
+-- spans several (it crosses an unresponsive or per-packet load-balanced hop:
+-- node.links has more entries than node.linkc). There the near end was copied onto
+-- every TTL of the span, its real position became '*', and the routers answering
+-- inside the span were lost: 18.5% of step-03 rows on 2026-10-14 repeated an
+-- address and 3.7% held a manufactured A..B..A loop. E.g. 195.22.209.41 -> '*' ->
+-- 154.54.73.169 -> 154.54.61.46 at positions 3..6 came out as
+-- '*', 195.22.209.41, 195.22.209.41, 154.54.61.46.
+--
+-- The FIRST router (nodes[0], reached at TTL 1) is the one address with no reply:
+-- scamper does not store TTL-1 probes. It still answered, so it is placed at
+-- position 2 on every flow, with a NULL RTT (unknown, not 0, not the next hop's).
+-- nodes[0] is '*' when the first hop did not answer; that row is then a gap.
+-- Verified on 5,654 traces of 2026-10-14: nodes[0] is the only node that never
+-- appears as a responder, and '*' entries never carry a reply.
+--
+-- far_rtt equals rtts for scamper1 rows: the responder's own reply is also "the
+-- reply at that position". It is kept as a separate column because the hop chosen
+-- per position (FinalNodeExtraction) and traceroute_rtt (LastNonStarRTT) are
+-- defined on it for both sources.
 ScamperFlowHops AS (
   SELECT
     fd.* EXCEPT(nodes, raw),
     ARRAY(
       -- Derived tables, not a WITH: a CTE inside this per-row subquery cannot
       -- reference fd, while FROM-clause subqueries over UNNEST(fd.nodes) can.
-      --
-      -- A hop's own RTT is the reply this address sent on THE SAME FLOW at a TTL in
-      -- [prev_ttl, probe_ttl): after the previous answered position on this flow and
-      -- before its own position. Normally that is probe_ttl - 1; it is lower only
-      -- across unanswered hops. The lower bound stops a repeated address (a loop, or
-      -- a router step 03 places at several positions) from reusing the reply of an
-      -- earlier occurrence. Replies on other flows are not used: they do not measure
-      -- the selected path. No such reply -> NULL.
-      SELECT AS STRUCT
-        h.flow_id,
-        h.probe_ttl,
-        h.addr,
-        h.rdns_name,
-        h.link_addr,
-        ARRAY_AGG(sf.rtt IGNORE NULLS ORDER BY sf.probe_ttl DESC LIMIT 1)[SAFE_OFFSET(0)] AS rtts,
-        MIN(h.far_rtt) AS far_rtt,
-        MIN(h.probe_rttl) AS probe_rttl
-      FROM (
+      SELECT AS STRUCT * FROM (
+        -- every reply: its responder, at probe TTL + 1, with its own RTT
         SELECT
-          g.*,
-          -- the previous answered position on this flow (NULL for the first one)
-          MAX(g.probe_ttl) OVER (
-            PARTITION BY g.flow_id ORDER BY g.probe_ttl
-            RANGE BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
-          ) AS prev_ttl
+          r.flow_id,
+          r.probe_ttl,
+          r.addr,
+          nm.rdns_name,
+          r.addr        AS link_addr,
+          r.rtt         AS rtts,
+          r.rtt         AS far_rtt,
+          r.probe_rttl
         FROM (
           SELECT
-            probe.Flowid                 AS flow_id,
-            probe.TTL                    AS probe_ttl,
-            node.addr                    AS addr,
-            node.name                    AS rdns_name,
-            link_item.addr               AS link_addr,
-            MIN(replies.RTT)             AS far_rtt,
-            ANY_VALUE(replies.TTL)       AS probe_rttl
+            probe.Flowid         AS flow_id,
+            probe.TTL + 1        AS probe_ttl,  -- position = distance + 1
+            link_item.addr       AS addr,
+            MIN(replies.RTT)     AS rtt,
+            MIN(replies.TTL)     AS probe_rttl
           FROM UNNEST(fd.nodes)              AS node,
                UNNEST(node.links)            AS link,
                UNNEST(link.Links)            AS link_item,
                UNNEST(link_item.Probes)      AS probe,
                UNNEST(probe.Replies)         AS replies
-          GROUP BY flow_id, probe_ttl, node.addr, node.name, link_item.addr
-        ) AS g
-      ) AS h
-      -- replies SENT by h.addr (it is the link's far end), per flow and TTL
-      LEFT JOIN (
-        SELECT probe.Flowid AS flow_id, probe.TTL AS probe_ttl, link_item.addr AS addr,
-          MIN(replies.RTT) AS rtt
-        FROM UNNEST(fd.nodes) AS node, UNNEST(node.links) AS link, UNNEST(link.Links) AS link_item,
-             UNNEST(link_item.Probes) AS probe, UNNEST(probe.Replies) AS replies
-        GROUP BY flow_id, probe_ttl, addr
-      ) AS sf
-        ON sf.flow_id = h.flow_id
-       AND sf.addr = h.addr
-       AND sf.probe_ttl < h.probe_ttl
-       AND sf.probe_ttl >= IFNULL(h.prev_ttl, 0)
-      GROUP BY h.flow_id, h.probe_ttl, h.addr, h.rdns_name, h.link_addr
+          -- A reply without an RTT is ignored (none of 138K replies sampled on
+          -- 2026-10-14 had one). Referencing replies.RTT also matters for cost:
+          -- an UNNEST(probe.Replies) that names no field of it reads every field.
+          WHERE link_item.addr != '*' AND replies.RTT IS NOT NULL
+          GROUP BY flow_id, probe_ttl, addr
+        ) AS r
+        -- rDNS lives on the node entry; a responder inside a compressed link has
+        -- none (it is not in nodes[]), so NULL
+        LEFT JOIN (
+          SELECT n.addr, MIN(n.name) AS rdns_name
+          FROM UNNEST(fd.nodes) AS n
+          GROUP BY n.addr
+        ) AS nm
+          ON nm.addr = r.addr
+
+        UNION ALL
+
+        -- the first router, on every flow that has a reply
+        SELECT
+          f.flow_id,
+          2                                   AS probe_ttl,
+          first_node.addr                     AS addr,
+          first_node.name                     AS rdns_name,
+          first_node.addr                     AS link_addr,
+          CAST(NULL AS FLOAT64)               AS rtts,
+          CAST(NULL AS FLOAT64)               AS far_rtt,
+          CAST(NULL AS INT64)                 AS probe_rttl
+        FROM UNNEST(fd.nodes) AS first_node WITH OFFSET AS node_offset
+        CROSS JOIN (
+          SELECT probe.Flowid AS flow_id
+          FROM UNNEST(fd.nodes) AS node, UNNEST(node.links) AS link,
+               UNNEST(link.Links) AS link_item, UNNEST(link_item.Probes) AS probe,
+               UNNEST(probe.Replies) AS replies
+          WHERE link_item.addr != '*' AND replies.RTT IS NOT NULL  -- as above
+          GROUP BY flow_id
+          -- a stored TTL-1 reply (never seen in this data) would place its own
+          -- responder at position 2; do not stack the first router on it
+          HAVING LOGICAL_AND(probe.TTL != 1)
+        ) AS f
+        WHERE node_offset = 0
+          AND first_node.addr != '*'
+      )
     ) AS hops
   FROM FilteredData fd
 ),
@@ -518,10 +566,9 @@ ScamperBestFlow AS (
       FROM (
         SELECT
           flow_id,
-          -- prefer a flow that actually reaches the destination (its path includes
-          -- dst as a hop or as a link far-end), so the multipath collapse never drops
-          -- a dst-reaching path in favour of a merely-longer one
-          MAX(CASE WHEN addr = sfh.dst OR link_addr = sfh.dst THEN 1 ELSE 0 END) AS reaches_dst,
+          -- prefer a flow on which the destination answers, so the multipath
+          -- collapse never drops a dst-reaching path in favour of a merely-longer one
+          MAX(CASE WHEN addr = sfh.dst THEN 1 ELSE 0 END) AS reaches_dst,
           COUNT(DISTINCT IF(addr != '*', probe_ttl, NULL)) AS responsive_hops,
           MAX(probe_ttl)                                    AS max_ttl
         FROM UNNEST(hops)
@@ -533,27 +580,16 @@ ScamperBestFlow AS (
   FROM ScamperFlowHops sfh
 ),
 
--- The chosen flow's path, plus two kinds of rows a hop row (keyed on a link's
--- near end) cannot provide:
+-- The chosen flow's path. Every responder already has its own row, including the
+-- deepest router of a trace that stops short of the destination and the
+-- destination itself (which NodeExtraction then does not append again).
 --
--- (a) FAR-END-ONLY ROUTERS. An address that is only ever a link's far end on
---     the chosen flow has no outgoing link there, so it never gets a hop row.
---     That is the deepest responding router of every trace that stops short of
---     the destination (97% of non-reaching traces on 2026-10-14). It gets a row
---     at position = probe TTL of the link into it + 1 (the same convention as a
---     near end: distance + 1), unless the flow already has a hop row there. Its
---     RTT is the reply it sent on that link, which is its own RTT under the rule
---     above (the previous answered position is the link's near end, at the probe
---     TTL), and also its far_rtt, so traceroute_rtt (the furthest reply) is
---     unchanged. The destination is excluded: it is appended after the path
---     below (NodeExtraction), exactly as before.
--- (b) NO-REPLY TRACES. A trace with no replies at all has no hops and no best
---     flow (7.1% of scamper1 traces on 2026-10-14). Dropping it removed its NDT
---     test from transient_events_union and from step 07's day-of counts. It gets
---     a single placeholder at position 1, which ExpandedRows turns into the
---     server row, so its path is just the server. flow_id NULL marks it: it is
---     not scamper1 data for the merge below, so a scamper2 trace for the same
---     test still fills the path.
+-- NO-REPLY TRACES. A trace with no stored reply at all has no hops and no best
+-- flow (7.1% of scamper1 traces on 2026-10-14). Dropping it removed its NDT test
+-- from transient_events_union and from step 07's day-of counts. It gets a single
+-- placeholder at position 1, which ExpandedRows turns into the server row, so its
+-- path is just the server. flow_id NULL marks it: it is not scamper1 data for the
+-- merge below, so a scamper2 trace for the same test still fills the path.
 WithoutDstNodeExtraction AS (
   SELECT
     bf.* EXCEPT(hops, best_flow_id),
@@ -575,29 +611,7 @@ WithoutDstNodeExtraction AS (
 
       UNION ALL
 
-      -- (a) far-end-only routers of the chosen flow
-      SELECT
-        f.link_addr                  AS addr,
-        CAST(NULL AS STRING)         AS rdns_name,
-        MIN(f.far_rtt)               AS rtts,
-        MIN(f.far_rtt)               AS far_rtt,
-        f.probe_ttl + 1              AS probe_ttl,
-        MIN(f.probe_rttl)            AS probe_rttl,
-        f.flow_id,
-        f.link_addr
-      FROM UNNEST(bf.hops) AS f
-      WHERE f.flow_id = bf.best_flow_id
-        AND f.link_addr != bf.dst
-        AND NOT EXISTS (
-          SELECT 1 FROM UNNEST(bf.hops) AS o
-          WHERE o.flow_id = f.flow_id
-            AND (o.addr = f.link_addr OR o.probe_ttl = f.probe_ttl + 1)
-        )
-      GROUP BY f.flow_id, f.probe_ttl, f.link_addr
-
-      UNION ALL
-
-      -- (b) no-reply placeholder (becomes the server row)
+      -- no-reply placeholder (becomes the server row)
       SELECT
         bf.src, CAST(NULL AS STRING), CAST(NULL AS FLOAT64), CAST(NULL AS FLOAT64),
         1, CAST(NULL AS INT64), CAST(NULL AS INT64), bf.src
@@ -609,13 +623,16 @@ WithoutDstNodeExtraction AS (
 
 -- scamper2: flat hops (no multipath — no Flowid / link_item nesting)
 --
--- POSITION. scamper1 keys a hop on the TTL of its OUTGOING link, i.e. its
--- distance + 1, so the first router sits at position 2 and position 1 is left
--- for the synthetic server row (ExpandedRows). scamper2 lists each hop at its
--- real TTL (the first router at 1), so it is shifted by one to the same
+-- POSITION. A router sits at its distance + 1 (see ScamperFlowHops), so position
+-- 1 is left for the synthetic server row (ExpandedRows). scamper2 lists each hop
+-- at its real TTL (the first router at 1), so it is shifted by one to the same
 -- convention. Without the shift the first router (present in 97% of scamper2
 -- traces on 2026-10-14) was overwritten by the server row, and every other
 -- scamper2 router sat one position lower than the same router in scamper1.
+--
+-- A trace with no usable hop (hops = [], ~1.7K tests/day) gets the same
+-- server-only placeholder as a no-reply scamper1 trace (position 1, flow_id
+-- NULL). Before, the CROSS JOIN UNNEST produced no row and the test vanished.
 Scamper2WithoutDstNodeExtraction AS (
   SELECT *
   FROM (
@@ -639,12 +656,36 @@ Scamper2WithoutDstNodeExtraction AS (
     WHERE SAFE_CAST(hop.probe_ttl AS INT64) IS NOT NULL
   )
   WHERE rtt_order = 1
+
+  UNION ALL
+
+  -- no usable hop: server-only placeholder (becomes the server row)
+  SELECT
+    fd.* EXCEPT(hops),
+    fd.src                                  AS addr,
+    CAST(NULL AS STRING)                    AS rdns_name,
+    CAST(NULL AS FLOAT64)                   AS rtts,
+    CAST(NULL AS FLOAT64)                   AS far_rtt,
+    1                                       AS probe_ttl,
+    CAST(NULL AS INT64)                     AS probe_rttl,
+    CAST(NULL AS INT64)                     AS flow_id,
+    fd.src                                  AS link_addr,
+    1                                       AS rtt_order
+  FROM Scamper2FilteredData fd
+  WHERE NOT EXISTS (
+    SELECT 1 FROM UNNEST(fd.hops) AS hop
+    WHERE SAFE_CAST(hop.probe_ttl AS INT64) IS NOT NULL
+  )
 ),
 
--- Merge: prefer scamper1; scamper2 only fills gaps where scamper1 has no data
+-- Merge: prefer scamper1; scamper2 only fills gaps where scamper1 has no data.
+-- A placeholder (flow_id NULL, either source) is not data: real scamper2 hops may
+-- still fill a scamper1 placeholder, but a scamper2 placeholder is only used when
+-- scamper1 has no row at all for the test, so a test never gets two placeholders.
 Scamper1IDs AS (
-  -- a no-reply placeholder (flow_id NULL) is not data: scamper2 may still fill it
-  SELECT DISTINCT id FROM WithoutDstNodeExtraction WHERE flow_id IS NOT NULL
+  SELECT id, LOGICAL_OR(flow_id IS NOT NULL) AS has_data
+  FROM WithoutDstNodeExtraction
+  GROUP BY id
 ),
 
 MergedNodeExpansion AS (
@@ -656,12 +697,14 @@ MergedNodeExpansion AS (
   FROM Scamper2WithoutDstNodeExtraction s2
   LEFT JOIN Scamper1IDs s1 ON s1.id = s2.id
   WHERE s1.id IS NULL
+     OR (NOT s1.has_data AND s2.flow_id IS NOT NULL)
 ),
 
 LastNonStarRTT AS (
   SELECT
     w.*,
-    -- far_rtt: the RTT of the furthest reply (normally the destination's), as before.
+    -- The RTT of the furthest reply on the path (normally the destination's); for
+    -- scamper1 that is the deepest responder's own reply (far_rtt = rtts there).
     FIRST_VALUE(far_rtt) OVER (PARTITION BY w.id ORDER BY probe_ttl DESC, far_rtt ASC) AS traceroute_rtt
   FROM MergedNodeExpansion w
   WHERE addr != '*'
@@ -681,9 +724,9 @@ MaxTTLPerID AS (
 
 -- ttl_rn picks the hop kept per position (NodeExtraction). dst_is_hop: the
 -- destination already is the KEPT hop at some position of this path. Then it
--- must not be appended again after the path: for scamper2 link_addr = addr, so
--- a responding destination was both a hop row and appended (listed twice at the
--- end of 820K traces, 2.4%, on 2026-10-14). Computed on the kept hops, not on
+-- must not be appended again after the path: link_addr = addr for both sources,
+-- so a responding destination is a hop row and was also appended (listed twice
+-- at the end of 820K scamper2 traces, 2.4%, on 2026-10-14). Computed on the kept hops, not on
 -- every row, so a destination that loses its position to another address is
 -- still appended rather than lost.
 FinalNodeExtraction AS (
@@ -701,8 +744,9 @@ FinalNodeExtraction AS (
         ) THEN TRUE
         ELSE FALSE
       END AS add_dst,
-      -- far_rtt, not rtts: picks the same hop per TTL as before the RTT fix, so
-      -- every path keeps exactly the same addresses (topology is unchanged).
+      -- Several addresses at one position (per-packet load balancing on the chosen
+      -- flow): keep the fastest reply, then the lowest address, so the choice is
+      -- deterministic. far_rtt = rtts for scamper1 (each responder's own reply).
       ROW_NUMBER() OVER (
         PARTITION BY ne.id, ne.probe_ttl
         ORDER BY ne.far_rtt ASC, ne.addr ASC
