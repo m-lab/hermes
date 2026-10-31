@@ -25,12 +25,17 @@ WHERE partition_date = '${DAY}'
     WHERE node.distance_rtt_check = 'Above threshold'
   );
 
--- 2. Strict filter for anomaly classification
+-- 2. Strict filter for anomaly classification: drop a measurement whose path is
+-- longer than its RTT allows (distance/100 km per ms > ndt_rtt). Only a comparison
+-- that is TRUE drops it. A bare `NOT x > ndt_rtt` is NULL when ndt_rtt (or the
+-- distance) is NULL, and WHERE NULL dropped every measurement without a download
+-- RTT -- 58,643 rows/day, 648 of them throughput-anomalous -- though nothing here
+-- contradicts them.
 CREATE TEMP TABLE final_results AS
 SELECT *
 FROM _base_events
-WHERE NOT forward_distance / 100 > ndt_rtt
-  AND NOT reverse_distance / 100 > ndt_rtt;
+WHERE NOT IFNULL(forward_distance / 100 > ndt_rtt, FALSE)
+  AND NOT IFNULL(reverse_distance / 100 > ndt_rtt, FALSE);
 
 -- 3. Extract ordered AS paths
 -- Canonicalize each hop's place to the polygon metro (lat/lon-derived) so the same
