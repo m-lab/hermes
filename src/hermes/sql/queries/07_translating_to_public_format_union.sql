@@ -148,9 +148,18 @@ WITH
   -- from both ends because a source label itself may contain the historical
   -- ` - ` delimiter (for example, "Er Rachidia-Meknès - Tafilalet-MA").
   -- New rows end in ip_version; historical three-component rows do not.
+  --
+  -- The hop ASNs are re-derived from edge_asn_metro ("<asn>-<place> - <asn>-<place>")
+  -- rather than trusted from from_asn/to_asn. A place may itself contain ' - '
+  -- ('Bà Rịa - Vũng Tàu', 'Rabat - Salé - Zemmour - Zaer'), and rows written before
+  -- the split was fixed carry to_asn values such as 'Vũng Tàu'. The node boundary
+  -- is the ' - ' followed by the next node's ASN and its '-' (exactly one per edge
+  -- in every edge culprit staged so far; see hermes/pipeline/edge_format.py).
   correlation_pair_parts AS (
     SELECT
       ocd.*,
+      COALESCE(REGEXP_EXTRACT(ocd.edge_asn_metro, r'^(\d+)-'), ocd.from_asn) AS edge_from_asn,
+      COALESCE(REGEXP_EXTRACT(ocd.edge_asn_metro, r' - (\d+)-'), ocd.to_asn) AS edge_to_asn,
       src_dst_str,
       SPLIT(src_dst_str, ' - ') AS pair_parts
     FROM `mlab-collaboration.${DS}.correlation_hyperedges_tomography_v2` AS ocd
@@ -250,7 +259,9 @@ WITH
       ocd.partition_date,
       ocd.iteration_number,
       ocd.edge_asn_metro AS source_events,
-      CONCAT(metadata_left.asnName, ' --- ' , metadata_right.asnName) AS source_events_org,
+      -- An AS missing from as_metadata keeps its number rather than nulling the label.
+      CONCAT(COALESCE(metadata_left.asnName, ocd.edge_from_asn), ' --- ',
+             COALESCE(metadata_right.asnName, ocd.edge_to_asn)) AS source_events_org,
       ocd.information_source,
       ocd.is_interdomain,
       ocd.ratio_anomaly,
@@ -306,12 +317,18 @@ WITH
           OR 'upload' IN UNNEST(ta.anomaly_signals)
         ))
       )
-    JOIN closest_metadata metadata_left
+    -- LEFT JOINs: the AS names are decoration. As INNER JOINs, a hop AS missing
+    -- from as_metadata (or a mis-parsed to_asn) deleted the attribution, and
+    -- `unresolved` below excludes every pair with a correlation row, so the pair
+    -- vanished from the output entirely. closest_metadata has one row per asn, so
+    -- these joins cannot fan out. The WHERE drops the FULL OUTER JOIN's ta-only
+    -- rows (no correlation match); those are emitted by `unresolved`.
+    LEFT JOIN closest_metadata metadata_left
       ON
-      CAST(ocd.from_asn AS STRING) = CAST(metadata_left.asn AS STRING)
-    JOIN closest_metadata metadata_right
+      ocd.edge_from_asn = CAST(metadata_left.asn AS STRING)
+    LEFT JOIN closest_metadata metadata_right
       ON
-      CAST(ocd.to_asn AS STRING) = CAST(metadata_right.asn AS STRING)
+      ocd.edge_to_asn = CAST(metadata_right.asn AS STRING)
     WHERE ocd.partition_date = '${DAY}'
   ),
 
@@ -537,15 +554,11 @@ combined_with_AS_meta AS (
     anomaly_ratio_upload_throughput,
     anomaly_signals,
     observed_ips,
-    -- Transform source_events to use " --- " instead of " - " and map ASNs to their AS Names
-    ARRAY_TO_STRING(
-      ARRAY(
-        SELECT
-          COALESCE(part)  -- Replace ASN with AS name if found
-        FROM UNNEST(SPLIT(source_events, ' - ')) AS part
-      ),
-      ' --- '  -- New separator
-    ) AS source_events,
+    -- Join the two nodes with " --- " instead of " - ". Only the node boundary is
+    -- rewritten (the ' - ' followed by an ASN token): a place such as
+    -- 'Bà Rịa - Vũng Tàu' keeps its own ' - '. NULL (unresolved) becomes '', as the
+    -- former SPLIT/ARRAY_TO_STRING did; final_result keys the 'source' case on ''.
+    IFNULL(REGEXP_REPLACE(source_events, r' - (\d+-|\*)', r' --- \1'), '') AS source_events,
     source_events_org,
     information_source,
     is_interdomain,
@@ -553,10 +566,12 @@ combined_with_AS_meta AS (
     attribution_method,
     confidence_tier,
   FROM combined
-  JOIN closest_metadata metadata_src_asn
+  -- LEFT JOINs for the same reason as in `resolved`: a missing AS name must not
+  -- delete the row (resolved or unresolved). One metadata row per asn: no fan-out.
+  LEFT JOIN closest_metadata metadata_src_asn
     ON
   CAST(src_asn AS STRING) = CAST(metadata_src_asn.asn AS STRING)
-  JOIN closest_metadata metadata_dst_asn
+  LEFT JOIN closest_metadata metadata_dst_asn
     ON
   CAST(dst_asn AS STRING) = CAST(metadata_dst_asn.asn AS STRING)
 ),

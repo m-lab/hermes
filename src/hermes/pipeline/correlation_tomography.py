@@ -26,6 +26,7 @@ import pandas as pd
 from google.cloud import bigquery
 from scipy.stats import fisher_exact
 
+from hermes.pipeline.edge_format import split_edge
 from hermes.sql import loader
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -762,9 +763,11 @@ def compute_hyperedges(
 
     # --- Parse culprit edges into from/to ---
     culprits_df = pd.DataFrame(culprit_rows)
-    parts = culprits_df["canonical_edge"].str.split(" - ", n=1, expand=True)
-    culprits_df["left_part"] = parts[0]
-    culprits_df["right_part"] = parts[1]
+    # split_edge, not str.split(" - ", n=1): a region such as "Bà Rịa - Vũng Tàu"
+    # contains the delimiter, and the naive split stored to_asn = 'Vũng Tàu'.
+    parts = culprits_df["canonical_edge"].map(split_edge)
+    culprits_df["left_part"] = parts.map(lambda p: p[0] if p else None)
+    culprits_df["right_part"] = parts.map(lambda p: p[1] if p else None)
     culprits_df["from_asn"] = culprits_df["left_part"].str.split("-").str[0].str.strip()
     culprits_df["from_metro"] = culprits_df["left_part"].str.split("-").str[1].str.strip()
     culprits_df["from_asn_metro"] = culprits_df["from_asn"] + "-" + culprits_df["from_metro"]
@@ -1038,9 +1041,9 @@ def run_mixed_granularity_cover(
     for i, ev in enumerate(edge_vals):
         if "*" not in ev:
             edge_cand[i] = cand_of("edge", ev)
-        a, _, b = ev.partition(" - ")
-        edge_a[i] = node_of(a)
-        edge_b[i] = node_of(b) if " - " in ev else -1
+        ends = split_edge(ev)
+        edge_a[i] = node_of(ends[0] if ends else ev)
+        edge_b[i] = node_of(ends[1]) if ends else -1
 
     # Per node: its candidate at each node-derived granularity (-1 = not a candidate).
     node_cand = {

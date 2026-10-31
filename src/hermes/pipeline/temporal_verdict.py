@@ -48,6 +48,7 @@ from hermes.pipeline.correlation_tomography import (  # noqa: E402
     _load_dataset_query,
     _read_df,
 )
+from hermes.pipeline.edge_format import split_edge  # noqa: E402
 
 _PREV_SQL = "05_temporal_edge_prevalences_union.sql"
 
@@ -94,9 +95,9 @@ def _culprit_edges(
     Build from the full `edge_asn_metro` ("nodeA - nodeB", full metros) rather than
     `from_asn_metro`/`to_asn_metro`, which truncate the place to its first hyphen
     component ("2907-Tokyo") and therefore never match the prevalence SQL's full-metro
-    nodes ("2907-Tokyo-Tokyo-JP"). Emit both directed orderings. Edges whose metro
-    contains the " - " node delimiter (rare region names) can't be split and are
-    skipped.
+    nodes ("2907-Tokyo-Tokyo-JP"). Emit both directed orderings. Region names may
+    contain the " - " node delimiter ("Bà Rịa - Vũng Tàu"); split_edge splits only
+    at the boundary that precedes the second node's ASN, so those edges match too.
     """
     table = _dataset_table(
         "correlation_hyperedges_tomography_v2", project_id=project_id, dataset=dataset
@@ -107,10 +108,10 @@ def _culprit_edges(
     )
     out: dict[str, set[str]] = {}
     for r in client.query(sql).result():
-        parts = (r["edge_asn_metro"] or "").split(" - ")
-        if len(parts) != 2:
+        parts = split_edge(r["edge_asn_metro"])
+        if parts is None:
             continue
-        a, b = parts[0].strip(), parts[1].strip()
+        a, b = parts
         for p in r["pairs"] or []:
             out.setdefault(p, set()).update((f"{a}-{b}", f"{b}-{a}"))
     return out
