@@ -77,6 +77,15 @@ totals AS (   -- per group/direction: # distinct healthy and day-of measurements
     COUNT(DISTINCT IF(in_d, id, NULL)) AS dayof_n
   FROM edges GROUP BY src_dst_pair, ip_version, direction
 ),
+-- Directions with at least one day-of anomalous measurement, routed or not. This,
+-- not totals.dayof_n > 0, decides which group/directions are emitted, so the row
+-- set is exactly what it was when totals counted every measurement: a pair whose
+-- day-of measurements observed no resolved edge still gets rows (dayof_n = 0) and
+-- hence an 'indeterminate' verdict instead of silently losing its verdict row.
+anomalous_dirs AS (
+  SELECT DISTINCT src_dst_pair, ip_version, direction
+  FROM ordered WHERE is_anomaly AND is_day
+),
 agg AS (
   SELECT src_dst_pair, ip_version, direction, edge,
     COUNT(DISTINCT IF(in_u, id, NULL)) AS u_n,
@@ -90,4 +99,4 @@ SELECT a.src_dst_pair, a.ip_version, a.direction, a.edge,
   SAFE_DIVIDE(a.d_n, t.dayof_n)  AS prev_d,
   a.base_hop_rtt, a.day_hop_rtt, t.healthy_n, t.dayof_n
 FROM agg a JOIN totals t USING (src_dst_pair, ip_version, direction)
-WHERE t.dayof_n > 0;
+JOIN anomalous_dirs USING (src_dst_pair, ip_version, direction);

@@ -142,3 +142,39 @@ def test_server_only_healthy_paths_are_not_support_for_a_reroute(monkeypatch):
     assert set(df["healthy_n"]) == {0} and set(df["dayof_n"]) == {10}
     row = _verdict(monkeypatch, df.to_dict("records"))
     assert row["verdict"] == "indeterminate", row
+
+
+def test_emitted_rows_are_still_every_direction_with_a_day_of_anomaly():
+    """Counting support over edges must not drop a pair's verdict row: the emitted
+    group/directions stay those with a day-of anomalous measurement (routed or not)."""
+    sql = loader.load_query(PREV, {"DAY": "2026-10-14"})
+    assert "FROM ordered WHERE is_anomaly AND is_day" in sql
+    assert "JOIN anomalous_dirs USING (src_dst_pair, ip_version, direction)" in sql
+    assert "WHERE t.dayof_n > 0" not in sql
+
+
+def _unrouted_day_of() -> list[tuple]:
+    hops = []
+    for k in range(10):  # healthy, routed
+        for ttl, node in enumerate(["100-S-X-US", "200-R-Y-US"], start=1):
+            hops.append((f"h{k}", "FALSE", "FALSE", ttl, node, 1.0 * ttl))
+    for k in range(10):  # anomalous day-of, server row only
+        hops.append((f"a{k}", "TRUE", "TRUE", 1, "100-S-X-US", 0.0))
+    return hops
+
+
+@pytest.mark.bq
+def test_pair_with_unrouted_day_of_paths_is_indeterminate_not_dropped(monkeypatch):
+    if not (os.environ.get("GOOGLE_APPLICATION_CREDENTIALS") or os.environ.get("HERMES_BQ_TEST")):
+        pytest.skip("BigQuery creds not configured (on-demand test)")
+    from google.cloud import bigquery
+
+    q = _prevalence_query(_unrouted_day_of())
+    df = (
+        bigquery.Client(project="mlab-collaboration")
+        .query(q)
+        .to_dataframe(create_bqstorage_client=False)
+    )
+    assert len(df) == 1 and int(df["healthy_n"].iloc[0]) == 10 and int(df["dayof_n"].iloc[0]) == 0
+    row = _verdict(monkeypatch, df.to_dict("records"))
+    assert row["verdict"] == "indeterminate" and row["change_dir"] is None
