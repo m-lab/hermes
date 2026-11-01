@@ -488,18 +488,25 @@ ScamperFlowHops AS (
     ARRAY(
       -- Derived tables, not a WITH: a CTE inside this per-row subquery cannot
       -- reference fd, while FROM-clause subqueries over UNNEST(fd.nodes) can.
-      SELECT AS STRUCT * FROM (
-        -- every reply: its responder, at probe TTL + 1, with its own RTT
+      -- ONE pass over the replies: an earlier draft unnested them a second time to
+      -- list each flow for the first-router row, and with the UNION ALL that ran out
+      -- of memory on a full day (2026-10-31, staging 2026-10-14).
+      SELECT AS STRUCT
+        r.flow_id,
+        IF(first_row, 2, r.probe_ttl)                       AS probe_ttl,
+        IF(first_row, fd.nodes[SAFE_OFFSET(0)].addr, r.addr) AS addr,
+        IF(first_row, fd.nodes[SAFE_OFFSET(0)].name, nm.rdns_name) AS rdns_name,
+        IF(first_row, fd.nodes[SAFE_OFFSET(0)].addr, r.addr) AS link_addr,
+        IF(first_row, CAST(NULL AS FLOAT64), r.rtt)         AS rtts,
+        IF(first_row, CAST(NULL AS FLOAT64), r.rtt)         AS far_rtt,
+        IF(first_row, CAST(NULL AS INT64), r.probe_rttl)    AS probe_rttl
+      FROM (
         SELECT
-          r.flow_id,
-          r.probe_ttl,
-          r.addr,
-          nm.rdns_name,
-          r.addr        AS link_addr,
-          r.rtt         AS rtts,
-          r.rtt         AS far_rtt,
-          r.probe_rttl
+          r0.*,
+          ROW_NUMBER() OVER (PARTITION BY r0.flow_id ORDER BY r0.probe_ttl, r0.addr) AS rn_in_flow,
+          MIN(r0.probe_ttl) OVER (PARTITION BY r0.flow_id)                            AS min_ttl
         FROM (
+          -- every reply: its responder, at probe TTL + 1, with its own RTT
           SELECT
             probe.Flowid         AS flow_id,
             probe.TTL + 1        AS probe_ttl,  -- position = distance + 1
@@ -516,43 +523,24 @@ ScamperFlowHops AS (
           -- an UNNEST(probe.Replies) that names no field of it reads every field.
           WHERE link_item.addr != '*' AND replies.RTT IS NOT NULL
           GROUP BY flow_id, probe_ttl, addr
-        ) AS r
-        -- rDNS lives on the node entry; a responder inside a compressed link has
-        -- none (it is not in nodes[]), so NULL
-        LEFT JOIN (
-          SELECT n.addr, MIN(n.name) AS rdns_name
-          FROM UNNEST(fd.nodes) AS n
-          GROUP BY n.addr
-        ) AS nm
-          ON nm.addr = r.addr
-
-        UNION ALL
-
-        -- the first router, on every flow that has a reply
-        SELECT
-          f.flow_id,
-          2                                   AS probe_ttl,
-          first_node.addr                     AS addr,
-          first_node.name                     AS rdns_name,
-          first_node.addr                     AS link_addr,
-          CAST(NULL AS FLOAT64)               AS rtts,
-          CAST(NULL AS FLOAT64)               AS far_rtt,
-          CAST(NULL AS INT64)                 AS probe_rttl
-        FROM UNNEST(fd.nodes) AS first_node WITH OFFSET AS node_offset
-        CROSS JOIN (
-          SELECT probe.Flowid AS flow_id
-          FROM UNNEST(fd.nodes) AS node, UNNEST(node.links) AS link,
-               UNNEST(link.Links) AS link_item, UNNEST(link_item.Probes) AS probe,
-               UNNEST(probe.Replies) AS replies
-          WHERE link_item.addr != '*' AND replies.RTT IS NOT NULL  -- as above
-          GROUP BY flow_id
-          -- a stored TTL-1 reply (never seen in this data) would place its own
-          -- responder at position 2; do not stack the first router on it
-          HAVING LOGICAL_AND(probe.TTL != 1)
-        ) AS f
-        WHERE node_offset = 0
-          AND first_node.addr != '*'
-      )
+        ) AS r0
+      ) AS r
+      -- rDNS lives on the node entry; a responder inside a compressed link has
+      -- none (it is not in nodes[]), so NULL
+      LEFT JOIN (
+        SELECT n.addr, MIN(n.name) AS rdns_name
+        FROM UNNEST(fd.nodes) AS n
+        GROUP BY n.addr
+      ) AS nm
+        ON nm.addr = r.addr
+      -- The first router (nodes[0], reached at TTL 1, whose reply scamper does not
+      -- store) gets one extra row at position 2 on every flow that has a reply --
+      -- unless the flow has a stored TTL-1 reply (min_ttl = 2, never seen in this
+      -- data), whose own responder already holds position 2, or nodes[0] is '*'.
+      CROSS JOIN UNNEST(
+        IF(r.rn_in_flow = 1 AND r.min_ttl > 2 AND fd.nodes[SAFE_OFFSET(0)].addr != '*',
+           [FALSE, TRUE], [FALSE])
+      ) AS first_row
     ) AS hops
   FROM FilteredData fd
 ),

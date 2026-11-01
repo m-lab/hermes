@@ -80,9 +80,9 @@ def test_hop_rows_are_responders_at_probe_ttl_plus_one():
     # the near node is no longer copied onto the TTLs of its outgoing link; only the
     # first router (whose TTL-1 reply is not stored) is placed from nodes[]
     assert not re.search(r"(?<![_\w])node\.addr", hops)
-    assert "2                                   AS probe_ttl" in hops
-    assert "first_node.addr                     AS addr" in hops
-    assert "WHERE node_offset = 0" in hops
+    assert "IF(first_row, 2, r.probe_ttl)" in hops
+    assert "IF(first_row, fd.nodes[SAFE_OFFSET(0)].addr, r.addr) AS addr" in hops
+    assert "r.rn_in_flow = 1 AND r.min_ttl > 2 AND fd.nodes[SAFE_OFFSET(0)].addr != '*'" in hops
     # every responder has its own row, so the far-end-only branch is gone
     w = _block(_sql(), "WithoutDstNodeExtraction")
     assert "f.probe_ttl + 1" not in w and "f.link_addr" not in w
@@ -92,9 +92,11 @@ def test_reply_unnests_name_a_reply_field():
     # An UNNEST(probe.Replies) that references no field of the reply makes BigQuery
     # read every reply field: the first draft of this fix billed 274 GiB per day
     # instead of 162 GiB because the first-router branch only counted replies.
+    # A second pass over the replies also ran out of memory on a full day, so the
+    # replies are unnested exactly once.
     hops = _block(_sql(), "ScamperFlowHops")
-    assert len(re.findall(r"UNNEST\(probe\.Replies\)\s+AS replies", hops)) == 2
-    assert hops.count("replies.RTT IS NOT NULL") == 2
+    assert len(re.findall(r"UNNEST\(probe\.Replies\)\s+AS replies", hops)) == 1
+    assert hops.count("replies.RTT IS NOT NULL") == 1
     assert "ARRAY_LENGTH(probe.Replies)" not in hops
 
 

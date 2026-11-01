@@ -40,13 +40,14 @@ def test_own_rtt_is_the_responders_reply_at_that_ttl():
     assert "GROUP BY flow_id, probe_ttl, addr" in hops
     assert ") AS sf" not in hops and "prev_ttl" not in hops  # the old matching is gone
     # the first router's reply (TTL 1) is not stored: NULL, never the next hop's
-    assert re.search(r"2\s+AS probe_ttl,(?:.*\n){4}\s+CAST\(NULL AS FLOAT64\)\s+AS rtts,", hops)
+    assert "IF(first_row, CAST(NULL AS FLOAT64), r.rtt)         AS rtts" in hops
 
 
 def test_far_rtt_is_the_own_reply_and_drives_hop_choice_and_end_to_end_rtt():
     sql = _sql()
     hops = _block(sql, "ScamperFlowHops")
-    assert "r.rtt         AS rtts," in hops and "r.rtt         AS far_rtt," in hops
+    assert "IF(first_row, CAST(NULL AS FLOAT64), r.rtt)         AS rtts" in hops
+    assert "IF(first_row, CAST(NULL AS FLOAT64), r.rtt)         AS far_rtt" in hops
     # traceroute_rtt is the furthest reply's RTT
     assert (
         "FIRST_VALUE(far_rtt) OVER (PARTITION BY w.id ORDER BY probe_ttl DESC, far_rtt ASC)" in sql
