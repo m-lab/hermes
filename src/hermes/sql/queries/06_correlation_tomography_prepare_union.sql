@@ -25,12 +25,17 @@ WHERE partition_date = '${DAY}'
     WHERE node.distance_rtt_check = 'Above threshold'
   );
 
--- 2. Strict filter for anomaly classification
+-- 2. Strict filter for anomaly classification: drop a measurement whose path is
+-- longer than its RTT allows (distance/100 km per ms > ndt_rtt). Only a comparison
+-- that is TRUE drops it. A bare `NOT x > ndt_rtt` is NULL when ndt_rtt (or the
+-- distance) is NULL, and WHERE NULL dropped every measurement without a download
+-- RTT -- 58,643 rows/day, 648 of them throughput-anomalous -- though nothing here
+-- contradicts them.
 CREATE TEMP TABLE final_results AS
 SELECT *
 FROM _base_events
-WHERE NOT forward_distance / 100 > ndt_rtt
-  AND NOT reverse_distance / 100 > ndt_rtt;
+WHERE NOT IFNULL(forward_distance / 100 > ndt_rtt, FALSE)
+  AND NOT IFNULL(reverse_distance / 100 > ndt_rtt, FALSE);
 
 -- 3. Extract ordered AS paths
 -- Canonicalize each hop's place to the polygon metro (lat/lon-derived) so the same
@@ -46,7 +51,18 @@ WITH forward_hops AS (
     -- Prefer the lat/lon-derived metro (source-independent, full region name,
     -- complete) over the place_canonical_metro string lookup, which is keyed on
     -- place and misses code-form variants like 'Johannesburg-GT-ZA'; raw place last.
-    IFNULL(CONCAT(fwd.associated_asn, '-', COALESCE(fwd.metro, al.canon_metro, fwd.place)), '*') AS path,
+    --
+    -- A hop with a known AS but no location (step 04 refuted or could not place
+    -- it, and keeps associated_asn "for AS-level analysis") is '<asn>-unknown',
+    -- not '*'. It used to become '*', so the AS-level cover never saw that AS on
+    -- ~7% of anomalous measurements. '<asn>-unknown' may merge several routers of
+    -- the AS, so the Python covers use it ONLY as AS-level evidence: never as a
+    -- node / metro / IXP candidate, and no edge with such an endpoint can be an
+    -- edge-level culprit (hermes/pipeline/edge_format.py). Step 05 still names
+    -- such a hop '*', so neither step can match an edge through it.
+    CASE WHEN fwd.associated_asn IS NULL THEN '*'
+      ELSE CONCAT(fwd.associated_asn, '-', COALESCE(fwd.metro, al.canon_metro, fwd.place, 'unknown'))
+    END AS path,
     fwd.ttl
   FROM final_results AS fr,
        UNNEST(fr.forward_updated_node_details) AS fwd
@@ -63,7 +79,10 @@ forward_agg AS (
 reverse_hops AS (
   SELECT
     fr.id,
-    IFNULL(CONCAT(rwd.associated_asn, '-', COALESCE(rwd.metro, al.canon_metro, rwd.place)), '*') AS path,
+    -- '<asn>-unknown' for a located-AS / unlocated hop: see forward_hops.
+    CASE WHEN rwd.associated_asn IS NULL THEN '*'
+      ELSE CONCAT(rwd.associated_asn, '-', COALESCE(rwd.metro, al.canon_metro, rwd.place, 'unknown'))
+    END AS path,
     rwd.ttl
   FROM final_results AS fr,
        UNNEST(fr.reverse_updated_node_details) AS rwd

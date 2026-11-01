@@ -17,7 +17,11 @@ PREPARE = "06_correlation_tomography_prepare_union.sql"
 HOPS = "06_correlation_tomography_unexplained_hops_union.sql"
 
 _PAIR_RE = re.compile(r"(CONCAT\([^()]*\))\s+AS\s+src_dst_pair", re.S)
-_NODE_RE = re.compile(r"(IFNULL\(CONCAT\(\w+\.associated_asn,.*?\), '\*'\))", re.S)
+_NODE_RE = re.compile(
+    r"(IFNULL\(CONCAT\(\w+\.associated_asn,.*?\), '\*'\)"
+    r"|CASE WHEN \w+\.associated_asn IS NULL THEN '\*'\s+ELSE CONCAT\(.*?\)\s+END)",
+    re.S,
+)
 
 
 def _sql(name: str) -> str:
@@ -59,6 +63,10 @@ def _split_args(inner: str) -> list[str]:
 def _eval(expr: str, row: dict):
     """Evaluate the small SQL subset the key/node expressions use."""
     expr = expr.strip()
+    case = re.fullmatch(r"CASE WHEN (\S+) IS NULL THEN (.*?) ELSE (.*) END", expr, re.S)
+    if case:
+        test, then, other = case.groups()
+        return _eval(then if _eval(test, row) is None else other, row)
     if expr.startswith("'"):
         return expr[1:-1]
     m = re.fullmatch(r"(\w+)\((.*)\)", expr, re.S)
@@ -94,10 +102,24 @@ def test_05_and_06_pair_key_expressions_are_identical():
     assert "ip_version" in next(iter(prev))
 
 
-def test_05_and_06_node_expressions_are_identical():
+def test_05_and_06_node_expressions_agree_on_located_hops():
     prev, prep, hops = _node_exprs(PREV), _node_exprs(PREPARE), _node_exprs(HOPS)
     assert len(prev) == 1 and len(prep) == 1 and len(hops) == 1
-    assert prev == prep == hops
+    assert prev == hops
+    # 06 prepare differs ONLY for a hop with an AS but no location: '<asn>-unknown'
+    # there (AS-level evidence for the cover), '*' in 05 -- so an edge through such
+    # a hop can be an edge-level culprit in neither step.
+    (p,) = prep
+    assert p.startswith("CASE WHEN associated_asn IS NULL THEN '*'")
+    assert "COALESCE(metro, al.canon_metro, place, 'unknown')" in p
+    located = {"associated_asn": "174", "metro": "Miami-Florida-US", "canon_metro": None,
+               "place": "Miami-FL-US"}  # fmt: skip
+    unlocated = {"associated_asn": "174", "metro": None, "canon_metro": None, "place": None}
+    no_as = {"associated_asn": None, "metro": "Miami-Florida-US", "canon_metro": None,
+             "place": "Miami-FL-US"}  # fmt: skip
+    assert _node(PREPARE, located) == _node(PREV, located) == "174-Miami-Florida-US"
+    assert _node(PREPARE, unlocated) == "174-unknown" and _node(PREV, unlocated) == "*"
+    assert _node(PREPARE, no_as) == _node(PREV, no_as) == "*"
     # 05 must join the same canonical-metro table 06 does
     join = re.compile(r"place_canonical_metro`\s+al\s+ON\s+al\.place\s*=\s*\w+\.place")
     assert len(join.findall(_sql(PREV))) == 2  # forward + reverse
