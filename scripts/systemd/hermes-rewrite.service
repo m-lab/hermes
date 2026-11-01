@@ -1,0 +1,21 @@
+[Unit]
+Description=Rewrite published hermes_union dates with the current code, oldest first
+Documentation=file:///home/ec2-user/hermes-build-gate/scripts/backfill_rewrite.sh
+# Never alongside the day run: 30 GB host, 28 GB per container. The script
+# re-checks this itself, since Conflicts only covers the systemd-started case.
+Conflicts=union-pipeline.service
+After=union-pipeline.service
+
+[Service]
+Type=oneshot
+User=ec2-user
+# First date to rewrite (the October 2026 correctness fixes; metro grouping since
+# 2026-08-01). The cursor in ~/.hermes-rewrite records progress after that.
+Environment=FLOOR=2026-08-01
+# Same budget as hermes-backfill.service: ceiling for everything this box bills in
+# one PT day (admin quota ~15 TiB/user/PT-day), sized at the measured 1.45 TiB/date.
+Environment=TARGET_TIB=12.0
+Environment=TIB_PER_DATE=1.45
+TimeoutStartSec=9h
+Environment=REPO=/home/ec2-user/hermes-build-gate
+ExecStart=/home/ec2-user/hermes-build-gate/scripts/backfill_rewrite.sh
