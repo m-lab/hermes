@@ -300,6 +300,15 @@ def _path_query() -> str:
     sql = _sql()
     start = sql.index("\nScamperFlowHops AS (") + 1
     body = sql[start : sql.index("\nAggregatedData AS (")].rstrip().rstrip(",")
+    # 03 materialises MergedNodeExpansion in a temp table and the INSERT reads it back
+    # under the same name; stitch the two statements into one query for the fixture.
+    cut = body.index("\nSELECT * FROM MergedNodeExpansion;")
+    resume = body.index("MergedNodeExpansion AS (SELECT * FROM _merged_node_expansion),")
+    body = (
+        body[:cut]
+        + ",\n"
+        + body[resume + len("MergedNodeExpansion AS (SELECT * FROM _merged_node_expansion),") :]
+    )
     s1 = " UNION ALL ".join(
         f"SELECT CAST(NULL AS STRING) AS raw, {_nodes(links)} AS nodes, {_common(tid)}"
         for tid, links in _S1.items()
