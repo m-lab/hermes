@@ -37,30 +37,12 @@ ASSERT NOT EXISTS (
   HAVING COUNT(*) > 1
 ) AS 'anomaly_counts_union has more than one row per detection group; re-run step 02 for this date';
 
-INSERT INTO `mlab-collaboration.${DS}.transient_events_union`
-  (id, dst, src, ndt_rtt, ndt_throughput, ndt_loss_rate, traceroute_rtt,
-   total_windows, is_consistent, src_city, src_lat, src_state, src_lon,
-   dst_lat, dst_lon, src_asn, dst_site, dst_city, dst_asn, dst_country,
-   src_country, src_asn_name, client_name, start, window_start, reach_dest,
-   node_details, number_of_measurements_baseline,
-   number_of_unique_src_ips_baseline, unique_ip_count_per_site,
-   measurement_count_per_site, baseline_median_rtt,
-   baseline_median_throughput, baseline_median_upload_throughput,
-   baseline_median_loss, ip_version, reverse_node_details,
-   revtr_system_label, revtr_stop_reason, revtr_fail_reason,
-   is_try_from_destination_AS, revtr_id, city_median_rtt,
-   city_ninetyth_percentile_rtt, city_oneth_percentile_rtt,
-   city_tenth_percentile_rtt, city_median_throughput,
-   city_ninetyth_percentile_throughput, partition_date, anomaly_ratio_rtt,
-   anomaly_rtt_count, anomaly_ratio_throughput, anomaly_throughput_count,
-   anomaly_ratio_upload_throughput, anomaly_upload_throughput_count,
-   anomaly_loss_ratio, difference_latency, difference_throughput,
-   difference_upload_throughput, wasserstein_throughput_result,
-   wasserstein_upload_throughput_result, mann_whitney_latency,
-   mann_whitney_throughput, mann_whitney_upload_throughput, t_test_latency,
-   median_upload_throughput, detection_granularity, src_group_label,
-   client_geo_source)
-
+-- Three statements, not one: as a single INSERT the scamper path reconstruction
+-- below ran out of memory on a full day (staging 2026-10-14, "Peak usage: 101% of
+-- limit", 2026-11-01). The client-geolocated measurements and the per-trace hop
+-- rows are materialised first; the INSERT reads them under the same CTE names, so
+-- nothing after MergedNodeExpansion changed.
+CREATE TEMP TABLE _measurements_with_group AS
 WITH
 MeasurementsWithGroup AS (
   -- Client geography comes from IPInfo (unified_src_ip_to_geoloc, written by
@@ -166,7 +148,12 @@ MeasurementsWithGroup AS (
   -- 90 ids / ~340 tests in 2026-08-05..12, mostly mlab-e2e-monitoring
   -- 'Speedtest_*' ids reused across days. Drop them rather than guess.
   QUALIFY COUNT(*) OVER (PARTITION BY ndt.id) = 1
-),
+)
+SELECT * FROM MeasurementsWithGroup;
+
+CREATE TEMP TABLE _merged_node_expansion AS
+WITH
+MeasurementsWithGroup AS (SELECT * FROM _measurements_with_group),
 AnomalyCounts AS (
   SELECT *
   FROM `mlab-collaboration.${DS}.anomaly_counts_union`
@@ -686,7 +673,35 @@ MergedNodeExpansion AS (
   LEFT JOIN Scamper1IDs s1 ON s1.id = s2.id
   WHERE s1.id IS NULL
      OR (NOT s1.has_data AND s2.flow_id IS NOT NULL)
-),
+)
+SELECT * FROM MergedNodeExpansion;
+
+INSERT INTO `mlab-collaboration.${DS}.transient_events_union`
+  (id, dst, src, ndt_rtt, ndt_throughput, ndt_loss_rate, traceroute_rtt,
+   total_windows, is_consistent, src_city, src_lat, src_state, src_lon,
+   dst_lat, dst_lon, src_asn, dst_site, dst_city, dst_asn, dst_country,
+   src_country, src_asn_name, client_name, start, window_start, reach_dest,
+   node_details, number_of_measurements_baseline,
+   number_of_unique_src_ips_baseline, unique_ip_count_per_site,
+   measurement_count_per_site, baseline_median_rtt,
+   baseline_median_throughput, baseline_median_upload_throughput,
+   baseline_median_loss, ip_version, reverse_node_details,
+   revtr_system_label, revtr_stop_reason, revtr_fail_reason,
+   is_try_from_destination_AS, revtr_id, city_median_rtt,
+   city_ninetyth_percentile_rtt, city_oneth_percentile_rtt,
+   city_tenth_percentile_rtt, city_median_throughput,
+   city_ninetyth_percentile_throughput, partition_date, anomaly_ratio_rtt,
+   anomaly_rtt_count, anomaly_ratio_throughput, anomaly_throughput_count,
+   anomaly_ratio_upload_throughput, anomaly_upload_throughput_count,
+   anomaly_loss_ratio, difference_latency, difference_throughput,
+   difference_upload_throughput, wasserstein_throughput_result,
+   wasserstein_upload_throughput_result, mann_whitney_latency,
+   mann_whitney_throughput, mann_whitney_upload_throughput, t_test_latency,
+   median_upload_throughput, detection_granularity, src_group_label,
+   client_geo_source)
+WITH
+MeasurementsWithGroup AS (SELECT * FROM _measurements_with_group),
+MergedNodeExpansion AS (SELECT * FROM _merged_node_expansion),
 
 LastNonStarRTT AS (
   SELECT
