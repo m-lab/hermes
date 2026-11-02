@@ -63,8 +63,8 @@ def test_far_rtt_is_the_own_reply_and_drives_hop_choice_and_end_to_end_rtt():
 
 def test_scamper2_hops_are_not_shifted():
     s2 = _block(_sql(), "Scamper2WithoutDstNodeExtraction")
-    assert "SAFE_CAST(hop.rtt AS FLOAT64)         AS rtts" in s2
-    assert "SAFE_CAST(hop.rtt AS FLOAT64)         AS far_rtt" in s2
+    assert "SAFE_CAST(hop.rtt AS FLOAT64)                          AS rtts" in s2
+    assert "SAFE_CAST(hop.rtt AS FLOAT64)                          AS far_rtt" in s2
 
 
 def test_answered_hop_without_its_own_rtt_stays_null_not_minus_one():

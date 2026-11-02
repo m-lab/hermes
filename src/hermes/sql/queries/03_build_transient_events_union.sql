@@ -622,48 +622,36 @@ WithoutDstNodeExtraction AS (
 -- server-only placeholder as a no-reply scamper1 trace (position 1, flow_id
 -- NULL). Before, the CROSS JOIN UNNEST produced no row and the test vanished.
 Scamper2WithoutDstNodeExtraction AS (
-  SELECT *
+  -- ONE reference to Scamper2FilteredData. BigQuery inlines a CTE at every
+  -- reference, so a second branch for the placeholder (UNION ALL ... WHERE NOT
+  -- EXISTS) duplicated the whole scamper2 pipeline in the plan: 1,911 -> 4,563
+  -- stages, and with the school-IP predicate step 03 ran out of memory
+  -- (bisected on 2026-10-31). The LEFT JOIN yields one row per usable hop, or a
+  -- single row with hop NULL when the trace has none -- the server-only
+  -- placeholder (position 1, flow_id NULL) that becomes the server row.
+  SELECT * EXCEPT(no_hop)
   FROM (
     SELECT
       fd.* EXCEPT(hops),
-      hop.addr                              AS addr,
-      NULLIF(hop.name, '')                  AS rdns_name,
-      SAFE_CAST(hop.rtt AS FLOAT64)         AS rtts,
+      hop IS NULL                                            AS no_hop,
+      IF(hop IS NULL, fd.src, hop.addr)                      AS addr,
+      NULLIF(hop.name, '')                                   AS rdns_name,
+      SAFE_CAST(hop.rtt AS FLOAT64)                          AS rtts,
       -- scamper2 hops carry their own address and RTT, so nothing is shifted here.
-      SAFE_CAST(hop.rtt AS FLOAT64)         AS far_rtt,
-      SAFE_CAST(hop.probe_ttl AS INT64) + 1 AS probe_ttl,
-      CAST(NULL AS INT64)                   AS probe_rttl,
-      1                                     AS flow_id,
-      hop.addr                              AS link_addr,
+      SAFE_CAST(hop.rtt AS FLOAT64)                          AS far_rtt,
+      IF(hop IS NULL, 1, SAFE_CAST(hop.probe_ttl AS INT64) + 1) AS probe_ttl,
+      CAST(NULL AS INT64)                                    AS probe_rttl,
+      IF(hop IS NULL, CAST(NULL AS INT64), 1)                AS flow_id,
+      IF(hop IS NULL, fd.src, hop.addr)                      AS link_addr,
       ROW_NUMBER() OVER (
         PARTITION BY fd.id, SAFE_CAST(hop.probe_ttl AS INT64), hop.addr
         ORDER BY SAFE_CAST(hop.rtt AS FLOAT64) ASC
       ) AS rtt_order
     FROM Scamper2FilteredData fd
-    CROSS JOIN UNNEST(fd.hops) AS hop
-    WHERE SAFE_CAST(hop.probe_ttl AS INT64) IS NOT NULL
+    LEFT JOIN UNNEST(fd.hops) AS hop
+      ON SAFE_CAST(hop.probe_ttl AS INT64) IS NOT NULL
   )
   WHERE rtt_order = 1
-
-  UNION ALL
-
-  -- no usable hop: server-only placeholder (becomes the server row)
-  SELECT
-    fd.* EXCEPT(hops),
-    fd.src                                  AS addr,
-    CAST(NULL AS STRING)                    AS rdns_name,
-    CAST(NULL AS FLOAT64)                   AS rtts,
-    CAST(NULL AS FLOAT64)                   AS far_rtt,
-    1                                       AS probe_ttl,
-    CAST(NULL AS INT64)                     AS probe_rttl,
-    CAST(NULL AS INT64)                     AS flow_id,
-    fd.src                                  AS link_addr,
-    1                                       AS rtt_order
-  FROM Scamper2FilteredData fd
-  WHERE NOT EXISTS (
-    SELECT 1 FROM UNNEST(fd.hops) AS hop
-    WHERE SAFE_CAST(hop.probe_ttl AS INT64) IS NOT NULL
-  )
 ),
 
 -- Merge: prefer scamper1; scamper2 only fills gaps where scamper1 has no data.
