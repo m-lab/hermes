@@ -44,7 +44,7 @@ def _block(sql, name):
 
 def test_scamper2_hops_take_the_scamper1_position_convention():
     s2 = _block(_sql(), "Scamper2WithoutDstNodeExtraction")
-    assert "SAFE_CAST(hop.probe_ttl AS INT64) + 1 AS probe_ttl" in s2
+    assert "IF(hop IS NULL, 1, SAFE_CAST(hop.probe_ttl AS INT64) + 1) AS probe_ttl" in s2
 
 
 def test_destination_is_appended_only_when_not_already_a_kept_hop():
@@ -102,12 +102,16 @@ def test_reply_unnests_name_a_reply_field():
 
 def test_scamper2_trace_without_hops_keeps_a_server_only_placeholder():
     s2 = _block(_sql(), "Scamper2WithoutDstNodeExtraction")
+    # a LEFT JOIN on usable hops: no usable hop -> one row with hop NULL -> placeholder
     assert re.search(
-        r"WHERE NOT EXISTS \(\s*SELECT 1 FROM UNNEST\(fd\.hops\) AS hop\s*"
-        r"WHERE SAFE_CAST\(hop\.probe_ttl AS INT64\) IS NOT NULL",
+        r"LEFT JOIN UNNEST\(fd\.hops\) AS hop\s+"
+        r"ON SAFE_CAST\(hop\.probe_ttl AS INT64\) IS NOT NULL",
         s2,
     )
-    assert "CAST(NULL AS INT64)                     AS flow_id" in s2
+    assert "IF(hop IS NULL, CAST(NULL AS INT64), 1)                AS flow_id" in s2
+    # ONE reference to Scamper2FilteredData: a second one duplicates the whole scamper2
+    # pipeline in the plan (inlined CTE) and pushed step 03 out of memory (2026-10-31)
+    assert _sql().count("FROM Scamper2FilteredData") == 1
     merged = _block(_sql(), "MergedNodeExpansion")
     # a scamper2 placeholder never doubles a scamper1 one
     assert re.search(
@@ -300,15 +304,6 @@ def _path_query() -> str:
     sql = _sql()
     start = sql.index("\nScamperFlowHops AS (") + 1
     body = sql[start : sql.index("\nAggregatedData AS (")].rstrip().rstrip(",")
-    # 03 materialises MergedNodeExpansion in a temp table and the INSERT reads it back
-    # under the same name; stitch the two statements into one query for the fixture.
-    cut = body.index("\nSELECT * FROM MergedNodeExpansion;")
-    resume = body.index("MergedNodeExpansion AS (SELECT * FROM _merged_node_expansion),")
-    body = (
-        body[:cut]
-        + ",\n"
-        + body[resume + len("MergedNodeExpansion AS (SELECT * FROM _merged_node_expansion),") :]
-    )
     s1 = " UNION ALL ".join(
         f"SELECT CAST(NULL AS STRING) AS raw, {_nodes(links)} AS nodes, {_common(tid)}"
         for tid, links in _S1.items()
