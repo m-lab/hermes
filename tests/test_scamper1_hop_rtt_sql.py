@@ -5,6 +5,11 @@ by link_item (the far end). Before 2026-10 step 03 keyed the hop on node.addr bu
 took the RTT from that link, pairing every router with the next one's RTT. Verified
 on raw scamper1 (2026-10-14): fixed output 6,210/6,210 router RTTs are replies sent
 by that address; the old output 64/8,045.
+
+Since 2026-10-31 a hop row is the replying address itself, at probe TTL + 1, so its
+RTT is simply its own reply on that flow at that TTL (the earlier fix matched a
+near-node row to a reply from the same address one TTL lower on the same flow; the
+result is the same wherever that row sat at its real position).
 """
 
 import re
@@ -23,29 +28,31 @@ def _block(sql, name):
     return sql[start : sql.index("\n),", start)]
 
 
-def test_own_rtt_comes_from_links_whose_far_end_is_the_hop():
+def test_own_rtt_is_the_responders_reply_at_that_ttl():
     hops = _block(_sql(), "ScamperFlowHops")
-    # same flow only, keyed on the link's far end, and bounded to the TTLs between the
-    # previous answered position and this one, so a repeated address cannot reuse
-    # the reply of an earlier occurrence
+    # one row per (flow, position, responder); its RTT is that responder's fastest
+    # reply on that flow at that TTL. No cross-flow lookup, no near/far matching.
     assert re.search(
-        r"ON sf\.flow_id = h\.flow_id\s+AND sf\.addr = h\.addr\s+"
-        r"AND sf\.probe_ttl < h\.probe_ttl\s+AND sf\.probe_ttl >= IFNULL\(h\.prev_ttl, 0\)",
+        r"probe\.Flowid\s+AS flow_id,\s+probe\.TTL \+ 1\s+AS probe_ttl,.*\n"
+        r"\s+link_item\.addr\s+AS addr,\s+MIN\(replies\.RTT\)\s+AS rtt,",
         hops,
     )
-    assert "RANGE BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING" in hops
-    assert ") AS af" not in hops and "af.rtt" not in hops  # no cross-flow fallback
-    assert "ARRAY_AGG(sf.rtt IGNORE NULLS ORDER BY sf.probe_ttl DESC LIMIT 1)" in hops
+    assert "GROUP BY flow_id, probe_ttl, addr" in hops
+    assert ") AS sf" not in hops and "prev_ttl" not in hops  # the old matching is gone
+    # the first router's reply (TTL 1) is not stored: NULL, never the next hop's
+    assert "IF(first_row, CAST(NULL AS FLOAT64), r.rtt)         AS rtts" in hops
 
 
-def test_previous_value_kept_only_for_hop_choice_and_end_to_end_rtt():
+def test_far_rtt_is_the_own_reply_and_drives_hop_choice_and_end_to_end_rtt():
     sql = _sql()
-    assert "MIN(replies.RTT)             AS far_rtt" in _block(sql, "ScamperFlowHops")
-    # traceroute_rtt is the furthest reply's RTT, as before the fix
+    hops = _block(sql, "ScamperFlowHops")
+    assert "IF(first_row, CAST(NULL AS FLOAT64), r.rtt)         AS rtts" in hops
+    assert "IF(first_row, CAST(NULL AS FLOAT64), r.rtt)         AS far_rtt" in hops
+    # traceroute_rtt is the furthest reply's RTT
     assert (
         "FIRST_VALUE(far_rtt) OVER (PARTITION BY w.id ORDER BY probe_ttl DESC, far_rtt ASC)" in sql
     )
-    # the hop kept per TTL is chosen exactly as before, so paths do not change
+    # several responders at one position: fastest reply, then lowest address
     # (ranked in FinalNodeExtraction, kept in NodeExtraction)
     assert re.search(
         r"PARTITION BY ne\.id, ne\.probe_ttl\s*\n\s*ORDER BY ne\.far_rtt ASC, ne\.addr ASC",
@@ -56,8 +63,8 @@ def test_previous_value_kept_only_for_hop_choice_and_end_to_end_rtt():
 
 def test_scamper2_hops_are_not_shifted():
     s2 = _block(_sql(), "Scamper2WithoutDstNodeExtraction")
-    assert "SAFE_CAST(hop.rtt AS FLOAT64)         AS rtts" in s2
-    assert "SAFE_CAST(hop.rtt AS FLOAT64)         AS far_rtt" in s2
+    assert "SAFE_CAST(hop.rtt AS FLOAT64)                          AS rtts" in s2
+    assert "SAFE_CAST(hop.rtt AS FLOAT64)                          AS far_rtt" in s2
 
 
 def test_answered_hop_without_its_own_rtt_stays_null_not_minus_one():
@@ -68,11 +75,13 @@ def test_answered_hop_without_its_own_rtt_stays_null_not_minus_one():
     assert "COALESCE(n.rtts, -1)" not in expanded
 
 
-# (near, far end, flow, probe TTL, reply RTT). TTL-1 probes are never stored, so R1
-# has no own RTT. Flow 2 loops (R2 at TTL 2 and 4); flow 3 has no reply from R3 on
-# its own flow (other flows are not used); flow 4 sees R3 again at TTL 5 on another
-# arm. Flow 5: X answers at TTL 4 and sits at positions 5 and 6 (two outgoing links);
-# its position-6 occurrence has no reply of its own on flow 5 (flow 6 sees X at TTL 6).
+# (near, far end, flow, probe TTL, reply RTT): the probe sent with that TTL was
+# answered by the far end, which therefore sits at position TTL + 1 with that RTT.
+# R1 (the first node) is the first router: its TTL-1 reply is not stored, so it sits at
+# position 2 on every flow with a NULL RTT. Flow 2 loops (R2 answers at TTL 2 and 4).
+# Flow 5: X answers at TTL 4 and has two outgoing links (to Y, W). Until 2026-10-31
+# rows were the NEAR node at position = probe TTL (R1 at 2, R2 at 3, ...), with the
+# own RTT looked up from the link into it; the responder rows below replace that.
 _LINKS = [
     ("R1", "R2", 1, 2, 10.0), ("R2", "R3", 1, 3, 20.0), ("R3", "D", 1, 4, 30.0),
     ("R1", "R2", 2, 2, 11.0), ("R2", "R3", 2, 3, 21.0), ("R3", "R2", 2, 4, 35.0),
@@ -81,23 +90,25 @@ _LINKS = [
     ("R5", "R3", 4, 5, 99.0),
     ("P", "X", 5, 4, 4.0), ("X", "Y", 5, 5, 5.0), ("X", "W", 5, 6, 6.5),
     ("Q", "X", 6, 6, 60.0),
+    ("R2", "R3", 1, 3, 19.5),  # a second reply from R3 on flow 1 at TTL 3: fastest kept
 ]  # fmt: skip
 
-# (flow, row probe_ttl, near addr) -> (own rtt, far_rtt)
+# (flow, position, responder) -> (own rtt, far_rtt)
 _EXPECTED = {
-    (1, 2, "R1"): (None, 10.0),
-    (1, 3, "R2"): (10.0, 20.0),
-    (1, 4, "R3"): (20.0, 30.0),
-    (2, 2, "R1"): (None, 11.0),
-    (2, 3, "R2"): (11.0, 21.0),
-    (2, 4, "R3"): (21.0, 35.0),
-    (2, 5, "R2"): (35.0, 40.0),  # the loop's TTL-4 reply, not the earlier 11
-    (3, 4, "R3"): (None, 31.0),  # no reply from R3 on flow 3; other flows not used
-    (4, 5, "R5"): (None, 99.0),  # never a far end
-    (5, 4, "P"): (None, 4.0),
-    (5, 5, "X"): (4.0, 5.0),
-    (5, 6, "X"): (None, 6.5),  # must not reuse the position-5 occurrence's TTL-4 reply
-    (6, 6, "Q"): (None, 60.0),
+    **{(f, 2, "R1"): (None, None) for f in (1, 2, 3, 4, 5, 6)},
+    (1, 3, "R2"): (10.0, 10.0),
+    (1, 4, "R3"): (19.5, 19.5),
+    (1, 5, "D"): (30.0, 30.0),
+    (2, 3, "R2"): (11.0, 11.0),
+    (2, 4, "R3"): (21.0, 21.0),
+    (2, 5, "R2"): (35.0, 35.0),  # the loop: R2 really is at 3 and 5 on flow 2
+    (2, 6, "D"): (40.0, 40.0),
+    (3, 5, "D"): (31.0, 31.0),
+    (4, 6, "R3"): (99.0, 99.0),
+    (5, 5, "X"): (4.0, 4.0),
+    (5, 6, "Y"): (5.0, 5.0),
+    (5, 7, "W"): (6.5, 6.5),
+    (6, 7, "X"): (60.0, 60.0),
 }
 
 

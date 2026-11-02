@@ -151,7 +151,7 @@ retain `detection_granularity = 'maxmind_city'` and
 ### Step 03: Build transient events (attach traceroutes)
 
 **SQL:** `03_build_transient_events_union.sql`
-**Reads:** `hermes_union.anomaly_counts_union`, `measurement-lab.ndt.scamper1`, `measurement-lab.autojoin_autoload_v2_ndt.scamper2_union`, `measurement-lab.revtr_raw.revtr1`, `hermes_union.merged_download_upload`
+**Reads:** `hermes_union.anomaly_counts_union`, `measurement-lab.ndt.scamper1`, `measurement-lab.autojoin_autoload_v2_ndt.scamper2_union`, `measurement-lab.revtr_raw.revtr1`, `hermes_union.merged_download_upload`, `hermes_union.giga_school_ips`
 **Writes:** `hermes_union.transient_events_union`
 
 Joins anomaly groups with MDA traceroutes (scamper1), standard traceroutes (scamper2), and reverse traceroutes (revtr). Each output row is one measurement with:
@@ -159,6 +159,11 @@ Joins anomaly groups with MDA traceroutes (scamper1), standard traceroutes (scam
 - Per-measurement RTT/throughput from the NDT test
 - Group-level anomaly ratios and statistical test results
 - City-level percentile summaries
+
+Tests enter when their group was tested that day, or (even without a tested group)
+when they are a Giga test: `client_name = 'giga-meter'` or a client IP listed in
+`giga_school_ips` for any month of `${DAY}`−8 .. `${DAY}`, the same list step 04 uses
+for the GIGA-meter subset (before 2026-10-31 only the client name was checked here).
 
 **`client_name` is the test's own (from step 01), never its group's.** Before
 2026-10-20 (#61) step 03 copied step 02's group-level `MIN(client_name)` onto every
