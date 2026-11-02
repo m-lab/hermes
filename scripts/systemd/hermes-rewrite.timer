@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily hermes_union rewrite chunk, sized to the day's leftover budget
+
+[Timer]
+# 17:00 UTC: after the 15:00 day run has finished and on the same PT quota day,
+# as for hermes-backfill.timer. A missed day is skipped, not caught up.
+OnCalendar=*-*-* 17:00:00 UTC
+Persistent=false
+
+[Install]
+WantedBy=timers.target
