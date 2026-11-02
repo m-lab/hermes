@@ -660,9 +660,24 @@ CombinedRTTs AS (
 --   FROM CombinedRTTs
 -- ),
 
+-- Each metric is tested on its OWN samples. The gate used to be "> 2 RTT samples
+-- on both sides" for every test, so a group whose download RTT was missing
+-- (download_min_rtt NULL) never had its throughput, upload or loss tested at all.
+-- A group is a candidate when ANY metric has > 2 current and > 2 baseline samples;
+-- StatisticalTestsResults then runs (and computes the anomaly ratio of) only the
+-- metrics whose own gate passed, and leaves the rest NULL -- exactly what a
+-- non-candidate group gets. The upload verdict keeps its stricter 10/25 gate.
 CandidateGroups AS (
   SELECT
     *,
+    COALESCE(ARRAY_LENGTH(current_rtt_array), 0) > 2
+      AND COALESCE(ARRAY_LENGTH(baseline_rtt_array), 0) > 2 AS rtt_testable,
+    COALESCE(ARRAY_LENGTH(current_throughput_array), 0) > 2
+      AND COALESCE(ARRAY_LENGTH(baseline_throughput_array), 0) > 2 AS throughput_testable,
+    COALESCE(ARRAY_LENGTH(current_upload_throughput_array), 0) > 2
+      AND COALESCE(ARRAY_LENGTH(baseline_upload_throughput_array), 0) > 2 AS upload_testable,
+    COALESCE(ARRAY_LENGTH(current_loss_array), 0) > 2
+      AND COALESCE(ARRAY_LENGTH(baseline_loss_array), 0) > 2 AS loss_testable,
     (
       SELECT PERCENTILE_CONT(x, 0.50) OVER()
       FROM UNNEST(current_rtt_array) AS x
@@ -706,8 +721,14 @@ CandidateGroups AS (
 
   FROM CombinedRTTs
   WHERE
-    ARRAY_LENGTH(current_rtt_array) > 2
-    AND ARRAY_LENGTH(baseline_rtt_array) > 2
+    (COALESCE(ARRAY_LENGTH(current_rtt_array), 0) > 2
+      AND COALESCE(ARRAY_LENGTH(baseline_rtt_array), 0) > 2)
+    OR (COALESCE(ARRAY_LENGTH(current_throughput_array), 0) > 2
+      AND COALESCE(ARRAY_LENGTH(baseline_throughput_array), 0) > 2)
+    OR (COALESCE(ARRAY_LENGTH(current_upload_throughput_array), 0) > 2
+      AND COALESCE(ARRAY_LENGTH(baseline_upload_throughput_array), 0) > 2)
+    OR (COALESCE(ARRAY_LENGTH(current_loss_array), 0) > 2
+      AND COALESCE(ARRAY_LENGTH(baseline_loss_array), 0) > 2)
 ),
 StatisticalTestsResults AS (
   SELECT
@@ -716,43 +737,44 @@ StatisticalTestsResults AS (
     dst_site,
     ip_version,
 
-    mann_whitney_sql(current_rtt_array, baseline_rtt_array) AS mann_whitney,
-    welch_sql(current_rtt_array, baseline_rtt_array) AS t_test_result,
+    IF(rtt_testable, mann_whitney_sql(current_rtt_array, baseline_rtt_array), NULL)
+      AS mann_whitney,
+    IF(rtt_testable, welch_sql(current_rtt_array, baseline_rtt_array), NULL) AS t_test_result,
     ARRAY_LENGTH(current_rtt_array) AS current_number_of_measurements,
     ARRAY_LENGTH(baseline_rtt_array) AS baseline_number_of_measurements,
-    -- Upload availability is only ~54% of paired download rows.  The RTT-shaped
-    -- candidate gate above therefore does not guarantee enough upload evidence
-    -- for three distribution tests.  Carry explicit upload counts into the
-    -- verdict CTE and require the measured 10/25 minimum there.
+    -- Upload availability is only ~54% of paired download rows.  The > 2 sample
+    -- gate (upload_testable) is far too weak for three distribution tests.  Carry
+    -- explicit upload counts into the verdict CTE and require the measured 10/25
+    -- minimum there.
     ARRAY_LENGTH(current_upload_throughput_array) AS current_upload_sample_count,
     ARRAY_LENGTH(baseline_upload_throughput_array) AS baseline_upload_sample_count,
     current_rtt_stddev,
 
-    mann_whitney_sql(
+    IF(throughput_testable, mann_whitney_sql(
       current_throughput_array, baseline_throughput_array
-    ) AS mann_whitney_throughput,
+    ), NULL) AS mann_whitney_throughput,
 
-    welch_sql(
+    IF(throughput_testable, welch_sql(
       current_throughput_array, baseline_throughput_array
-    ) AS t_test_result_throughput,
+    ), NULL) AS t_test_result_throughput,
 
-    wasserstein_permutation_test(
+    IF(throughput_testable, wasserstein_permutation_test(
       capped(current_throughput_array), capped(baseline_throughput_array), w1_permutations(),
       w1_seed(src_asn, src_city, dst_site, ip_version, 'download')
-    ) AS wasserstein_throughput_result,
+    ), NULL) AS wasserstein_throughput_result,
 
-    mann_whitney_sql(
+    IF(upload_testable, mann_whitney_sql(
       current_upload_throughput_array, baseline_upload_throughput_array
-    ) AS mann_whitney_upload_throughput,
+    ), NULL) AS mann_whitney_upload_throughput,
 
-    welch_sql(
+    IF(upload_testable, welch_sql(
       current_upload_throughput_array, baseline_upload_throughput_array
-    ) AS t_test_result_upload_throughput,
+    ), NULL) AS t_test_result_upload_throughput,
 
-    wasserstein_permutation_test(
+    IF(upload_testable, wasserstein_permutation_test(
       capped(current_upload_throughput_array), capped(baseline_upload_throughput_array), w1_permutations(),
       w1_seed(src_asn, src_city, dst_site, ip_version, 'upload')
-    ) AS wasserstein_upload_throughput_result,
+    ), NULL) AS wasserstein_upload_throughput_result,
 
     -- Loss occurrence: one-sided two-proportion z-test
     baseline_lossy_count,
@@ -767,7 +789,7 @@ StatisticalTestsResults AS (
       NULLIF(baseline_loss_total + current_loss_total, 0)
     ) AS pooled_lossy_fraction,
 
-    SAFE_DIVIDE(
+    IF(loss_testable, SAFE_DIVIDE(
       current_lossy_fraction - baseline_lossy_fraction,
       NULLIF(
         SQRT(
@@ -787,14 +809,15 @@ StatisticalTestsResults AS (
         ),
         0
       )
-    ) AS z_loss_occurrence,
+    ), NULL) AS z_loss_occurrence,
 
     -- Optional p-value approximation thresholding can be done from z directly.
     -- For one-sided alpha=0.05, compare z > 1.645.
 
     -- Loss severity test: among lossy tests only
     CASE
-      WHEN ARRAY_LENGTH(current_positive_loss_array) >= 5
+      WHEN loss_testable
+       AND ARRAY_LENGTH(current_positive_loss_array) >= 5
        AND ARRAY_LENGTH(baseline_positive_loss_array) >= 5
       THEN mann_whitney_sql(
         current_positive_loss_array,
@@ -803,32 +826,32 @@ StatisticalTestsResults AS (
       ELSE NULL
     END AS mann_whitney_loss_severity,
 
-    SAFE_DIVIDE(
+    IF(rtt_testable, SAFE_DIVIDE(
       ARRAY_LENGTH((
         SELECT ARRAY_AGG(rtt)
         FROM UNNEST(current_rtt_array) AS rtt
         WHERE rtt > baseline_median_rtt + 5
       )),
       ARRAY_LENGTH(current_rtt_array)
-    ) AS anomaly_ratio_rtt,
+    ), NULL) AS anomaly_ratio_rtt,
 
-    SAFE_DIVIDE(
+    IF(throughput_testable, SAFE_DIVIDE(
       ARRAY_LENGTH((
         SELECT ARRAY_AGG(x)
         FROM UNNEST(current_throughput_array) AS x
         WHERE x < baseline_median_throughput
       )),
       ARRAY_LENGTH(current_throughput_array)
-    ) AS anomaly_ratio_throughput,
+    ), NULL) AS anomaly_ratio_throughput,
 
-    SAFE_DIVIDE(
+    IF(upload_testable, SAFE_DIVIDE(
       ARRAY_LENGTH((
         SELECT ARRAY_AGG(x)
         FROM UNNEST(current_upload_throughput_array) AS x
         WHERE x IS NOT NULL AND x < baseline_median_upload_throughput
       )),
       ARRAY_LENGTH(current_upload_throughput_array)
-    ) AS anomaly_ratio_upload_throughput
+    ), NULL) AS anomaly_ratio_upload_throughput
 
   FROM CandidateGroups
 ),
