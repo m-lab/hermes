@@ -1540,6 +1540,20 @@ def run_dates(
     )
     merged_dates = [d for d, r in zip(dates, results_a1, strict=True) if r.startswith("Success:")]
 
+    # A date whose step 01 failed here is also a BASELINE day for the batch dates in
+    # the following week. The pre-flight above only sees days outside the batch, so
+    # without this a later batch date was detected against a short baseline and
+    # published as a success (reproduced by an external review, 2026-10-31).
+    a1_failed = [d for d in dates if d not in merged_dates]
+    for d, fs in dates_with_failed_baseline(merged_dates, a1_failed).items():
+        error = (
+            f"Error: {d:%Y-%m-%d} - baseline step 01 failed for "
+            f"{', '.join(f'{f:%Y-%m-%d}' for f in fs)} in this batch; date withheld"
+        )
+        logger.error(error)
+        results_a1[dates.index(d)] = error
+        merged_dates.remove(d)
+
     # ── Phase A0: source-IP geolocation ───────────────────────────────────
     # Resolve client IPs with IPInfo into unified_src_ip_to_geoloc before
     # detection groups on them. MaxMind emits a single designated point per

@@ -71,12 +71,6 @@ def own_names(ds: str) -> str:
       GROUP BY id)"""
 
 
-def month_list(ds: str) -> str:
-    return f"""(
-      SELECT ip_address FROM `{PROJECT}.{ds}.giga_school_ips`
-      WHERE month_start = DATE_TRUNC(@d, MONTH) AND ip_address IS NOT NULL)"""
-
-
 def window_list(ds: str) -> str:
     """School IPs listed for any month the trace window D-8..D touches."""
     return f"""(
@@ -106,21 +100,24 @@ WHERE g.partition_date = @d AND g.id = o.id
 def missing_traces(ds: str, giga: str, events: str) -> str:
     """Rows of events on @d that belong in the GIGA table but have no row there.
 
-    One per trace, keyed like step 04's NOT EXISTS; a copy on any date D-7..D+7 counts.
+    One per trace (id, src_asn, dst_site), keyed like step 04's NOT EXISTS; a copy on
+    any date D-7..D+7 counts. src_group_label is deliberately not part of the key: the
+    same trace can carry a different (or NULL) label on another analysis date.
+    School IPs use the same D-8..D month window as step 04 and the DELETE.
     """
     return f"""
 FROM `{PROJECT}.{ds}.{events}` e
 LEFT JOIN {own_names(ds)} o ON o.id = e.id
 WHERE e.partition_date = @d
-  AND (o.own = 'giga-meter' OR e.src IN {month_list(ds)})
+  AND (o.own = 'giga-meter' OR e.src IN {window_list(ds)})
   AND NOT EXISTS (
     SELECT 1 FROM `{PROJECT}.{ds}.{giga}` g
     WHERE g.partition_date BETWEEN DATE_SUB(@d, INTERVAL 7 DAY)
                                AND DATE_ADD(@d, INTERVAL 7 DAY)
-      AND g.id = e.id AND g.src_asn = e.src_asn AND g.dst_site = e.dst_site
-      AND (g.src_group_label = e.src_group_label OR g.src_group_label IS NULL))
+      AND g.id = e.id AND g.src_asn = e.src_asn AND g.dst_site = e.dst_site)
 QUALIFY ROW_NUMBER() OVER (
-  PARTITION BY e.id, e.src_asn, e.src_group_label, e.dst_site ORDER BY e.window_start) = 1"""
+  PARTITION BY e.id, e.src_asn, e.dst_site
+  ORDER BY e.window_start, IFNULL(e.src_group_label, '')) = 1"""
 
 
 def insert_sql(ds: str, giga: str, events: str, columns: list[str]) -> str:

@@ -1987,9 +1987,11 @@ FROM _mapping_result m
 LEFT JOIN _src_metro sm ON m.src_lat = sm.lat AND m.src_lon = sm.lon;
 
 -- ============================================================================
--- Write to both output tables from the temp table (no re-scan).
+-- Write to both output tables from the temp table (no re-scan), atomically.
 -- Explicit column names so INSERT is immune to column ordering differences.
 -- ============================================================================
+BEGIN TRANSACTION;
+
 INSERT INTO `mlab-collaboration.${DS}.events_with_as_and_geoloc`
   (id, dst, src, ndt_rtt, ndt_throughput, ndt_loss_rate, traceroute_rtt,
    total_windows, is_consistent, src_city, src_lat, src_state, src_lon,
@@ -2169,14 +2171,20 @@ WHERE (
         FROM `mlab-collaboration.${DS}.giga_meter_measurements` g
         WHERE g.partition_date BETWEEN DATE_SUB(DATE('${DAY}'), INTERVAL 7 DAY)
                                    AND DATE('${DAY}')
+          -- One trace = (id, src_asn, dst_site). src_group_label is NOT part of
+          -- the identity: the same trace can carry a different label on another
+          -- analysis date (NULL when its group is absent from that day's
+          -- anomaly_counts_union, or another metro when the client's closest
+          -- geolocation row changes), and keying on it wrote a second copy --
+          -- 9,996 of 478,956 traces (2.0%) in October 2026, 8,873 of them via a
+          -- label change. Within one analysis date the key is already unique
+          -- (03 drops ids shared by several tests).
           AND g.id       = _mapping_result.id
           AND g.src_asn  = _mapping_result.src_asn
-          -- Exact identity for new rows. The NULL arm is a cutover bridge for
-          -- historical rows written before src_group_label existed; id + ASN +
-          -- site already identify the same traceroute in that legacy schema.
-          AND (
-                g.src_group_label = _mapping_result.src_group_label
-                OR g.src_group_label IS NULL
-              )
           AND g.dst_site = _mapping_result.dst_site
       );
+
+-- Both output tables or neither: the resume guard looks only at
+-- events_with_as_and_geoloc, so a failure between the two INSERTs used to leave a
+-- date "done" without its GIGA rows. An error rolls the transaction back.
+COMMIT TRANSACTION;
