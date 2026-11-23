@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 from google.cloud import bigquery
 from tqdm import tqdm
 
+from hermes import settings
 from hermes.enrichment.peeringdb_ixp.paths import resolve_ixp_paths
 
 # Set up logging
@@ -17,7 +18,7 @@ logger = logging.getLogger(__name__)
 class IXPCollector:
     def __init__(
         self,
-        project_id: str = "mlab-collaboration",
+        project_id: str = settings.PROJECT,
         python_executable: str | None = None,
         output_dir: str | None = None,
         wrapper_script_path: str | None = None,

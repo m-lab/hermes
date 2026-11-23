@@ -230,6 +230,7 @@ def process_date_with_sql(
         process_logger.addHandler(handler)
 
     params = {
+        "PROJECT": project_id,
         "ONE_WEEK_EARLIER": (date - timedelta(days=7)).strftime("%Y-%m-%d"),
         "DAY": date.strftime("%Y-%m-%d"),
         "DS": dataset,

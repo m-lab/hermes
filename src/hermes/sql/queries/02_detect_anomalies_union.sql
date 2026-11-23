@@ -5,8 +5,8 @@
 -- @requires-udf: mann_whitney_sql
 -- HERMES (union): anomaly detection only (no topology joins)
 --
--- Input:  `mlab-collaboration.${DS}.merged_download_upload`
--- Output: `mlab-collaboration.${DS}.anomaly_counts_union`
+-- Input:  `${PROJECT}.${DS}.merged_download_upload`
+-- Output: `${PROJECT}.${DS}.anomaly_counts_union`
 -- Partition: partition_date = 2026-04-08
 --
 -- Processes IPv4 and IPv6 independently via ip_version partitioning.
@@ -14,7 +14,7 @@
 -- mode resolves the canonical source group before trimming or statistics, so
 -- it pools raw observations rather than relabelling city-level test results.
 --------------------------------------------------------------------------------
--- CREATE OR REPLACE TABLE `mlab-collaboration.${DS}.anomaly_counts_union`
+-- CREATE OR REPLACE TABLE `${PROJECT}.${DS}.anomaly_counts_union`
 -- PARTITION BY partition_date
 -- AS
 -- Bounded statistics. The JS UDFs below used to receive every test in a group: a
@@ -50,7 +50,7 @@ ASSERT '${DETECTION_GRANULARITY}' IN ('city', 'metro')
 -- join at all. That also removes the ST_COVERS/ST_DWITHIN work from this step.
 
 
-INSERT INTO `mlab-collaboration.${DS}.anomaly_counts_union`
+INSERT INTO `${PROJECT}.${DS}.anomaly_counts_union`
   (src_asn, src_country, src_asn_name, src_city, src_lat, src_lon, src_state,
    dst_lat, dst_lon, dst_site, dst_city, dst_asn, dst_country, ip_version,
    baseline_median_rtt, baseline_median_throughput,
@@ -119,7 +119,7 @@ MeasurementsWithGroup AS (
     -- this same coordinate, so IPInfo's region is the consistent answer and
     -- avoids re-parsing it out of the metro string.
     g.region_ip_info AS detection_src_state
-  FROM `mlab-collaboration.${DS}.merged_download_upload` ndt
+  FROM `${PROJECT}.${DS}.merged_download_upload` ndt
   LEFT JOIN (
     -- One row per IP: the geolocation closest in time to the day being detected,
     -- mirroring _closest_geo in 04.
@@ -161,11 +161,11 @@ MeasurementsWithGroup AS (
       FROM (
         SELECT ip_address, partition_date, geoloc_snapshot_date, city_ip_info,
                region_ip_info, country_ip_info, lat_ip_info, lon_ip_info, metro
-        FROM `mlab-collaboration.hermes.unified_src_ip_to_geoloc`
+        FROM `${PROJECT}.hermes.unified_src_ip_to_geoloc`
         UNION ALL
         SELECT ip_address, partition_date, geoloc_snapshot_date, city_ip_info,
                region_ip_info, country_ip_info, lat_ip_info, lon_ip_info, metro
-        FROM `mlab-collaboration.hermes.unified_src_ip_to_geoloc_ipv6`
+        FROM `${PROJECT}.hermes.unified_src_ip_to_geoloc_ipv6`
       )
     ) WHERE rn = 1
   ) g

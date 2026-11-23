@@ -13,5 +13,5 @@
 -- Appended last on purpose. The live tables were created with client_geo_source in
 -- final position, and ALTER TABLE ADD COLUMN appends; keeping the CREATE DDL in the
 -- same order is what stops a fresh table and a migrated one from disagreeing.
-ALTER TABLE `mlab-collaboration.${DS}.events_explained_daily`
+ALTER TABLE `${PROJECT}.${DS}.events_explained_daily`
   ADD COLUMN IF NOT EXISTS n_baseline INT64;

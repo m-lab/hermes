@@ -21,7 +21,9 @@ the legacy wrapper as the deployed version of this repository.
 ## Prerequisites
 
 - Docker Engine 20.10+
-- Google Cloud service account with BigQuery access to `mlab-collaboration`
+- A Google Cloud project you can run BigQuery jobs in, set as `HERMES_PROJECT`
+  (default `mlab-collaboration`, M-Lab's deployment), and an account with read access
+  to M-Lab's `measurement-lab` data. See **Data access** in [README.md](README.md).
 - IPInfo API token
 
 ## Quick Start
@@ -76,6 +78,7 @@ cp /path/to/service-account-key.json /etc/hermes/
 
 # Create environment file with API tokens
 cat > /etc/hermes/hermes.env <<EOF
+HERMES_PROJECT=your-gcp-project
 IPINFO_TOKEN=your-token-here
 HOIHO_TOKEN=your-token-here
 EOF
@@ -159,6 +162,7 @@ All options from `hermes_pipeline_union.py` are passed through:
 
 | Variable | Required | Description |
 |----------|----------|-------------|
+| `HERMES_PROJECT` | No | Google Cloud project that runs the BigQuery jobs and holds the HERMES datasets. Default `mlab-collaboration`. |
 | `IPINFO_TOKEN` | Yes | IPInfo API authentication token |
 | `HOIHO_TOKEN` | No | HOIHO geolocation API token |
 | `GOOGLE_APPLICATION_CREDENTIALS` | No | Path to service account JSON inside container. Not needed on GCE with attached SA. |
@@ -178,7 +182,10 @@ You forgot the volume mount. Add `-v /data/hermes-cache:/app/cache`.
 Pass it via `--env-file` or `-e IPINFO_TOKEN=xxx`.
 
 **BigQuery authentication errors**
-Either mount a service account key or ensure the VM has an attached service account with BigQuery access to `mlab-collaboration`.
+Either mount a service account key or ensure the VM has an attached service account with BigQuery access to `$HERMES_PROJECT`.
+
+**`403 ... User does not have bigquery.jobs.create permission in project mlab-collaboration`**
+`HERMES_PROJECT` is unset, so the pipeline is targeting M-Lab's own deployment. Set it to a project you can run jobs in; see **Data access** in [README.md](README.md).
 
 **"WARNING: iso_code_2 not found"**
 The RIPE IPMap country codes file is missing from the cache. It should be copied automatically on first run. If not, check that the Docker image built correctly.

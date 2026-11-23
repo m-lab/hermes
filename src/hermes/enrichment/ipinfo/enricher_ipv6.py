@@ -8,12 +8,13 @@ from typing import Any
 import maxminddb
 import requests
 
+from hermes import settings
 from hermes.enrichment.ipinfo.enricher import closest_snapshot, latest_snapshot
 from hermes.enrichment.utils.common import BaseEnrichment, logger
 
 
 class IPInfoEnricherIPv6(BaseEnrichment):
-    def __init__(self, project_id: str = "mlab-collaboration", snapshot_date: date | None = None):
+    def __init__(self, project_id: str = settings.PROJECT, snapshot_date: date | None = None):
         """Initialize IPInfo enricher for IPv6 addresses.
 
         ``snapshot_date`` pins the MMDB to the dump closest to the date being

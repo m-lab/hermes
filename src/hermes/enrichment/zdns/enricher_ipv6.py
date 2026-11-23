@@ -6,11 +6,12 @@ from datetime import datetime, timedelta
 
 from google.cloud import bigquery
 
+from hermes import settings
 from hermes.enrichment.utils.common import BaseEnrichment, logger
 
 
 class ZDNSEnricherIPv6(BaseEnrichment):
-    def __init__(self, project_id: str = "mlab-collaboration"):
+    def __init__(self, project_id: str = settings.PROJECT):
         """Initialize zDNS enricher for IPv6 addresses."""
         super().__init__(project_id)
         # Use ZDNS_PATH env var if set (e.g. in Docker), otherwise

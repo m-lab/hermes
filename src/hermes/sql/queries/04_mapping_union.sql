@@ -2,12 +2,12 @@
 -- HERMES (union) mapping: lookup tables + hop enrichment + final output
 --
 -- Inputs:
--- - `mlab-collaboration.${DS}.transient_events_union` (partition_date = ${DAY})
+-- - `${PROJECT}.${DS}.transient_events_union` (partition_date = ${DAY})
 -- - `measurement-lab.ndt_raw.hopannotation2`
 -- - Various hermes lookup tables (as_metadata, rdns, geoloc, ip_to_as, ixp_members)
 --
 -- Output:
--- - `mlab-collaboration.${DS}.events_with_as_and_geoloc`
+-- - `${PROJECT}.${DS}.events_with_as_and_geoloc`
 --
 -- This is a multi-statement BigQuery script. Temp tables created early on
 -- remain visible to the final INSERT statement.
@@ -68,7 +68,7 @@ WITH snapshots AS (
     )) AS is_complete
   FROM (
     SELECT partition_date, COUNT(*) AS n
-    FROM `mlab-collaboration.hermes.as_metadata`
+    FROM `${PROJECT}.hermes.as_metadata`
     WHERE partition_date IS NOT NULL
     GROUP BY partition_date
   )
@@ -91,7 +91,7 @@ FROM (
       PARTITION BY m.asn
       ORDER BY m.cone.numberPrefixes DESC, m.asnName ASC, m.rank ASC
     ) AS rn
-  FROM `mlab-collaboration.hermes.as_metadata` m
+  FROM `${PROJECT}.hermes.as_metadata` m
   JOIN chosen c ON m.partition_date = c.snapshot_date
 )
 WHERE rn = 1;
@@ -132,10 +132,10 @@ SELECT * EXCEPT(rn, obs_date) FROM (
     SELECT *, COALESCE(DATE(timestamp), partition_date) AS obs_date
     FROM (
       SELECT *, 'v4' AS ip_version
-      FROM `mlab-collaboration.hermes.unified_ip_to_rdns`
+      FROM `${PROJECT}.hermes.unified_ip_to_rdns`
       UNION ALL
       SELECT *, 'v6' AS ip_version
-      FROM `mlab-collaboration.hermes.unified_ip_to_rdns_ipv6`
+      FROM `${PROJECT}.hermes.unified_ip_to_rdns_ipv6`
     )
   )
 )
@@ -172,10 +172,10 @@ SELECT * EXCEPT(rn) FROM (
     ) AS rn
   FROM (
     SELECT *, 'v4' AS ip_version
-    FROM `mlab-collaboration.hermes.unified_ip_to_geoloc`
+    FROM `${PROJECT}.hermes.unified_ip_to_geoloc`
     UNION ALL
     SELECT *, 'v6' AS ip_version
-    FROM `mlab-collaboration.hermes.unified_ip_to_geoloc_ipv6`
+    FROM `${PROJECT}.hermes.unified_ip_to_geoloc_ipv6`
   )
 )
 WHERE rn = 1;
@@ -201,7 +201,7 @@ WHERE rn = 1;
 CREATE TEMP TABLE _dst_metro AS
 WITH dst_coords AS (
   SELECT DISTINCT dst_lat, dst_lon
-  FROM `mlab-collaboration.${DS}.transient_events_union`
+  FROM `${PROJECT}.${DS}.transient_events_union`
   WHERE partition_date = '${DAY}'
     AND dst_lat IS NOT NULL AND dst_lon IS NOT NULL
 )
@@ -251,7 +251,7 @@ ixp_snapshots AS (
     )) AS is_complete
   FROM (
     SELECT partition_date, COUNT(*) AS n
-    FROM `mlab-collaboration.ix_data.ixp_members`
+    FROM `${PROJECT}.ix_data.ixp_members`
     WHERE partition_date IS NOT NULL
     GROUP BY partition_date
   )
@@ -264,7 +264,7 @@ ixp_ranked AS (
     partition_date,
     -- one row per IP within a snapshot today; total order in case of duplicates.
     ROW_NUMBER() OVER (PARTITION BY ipv4 ORDER BY asn ASC, name ASC) AS rank
-  FROM `mlab-collaboration.ix_data.ixp_members`
+  FROM `${PROJECT}.ix_data.ixp_members`
   WHERE partition_date = (
     SELECT COALESCE(
              MAX(IF(partition_date <= DATE('${DAY}'), partition_date, NULL)),
@@ -368,12 +368,12 @@ as_snapshots AS (
     )) AS is_complete
   FROM (
     SELECT 'v4' AS ip_version, source, partition_date, COUNT(*) AS n
-    FROM `mlab-collaboration.hermes.unified_ip_to_as`
+    FROM `${PROJECT}.hermes.unified_ip_to_as`
     WHERE partition_date IS NOT NULL
     GROUP BY source, partition_date
     UNION ALL
     SELECT 'v6' AS ip_version, source, partition_date, COUNT(*) AS n
-    FROM `mlab-collaboration.hermes.unified_ip_to_as_ipv6`
+    FROM `${PROJECT}.hermes.unified_ip_to_as_ipv6`
     WHERE partition_date IS NOT NULL
     GROUP BY source, partition_date
   )
@@ -398,7 +398,7 @@ unified_data_v4 AS (
     CAST(REGEXP_EXTRACT(u.ip_prefix, r'/(.*)') AS INT64) AS mask,
     IFNULL(u.ixp, 'None') AS ixp,
     u.partition_date AS as_partition_date
-  FROM `mlab-collaboration.hermes.unified_ip_to_as` u
+  FROM `${PROJECT}.hermes.unified_ip_to_as` u
   JOIN as_chosen c
     ON c.ip_version = 'v4'
    AND u.source = c.source
@@ -432,7 +432,7 @@ extracted_prefixes_v6 AS (
     CAST(NULL AS DATE) AS ixp_partition_date,
     'v6' AS ip_version,
     u.partition_date AS as_partition_date
-  FROM `mlab-collaboration.hermes.unified_ip_to_as_ipv6` u
+  FROM `${PROJECT}.hermes.unified_ip_to_as_ipv6` u
   JOIN as_chosen c
     ON c.ip_version = 'v6'
    AND u.source = c.source
@@ -457,12 +457,12 @@ CREATE TEMP TABLE _rdns_geo AS
 WITH distinct_rdns AS (
   SELECT DISTINCT rdns_name FROM (
     SELECT node.rdns_name AS rdns_name
-    FROM `mlab-collaboration.${DS}.transient_events_union` t,
+    FROM `${PROJECT}.${DS}.transient_events_union` t,
          UNNEST(t.node_details) AS node
     WHERE t.partition_date = '${DAY}'
     UNION ALL
     SELECT rdns.hostname AS rdns_name
-    FROM `mlab-collaboration.${DS}.transient_events_union` t,
+    FROM `${PROJECT}.${DS}.transient_events_union` t,
          UNNEST(t.reverse_node_details) AS reverse_node
     LEFT JOIN _closest_rdns rdns
       ON rdns.ip_address = reverse_node.hop_ip
@@ -499,7 +499,7 @@ ranked AS (
         geo.lat ASC, geo.lon ASC, geo.hostname ASC
     ) AS rn
   FROM distinct_rdns r
-  LEFT JOIN `mlab-collaboration.hermes.geolocation` geo
+  LEFT JOIN `${PROJECT}.hermes.geolocation` geo
     ON REGEXP_REPLACE(r.rdns_name, r'\.$', '') = REGEXP_REPLACE(geo.hostname, r'\.$', '')
 )
 SELECT rdns_name, lat, lon, place, clli, metro, cc, hostname
@@ -528,7 +528,7 @@ WHERE rn = 1;
 CREATE TEMP TABLE _hop_geo_validation AS
 WITH obs AS (
   SELECT t.dst_site, t.dst_lat, t.dst_lon, n.addr, n.rdns_name, n.rtts
-  FROM `mlab-collaboration.${DS}.transient_events_union` t, UNNEST(t.node_details) AS n
+  FROM `${PROJECT}.${DS}.transient_events_union` t, UNNEST(t.node_details) AS n
   WHERE t.partition_date = '${DAY}'
     AND n.ttl > 1 AND n.addr != '*' AND n.rtts > 0
     AND t.dst_lat IS NOT NULL AND t.dst_lon IS NOT NULL
@@ -655,7 +655,7 @@ flattened_node_details AS (
     node.addr,
     node.rdns_name,
     node.rtts
-  FROM `mlab-collaboration.${DS}.transient_events_union` t,
+  FROM `${PROJECT}.${DS}.transient_events_union` t,
        UNNEST(t.node_details) AS node
   LEFT JOIN `hermes.site_to_state` s2s
     ON t.dst_site = s2s.dst_site
@@ -664,7 +664,7 @@ flattened_node_details AS (
 
 source_ip_address AS (
   SELECT DISTINCT node.addr AS ip, t.ip_version
-  FROM `mlab-collaboration.${DS}.transient_events_union` t,
+  FROM `${PROJECT}.${DS}.transient_events_union` t,
        UNNEST(t.node_details) AS node
   WHERE t.partition_date = '${DAY}'
 ),
@@ -911,7 +911,7 @@ reverse_flattened_node_details AS (
     -- revtr_raw.ping1: 20-42% of hops per type are 0 and none of those have a ping.
     NULLIF(reverse_node.rtt, 0) AS rtts,
     reverse_node.hop_type AS hop_type
-  FROM `mlab-collaboration.${DS}.transient_events_union` t,
+  FROM `${PROJECT}.${DS}.transient_events_union` t,
        UNNEST(t.reverse_node_details) AS reverse_node
   LEFT JOIN closest_rdns_entry rdns
     ON rdns.ip_address = reverse_node.hop_ip
@@ -920,7 +920,7 @@ reverse_flattened_node_details AS (
 
 reverse_source_ip_address AS (
   SELECT DISTINCT node.hop_ip AS ip, t.ip_version
-  FROM `mlab-collaboration.${DS}.transient_events_union` t,
+  FROM `${PROJECT}.${DS}.transient_events_union` t,
        UNNEST(t.reverse_node_details) AS node
   WHERE t.partition_date = '${DAY}'
 ),
@@ -1786,7 +1786,7 @@ final_results AS (
       WHERE CAST(ud.associated_asn AS INT64) = CAST(t.src_asn AS INT64)
     ) AS is_reaching_dst_asn,
     CAST('${DAY}' AS DATE) AS partition_date
-  FROM `mlab-collaboration.${DS}.transient_events_union` t
+  FROM `${PROJECT}.${DS}.transient_events_union` t
   LEFT JOIN forward_reconstructed_node_details_with_latency f
     ON t.id = f.id AND t.ip_version = f.ip_version
   LEFT JOIN reverse_reconstructed_node_details r
@@ -2023,7 +2023,7 @@ LEFT JOIN _src_metro sm ON m.src_lat = sm.lat AND m.src_lon = sm.lon;
 -- ============================================================================
 BEGIN TRANSACTION;
 
-INSERT INTO `mlab-collaboration.${DS}.events_with_as_and_geoloc`
+INSERT INTO `${PROJECT}.${DS}.events_with_as_and_geoloc`
   (id, dst, src, ndt_rtt, ndt_throughput, ndt_loss_rate, traceroute_rtt,
    total_windows, is_consistent, src_city, src_lat, src_state, src_lon,
    dst_lat, dst_lon, src_asn, dst_site, dst_city, dst_asn, dst_country,
@@ -2084,7 +2084,7 @@ SELECT
   detection_granularity, src_group_label, src_metro, client_geo_source
 FROM _mapping_result;
 
-INSERT INTO `mlab-collaboration.${DS}.giga_meter_measurements`
+INSERT INTO `${PROJECT}.${DS}.giga_meter_measurements`
   (id, dst, src, ndt_rtt, ndt_throughput, ndt_loss_rate, traceroute_rtt,
    total_windows, is_consistent, src_city, src_lat, src_state, src_lon,
    dst_lat, dst_lon, src_asn, dst_site, dst_city, dst_asn, dst_country,
@@ -2153,7 +2153,7 @@ WHERE (
      -- this step rewrites keeps the rows that correction kept.
      OR src IN (
           SELECT ip_address
-          FROM `mlab-collaboration.${DS}.giga_school_ips`
+          FROM `${PROJECT}.${DS}.giga_school_ips`
           WHERE month_start BETWEEN DATE_TRUNC(DATE_SUB(CAST('${DAY}' AS DATE), INTERVAL 8 DAY), MONTH)
                                 AND DATE_TRUNC(CAST('${DAY}' AS DATE), MONTH)
             AND ip_address IS NOT NULL
@@ -2199,7 +2199,7 @@ WHERE (
   -- client_name = 'giga-meter' row.
   AND NOT EXISTS (
         SELECT 1
-        FROM `mlab-collaboration.${DS}.giga_meter_measurements` g
+        FROM `${PROJECT}.${DS}.giga_meter_measurements` g
         WHERE g.partition_date BETWEEN DATE_SUB(DATE('${DAY}'), INTERVAL 7 DAY)
                                    AND DATE('${DAY}')
           -- One trace = (id, src_asn, dst_site). src_group_label is NOT part of

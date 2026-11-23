@@ -3,11 +3,12 @@ import ipaddress
 import os
 from typing import Any
 
+from hermes import settings
 from hermes.enrichment.utils.common import BaseEnrichment, logger
 
 
 class RIPEIPMapEnricherIPv6(BaseEnrichment):
-    def __init__(self, project_id: str = "mlab-collaboration"):
+    def __init__(self, project_id: str = settings.PROJECT):
         """Initialize the RIPE IPMap enricher for IPv6 addresses."""
         super().__init__(project_id)
         self.cache_dir = os.path.join(self.cache_dir, "ripe_ipmap")

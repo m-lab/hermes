@@ -1,11 +1,11 @@
--- CREATE OR REPLACE TABLE `mlab-collaboration.${DS}.events_explained_daily`
+-- CREATE OR REPLACE TABLE `${PROJECT}.${DS}.events_explained_daily`
 -- PARTITION BY partition_date  -- This defines partitioning by the 'partition_date' column
 -- AS
 -- @requires-udf: snapshot_is_complete
-DELETE FROM `mlab-collaboration.${DS}.events_explained_daily`
+DELETE FROM `${PROJECT}.${DS}.events_explained_daily`
 WHERE partition_date = '${DAY}';
 
-INSERT INTO `mlab-collaboration.${DS}.events_explained_daily`
+INSERT INTO `${PROJECT}.${DS}.events_explained_daily`
   (src_asn, src_city, src_state, src_country, src_as_name, src_organization,
    dst_site, dst_asn, dst_city, dst_country, dst_as_name, dst_organization,
    ip_version, partition_date, baseline_median_rtt,
@@ -44,7 +44,7 @@ WITH
     SELECT src_asn, src_group_label, dst_site, ip_version,
       COUNTIF(DATE(window_start) >= '${DAY}') AS n_dayof,
       COUNTIF(DATE(window_start) <  '${DAY}') AS n_baseline
-    FROM `mlab-collaboration.${DS}.events_with_as_and_geoloc`
+    FROM `${PROJECT}.${DS}.events_with_as_and_geoloc`
     WHERE partition_date = '${DAY}'
     GROUP BY src_asn, src_group_label, dst_site, ip_version
   ),
@@ -57,7 +57,7 @@ WITH
     SELECT src_asn, src_group_label, dst_site, ip_version,
       MIN(detection_granularity) AS detection_granularity,
       MIN(client_geo_source) AS client_geo_source
-    FROM `mlab-collaboration.${DS}.events_with_as_and_geoloc`
+    FROM `${PROJECT}.${DS}.events_with_as_and_geoloc`
     WHERE partition_date = '${DAY}'
     GROUP BY src_asn, src_group_label, dst_site, ip_version
   ),
@@ -70,7 +70,7 @@ WITH
       MAX(IF(DATE(window_start) <  '${DAY}', forward_distance, NULL)) AS max_baseline_forward_distance,
       MAX(IF(DATE(window_start) >= '${DAY}', reverse_distance, NULL)) AS max_daily_reverse_distance,
       MAX(IF(DATE(window_start) <  '${DAY}', reverse_distance, NULL)) AS max_baseline_reverse_distance
-    FROM `mlab-collaboration.${DS}.events_with_as_and_geoloc`
+    FROM `${PROJECT}.${DS}.events_with_as_and_geoloc`
     WHERE partition_date = '${DAY}'
     GROUP BY src_asn, src_group_label, dst_site, ip_version
   ),
@@ -118,11 +118,11 @@ WITH
           AND fr.anomaly_upload_throughput_count >= 0.5), ['upload'], [])
       ) AS anomaly_signals
     FROM
-      `mlab-collaboration.${DS}.events_with_as_and_geoloc` AS fr
+      `${PROJECT}.${DS}.events_with_as_and_geoloc` AS fr
     JOIN group_counts dc
       ON dc.src_asn = fr.src_asn AND dc.src_group_label = fr.src_group_label
          AND dc.dst_site = fr.dst_site AND dc.ip_version = fr.ip_version
-    LEFT JOIN `mlab-collaboration.${DS}.merged_download_upload` AS mdu
+    LEFT JOIN `${PROJECT}.${DS}.merged_download_upload` AS mdu
       ON mdu.id = fr.id AND mdu.partition_date = DATE '${DAY}'
     WHERE
       fr.partition_date = '${DAY}'
@@ -147,7 +147,7 @@ WITH
       )) AS is_complete
     FROM (
       SELECT partition_date, COUNT(*) AS n
-      FROM `mlab-collaboration.hermes.as_metadata`
+      FROM `${PROJECT}.hermes.as_metadata`
       WHERE partition_date IS NOT NULL
       GROUP BY partition_date
     )
@@ -169,7 +169,7 @@ WITH
             PARTITION BY m.asn
             ORDER BY m.cone.numberPrefixes DESC, m.asnName ASC, m.rank ASC
           ) AS rn
-        FROM `mlab-collaboration.hermes.as_metadata` m
+        FROM `${PROJECT}.hermes.as_metadata` m
         JOIN as_metadata_chosen c ON m.partition_date = c.snapshot_date
       )
       WHERE rn = 1
@@ -192,7 +192,7 @@ WITH
       COALESCE(REGEXP_EXTRACT(ocd.edge_asn_metro, r' - (\d+)-'), ocd.to_asn) AS edge_to_asn,
       src_dst_str,
       SPLIT(src_dst_str, ' - ') AS pair_parts
-    FROM `mlab-collaboration.${DS}.correlation_hyperedges_tomography_v2` AS ocd
+    FROM `${PROJECT}.${DS}.correlation_hyperedges_tomography_v2` AS ocd
     CROSS JOIN UNNEST(ocd.anomalous_src_dst_pairs_impacted) AS src_dst_str
     WHERE ocd.partition_date = '${DAY}'
   ),
@@ -251,7 +251,7 @@ WITH
   --     ta.anomaly_ratio_rtt,
   --     ta.observed_ips
   --   FROM
-  --     `mlab-collaboration.hermes.correlation_hyperedges_tomography` ocd,
+  --     `${PROJECT}.hermes.correlation_hyperedges_tomography` ocd,
   --     UNNEST(anomalous_src_dst_pairs_impacted) AS src_dst_str
   --   FULL OUTER JOIN total_anomalous_src_dst_pairs ta
   --     ON SPLIT(src_dst_str, ' - ')[SAFE_OFFSET(0)] = CAST(ta.src_asn AS STRING)
@@ -434,7 +434,7 @@ anomalies AS (
       SELECT DISTINCT CONCAT(
         fr.src_asn, ' - ', fr.src_group_label, ' - ', fr.dst_site, ' - ', fr.ip_version
       ) AS src_dst_pair
-      FROM `mlab-collaboration.${DS}.events_with_as_and_geoloc` AS fr
+      FROM `${PROJECT}.${DS}.events_with_as_and_geoloc` AS fr
         WHERE
       -- revtr_stop_reason = 'REACHES'
       DATE(window_start) >= partition_date AND partition_date = '${DAY}'
@@ -624,7 +624,7 @@ anomaly_data AS (
       AND MAX(median_upload_throughput) < MAX(baseline_median_upload_throughput)
       THEN 1 ELSE 0 END AS is_upload_anomaly
   FROM
-    `mlab-collaboration.${DS}.events_with_as_and_geoloc`
+    `${PROJECT}.${DS}.events_with_as_and_geoloc`
   WHERE partition_date = '${DAY}'
   GROUP BY
     src_asn, src_group_label, ip_version, partition_date, dst_site

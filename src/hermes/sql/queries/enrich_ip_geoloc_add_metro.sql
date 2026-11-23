@@ -24,13 +24,13 @@
 -- Beyond 100 km a coordinate keeps NULL rather than being handed a metro
 -- thousands of km away, which is what the old inverted table did.
 
-MERGE `mlab-collaboration.hermes.unified_ip_to_geoloc` AS t
+MERGE `${PROJECT}.hermes.unified_ip_to_geoloc` AS t
 USING (
   WITH coords AS (
     SELECT DISTINCT
       COALESCE(lat_ip_info, lat) AS lat_key,
       COALESCE(lon_ip_info, lon) AS lon_key
-    FROM `mlab-collaboration.hermes.unified_ip_to_geoloc`
+    FROM `${PROJECT}.hermes.unified_ip_to_geoloc`
     WHERE partition_date = DATE '${DAY}'
       AND COALESCE(lat_ip_info, lat) IS NOT NULL
       AND COALESCE(lon_ip_info, lon) IS NOT NULL

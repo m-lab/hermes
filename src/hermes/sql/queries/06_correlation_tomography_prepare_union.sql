@@ -11,7 +11,7 @@
 -- 1. Base events (broad filter)
 CREATE TEMP TABLE _base_events AS
 SELECT *
-FROM `mlab-collaboration.${DS}.events_with_as_and_geoloc`
+FROM `${PROJECT}.${DS}.events_with_as_and_geoloc`
 WHERE partition_date = '${DAY}'
   AND DATE(window_start) >= partition_date
   AND NOT EXISTS (
@@ -66,7 +66,7 @@ WITH forward_hops AS (
     fwd.ttl
   FROM final_results AS fr,
        UNNEST(fr.forward_updated_node_details) AS fwd
-  LEFT JOIN `mlab-collaboration.${DS}.place_canonical_metro` al
+  LEFT JOIN `${PROJECT}.${DS}.place_canonical_metro` al
     ON al.place = fwd.place
 ),
 forward_agg AS (
@@ -86,7 +86,7 @@ reverse_hops AS (
     rwd.ttl
   FROM final_results AS fr,
        UNNEST(fr.reverse_updated_node_details) AS rwd
-  LEFT JOIN `mlab-collaboration.${DS}.place_canonical_metro` al
+  LEFT JOIN `${PROJECT}.${DS}.place_canonical_metro` al
     ON al.place = rwd.place
 ),
 reverse_agg AS (

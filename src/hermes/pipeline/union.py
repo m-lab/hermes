@@ -12,6 +12,7 @@ from google.api_core.exceptions import NotFound
 from google.auth import default
 from google.cloud import bigquery
 
+from hermes import settings
 from hermes.enrichment.main import HermesEnrichment
 from hermes.pipeline.tomography import run_tomography
 from hermes.sql import loader
@@ -91,7 +92,7 @@ def parse_detection_granularity(value: str) -> DetectionGranularity:
 # capped the delete list at "one table per SQL file" — so tables written by
 # Phase D (Python) or written as a *second* output of a SQL step could never be
 # added without raising. See DERIVED_OUTPUT_TABLES / DELETE_TABLES below.
-PROJECT = "mlab-collaboration"
+PROJECT = settings.PROJECT
 
 #: The production pipeline dataset, and the staging twin used by --target staging.
 #: Only these operational tables move. Reference datasets (``hermes``,
@@ -165,15 +166,15 @@ def delete_tables(dataset: str = DEFAULT_DATASET, include_giga: bool = False) ->
 
 
 SQL_FILE_TO_OUTPUT_TABLE = {
-    "01_merge_upload_download_union.sql": "mlab-collaboration.hermes_union.merged_download_upload",
-    "02_detect_anomalies_union.sql": "mlab-collaboration.hermes_union.anomaly_counts_union",
-    "03_build_transient_events_union.sql": "mlab-collaboration.hermes_union.transient_events_union",
+    "01_merge_upload_download_union.sql": f"{PROJECT}.hermes_union.merged_download_upload",
+    "02_detect_anomalies_union.sql": f"{PROJECT}.hermes_union.anomaly_counts_union",
+    "03_build_transient_events_union.sql": f"{PROJECT}.hermes_union.transient_events_union",
     # 04 writes events_with_as_and_geoloc AND giga_meter_measurements from a
     # single computation; only the former gates the resume check.
-    "04_mapping_union.sql": "mlab-collaboration.hermes_union.events_with_as_and_geoloc",
-    "05_temporal_tomography_union.sql": "mlab-collaboration.hermes_union.temporal_correlations",
+    "04_mapping_union.sql": f"{PROJECT}.hermes_union.events_with_as_and_geoloc",
+    "05_temporal_tomography_union.sql": f"{PROJECT}.hermes_union.temporal_correlations",
     # Phase E public-events table.
-    "07_translating_to_public_format_union.sql": "mlab-collaboration.hermes_union.events_explained_daily",
+    "07_translating_to_public_format_union.sql": f"{PROJECT}.hermes_union.events_explained_daily",
 }
 
 # Every SQL step must have a resume target, or step_already_done() would silently
@@ -191,13 +192,13 @@ OUTPUT_TABLES = list(SQL_FILE_TO_OUTPUT_TABLE.values())
 # outputs written with insert_rows_json (append-only, no self-delete), so a
 # re-run without deleting them first APPENDS a second copy for that date.
 DERIVED_OUTPUT_TABLES = [
-    "mlab-collaboration.hermes_union.correlation_hyperedges_tomography_v2",
-    "mlab-collaboration.hermes_union.correlation_culprits_multigranularity",
-    "mlab-collaboration.hermes_union.correlation_entity_stats_multigranularity",
-    "mlab-collaboration.hermes_union.temporal_path_verdicts",
+    f"{PROJECT}.hermes_union.correlation_hyperedges_tomography_v2",
+    f"{PROJECT}.hermes_union.correlation_culprits_multigranularity",
+    f"{PROJECT}.hermes_union.correlation_entity_stats_multigranularity",
+    f"{PROJECT}.hermes_union.temporal_path_verdicts",
 ]
 
-GIGA_OUTPUT_TABLE = "mlab-collaboration.hermes_union.giga_meter_measurements"
+GIGA_OUTPUT_TABLE = f"{PROJECT}.hermes_union.giga_meter_measurements"
 
 # What --delete-first clears.
 #
@@ -212,7 +213,7 @@ DELETE_TABLES = OUTPUT_TABLES + DERIVED_OUTPUT_TABLES
 
 # The pipeline's true final output. main() uses this for the "already processed"
 # resume check, so it must be the Phase-E table — not the tomography table.
-FINAL_OUTPUT_TABLE = "mlab-collaboration.hermes_union.events_explained_daily"
+FINAL_OUTPUT_TABLE = f"{PROJECT}.hermes_union.events_explained_daily"
 
 
 def print_active_credentials() -> None:
@@ -890,7 +891,7 @@ def run_enrichment(
         )
         return
 
-    union_transient_table = f"mlab-collaboration.{dataset}.transient_events_union"
+    union_transient_table = f"{PROJECT}.{dataset}.transient_events_union"
 
     for ipv6 in (False, True):
         label = "IPv6" if ipv6 else "IPv4"
@@ -1986,9 +1987,10 @@ def main() -> None:
             "it cannot be combined with --rerun-dates."
         )
 
-    project_id = "mlab-collaboration"
+    project_id = PROJECT
 
     print_active_credentials()
+    logger.info(f"BigQuery project: {project_id} (set HERMES_PROJECT to change)")
 
     # Parse dates
     if args.start_date:

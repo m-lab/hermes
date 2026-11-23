@@ -6,6 +6,8 @@ from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from google.cloud import bigquery
 
+from hermes import settings
+
 # Load environment variables
 load_dotenv()
 
@@ -15,18 +17,18 @@ logger = logging.getLogger(__name__)
 
 
 class BaseEnrichment:
-    def __init__(self, project_id: str = "mlab-collaboration"):
+    def __init__(self, project_id: str = settings.PROJECT):
         """Initialize base enrichment class."""
         self.project_id = project_id
         self.client = bigquery.Client(project=project_id)
 
         # Define table names
         self.tables = {
-            "rdns": "mlab-collaboration.hermes.unified_ip_to_rdns",
-            "geolocation": "mlab-collaboration.hermes.geolocation",
-            "ip_to_geoloc": "mlab-collaboration.hermes.unified_ip_to_geoloc",
-            "ixp": "mlab-collaboration.hermes.ixp_data",
-            "transient_events": "mlab-collaboration.hermes.transient_events",
+            "rdns": f"{settings.PROJECT}.hermes.unified_ip_to_rdns",
+            "geolocation": f"{settings.PROJECT}.hermes.geolocation",
+            "ip_to_geoloc": f"{settings.PROJECT}.hermes.unified_ip_to_geoloc",
+            "ixp": f"{settings.PROJECT}.hermes.ixp_data",
+            "transient_events": f"{settings.PROJECT}.hermes.transient_events",
         }
 
         # Initialize cache directory — use HERMES_CACHE_DIR env var if set,

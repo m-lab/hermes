@@ -1,7 +1,7 @@
 -- One-time bootstrap for the public-format step's target table.
 -- Idempotent: safe to run repeatedly. Run once before the first backfill,
 -- e.g. via hermes.sql.loader.load_query + a BigQuery client (the DDL bills 0 bytes).
-CREATE TABLE IF NOT EXISTS `mlab-collaboration.${DS}.events_explained_daily`
+CREATE TABLE IF NOT EXISTS `${PROJECT}.${DS}.events_explained_daily`
 (
   src_asn INT64,
   src_city STRING,

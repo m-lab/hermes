@@ -6,12 +6,13 @@ from typing import Any
 
 import requests
 
+from hermes import settings
 from hermes.enrichment.routeviews.pfx2as import parse_origin_asns
 from hermes.enrichment.utils.common import BaseEnrichment, logger
 
 
 class RouteViewsEnricher(BaseEnrichment):
-    def __init__(self, project_id: str = "mlab-collaboration"):
+    def __init__(self, project_id: str = settings.PROJECT):
         """Initialize RouteViews enricher."""
         super().__init__(project_id)
 

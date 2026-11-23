@@ -8,12 +8,13 @@ from typing import Any
 import requests
 from google.cloud import bigquery
 
+from hermes import settings
 from hermes.enrichment.routeviews.pfx2as import parse_origin_asns
 from hermes.enrichment.utils.common import BaseEnrichment, logger
 
 
 class RouteViewsEnricherIPv6(BaseEnrichment):
-    def __init__(self, project_id: str = "mlab-collaboration"):
+    def __init__(self, project_id: str = settings.PROJECT):
         """Initialize RouteViews enricher for IPv6 addresses."""
         super().__init__(project_id)
 

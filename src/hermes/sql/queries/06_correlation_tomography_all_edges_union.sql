@@ -20,7 +20,7 @@ WITH base_events AS (
   SELECT
     forward_updated_node_details,
     reverse_updated_node_details
-  FROM `mlab-collaboration.${DS}.events_with_as_and_geoloc`
+  FROM `${PROJECT}.${DS}.events_with_as_and_geoloc`
   WHERE partition_date = '${DAY}'
     AND DATE(window_start) >= partition_date
     AND NOT EXISTS (

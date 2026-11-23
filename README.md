@@ -46,6 +46,27 @@ HERMES is described in our ACM SIGCOMM 2026 paper — **[HERMES: Repurposing Use
 
 GitHub's "Cite this repository" button (top-right) is backed by [`CITATION.cff`](CITATION.cff). The paper PDF ([`docs/hermes-paper.pdf`](docs/hermes-paper.pdf)) is © the authors, licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).
 
+## Data access
+
+HERMES reads M-Lab's measurement data from BigQuery and writes its results back to BigQuery. Running it needs three things.
+
+1. **M-Lab data access (free).** Join the [M-Lab Discuss group](https://groups.google.com/a/measurementlab.net/g/discuss) with the Google account you will use. Membership grants query access to the `measurement-lab` project, and queries billed there are free. Details: [M-Lab BigQuery quickstart](https://www.measurementlab.net/data/docs/bq/quickstart/).
+2. **A Google Cloud project of your own, with billing enabled.** The pipeline creates and writes tables, which `measurement-lab` does not allow, so jobs run in your project and are billed to you. Select it with `HERMES_PROJECT=<your-project>`; it defaults to `mlab-collaboration`, M-Lab's deployment, which outside accounts cannot use (that is the `403 ... bigquery.jobs.create` error). Every HERMES dataset (`hermes_union`, `hermes`, `ix_data`) then resolves in your project; the `measurement-lab.*` sources are never retargeted. In production one date reads roughly 450 GiB, so budget a few dollars per date at on-demand pricing.
+3. **Credentials** for that account: `gcloud auth application-default login`, or a service-account key mounted as shown below.
+
+**What works without any cloud access:** the offline test suite, which covers the statistical UDFs, golden SQL/Python fixtures and query rendering: `PYTHONPATH=src pytest -m "not bq" tests`.
+
+**Current limitation: a fresh project is not yet turnkey.** Besides the M-Lab inputs, the pipeline reads HERMES reference tables that exist only in M-Lab's deployment and are not yet public:
+
+| Table(s) in `<project>` | Built by | Status for an external project |
+|---|---|---|
+| `hermes.unified_ip_to_{as,geoloc,rdns}`, `hermes.unified_src_ip_to_geoloc`, `hermes.geolocation` (+ `_ipv6`) | enrichment stage (IPInfo, HOIHO, RouteViews, RIPE IPmap, ZDNS) | populated by the pipeline, but the repository does not yet ship the DDL that creates them empty |
+| `hermes.as_metadata`, `ix_data.ixp_members` | `refresh_topology_tables`, PeeringDB collector | same |
+| `hermes.metro_polygons_v2` | [`cleaning_polygons/`](cleaning_polygons/) | build and export it yourself |
+| `hermes_union.giga_school_ips` | partner data (GIGA) | not public; step 04 reads it, so it must exist |
+
+The pipeline also reads `measurement-lab.revtr_raw.revtr1` and `measurement-lab.autojoin_autoload_v2_ndt.scamper2_union`. We have not confirmed that Discuss-group membership covers them; if your account cannot see them, ask on the Discuss group.
+
 ## Run HERMES with Docker
 
 The whole pipeline ships as a container — this is the fastest way to run it. Full setup (service-account keys, cache volume, cron) is in **[README-docker.md](README-docker.md)**; the short version:
@@ -58,6 +79,7 @@ docker build -t hermes-pipeline:latest .
 mkdir -p /etc/hermes /data/hermes-cache
 cp /path/to/service-account-key.json /etc/hermes/
 cat > /etc/hermes/hermes.env <<'EOF'
+HERMES_PROJECT=your-gcp-project   # see "Data access" above
 IPINFO_TOKEN=your-token-here
 HOIHO_TOKEN=your-token-here
 EOF

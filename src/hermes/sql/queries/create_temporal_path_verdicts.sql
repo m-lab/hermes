@@ -1,5 +1,5 @@
 -- Per-pair reroute/congestion verdict for temporal tomography. Idempotent; bills 0 bytes.
-CREATE TABLE IF NOT EXISTS `mlab-collaboration.${DS}.temporal_path_verdicts`
+CREATE TABLE IF NOT EXISTS `${PROJECT}.${DS}.temporal_path_verdicts`
 (
   partition_date DATE,
   src_dst_pair STRING,

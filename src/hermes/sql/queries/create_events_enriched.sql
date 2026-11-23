@@ -11,7 +11,7 @@
 -- which defaulted to `hermes` while the source was `hermes_union` -- two datasets
 -- to keep in step, and a staging render left ${PUBLISHED_DS} unsubstituted.
 --
--- `mlab-collaboration.hermes.events_enriched` is deliberately left in place and
+-- `${PROJECT}.hermes.events_enriched` is deliberately left in place and
 -- is no longer managed here. It still points at the same physical table, so it
 -- keeps working while consumers cut over to the hermes_union name; drop it once
 -- they have.
@@ -21,7 +21,7 @@
 --         (hermes_union / hermes_staging)
 --------------------------------------------------------------------------------
 
-CREATE OR REPLACE VIEW `mlab-collaboration.${DS}.events_enriched`
+CREATE OR REPLACE VIEW `${PROJECT}.${DS}.events_enriched`
 OPTIONS (
   description = 'Canonical HERMES measurement, endpoint, performance, and symmetric path interface'
 )
@@ -33,7 +33,7 @@ WITH legacy_rows AS (
     e.* EXCEPT(src, dst),
     e.src AS client_ip,
     e.dst AS server_ip
-  FROM `mlab-collaboration.${DS}.events_with_as_and_geoloc` AS e
+  FROM `${PROJECT}.${DS}.events_with_as_and_geoloc` AS e
 ),
 
 canonical_hops AS (

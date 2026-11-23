@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import logging
 
+from hermes import settings
 from hermes.sql import loader
 
 logger = logging.getLogger(__name__)
@@ -63,4 +64,4 @@ if __name__ == "__main__":
     from google.cloud import bigquery
 
     logging.basicConfig(level=logging.INFO)
-    bootstrap(bigquery.Client(project="mlab-collaboration"))
+    bootstrap(bigquery.Client(project=settings.PROJECT))

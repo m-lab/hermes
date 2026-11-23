@@ -2,19 +2,19 @@
 -- HERMES (union): Temporal correlation — compare edge frequency before vs
 -- during anomalies
 --
--- Input:  `mlab-collaboration.${DS}.events_with_as_and_geoloc`
--- Output: `mlab-collaboration.${DS}.temporal_correlations`
+-- Input:  `${PROJECT}.${DS}.events_with_as_and_geoloc`
+-- Output: `${PROJECT}.${DS}.temporal_correlations`
 -- Partition: partition_date
 --
 -- Adapted from hermes_core/temporal_tomography_upd.sql for the union pipeline.
 -- Group identity follows docs/proposals/2026-08-group-granularity.md.
 --------------------------------------------------------------------------------
 
-INSERT INTO `mlab-collaboration.${DS}.temporal_correlations`
+INSERT INTO `${PROJECT}.${DS}.temporal_correlations`
 WITH
   final_results AS (
     SELECT *
-    FROM `mlab-collaboration.${DS}.events_with_as_and_geoloc`
+    FROM `${PROJECT}.${DS}.events_with_as_and_geoloc`
     WHERE partition_date = '${DAY}'
       AND NOT EXISTS (
         SELECT 1

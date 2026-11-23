@@ -7,11 +7,12 @@ from typing import Any
 
 import wget
 
+from hermes import settings
 from hermes.enrichment.utils.common import BaseEnrichment, logger
 
 
 class RIPEIPMapEnricher(BaseEnrichment):
-    def __init__(self, project_id: str = "mlab-collaboration", cache_dir: str = None):
+    def __init__(self, project_id: str = settings.PROJECT, cache_dir: str = None):
         """Initialize the RIPE IPMap enricher."""
         super().__init__(project_id)
         if cache_dir:

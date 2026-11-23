@@ -7,6 +7,7 @@ from typing import Any
 import maxminddb
 import requests
 
+from hermes import settings
 from hermes.enrichment.utils.common import BaseEnrichment, logger
 
 
@@ -88,7 +89,7 @@ def closest_snapshot(cache_dir: str, target: date) -> str | None:
 
 
 class IPInfoEnricher(BaseEnrichment):
-    def __init__(self, project_id: str = "mlab-collaboration", snapshot_date: date | None = None):
+    def __init__(self, project_id: str = settings.PROJECT, snapshot_date: date | None = None):
         """Initialize IPInfo enricher.
 
         ``snapshot_date`` is the date being *processed*. The MMDB used is the dump

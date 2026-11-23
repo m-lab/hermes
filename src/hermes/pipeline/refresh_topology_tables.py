@@ -46,6 +46,7 @@ import os
 import sys
 from datetime import datetime
 
+from hermes import settings
 from hermes.enrichment.as_metadata.enricher import update_as_metadata
 from hermes.enrichment.as_metadata.paths import as_metadata_input_paths
 from hermes.enrichment.as_metadata.sources import generate_as_metadata_inputs_native
@@ -228,7 +229,7 @@ def main() -> int:
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     parser.add_argument("--date", required=True, help="Target date (YYYY-MM-DD)")
-    parser.add_argument("--project", default="mlab-collaboration", help="GCP project ID")
+    parser.add_argument("--project", default=settings.PROJECT, help="GCP project ID")
     parser.add_argument(
         "--ip-version",
         choices=["ipv4", "ipv6", "both"],

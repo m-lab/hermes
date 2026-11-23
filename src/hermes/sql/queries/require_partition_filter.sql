@@ -29,7 +29,7 @@
 --
 -- REVERSAL. This is a table option, not a migration: it changes no data and no
 -- schema. To lift it for one table, run
---   ALTER TABLE `mlab-collaboration.${DS}.<table>`
+--   ALTER TABLE `${PROJECT}.${DS}.<table>`
 --     SET OPTIONS (require_partition_filter = FALSE);
 --
 -- AUDIT at the time this was introduced -- every in-repo reader of a ${DS} table
@@ -52,12 +52,12 @@
 
 FOR partitioned_table IN (
   SELECT DISTINCT table_name
-  FROM `mlab-collaboration.${DS}.INFORMATION_SCHEMA.COLUMNS`
+  FROM `${PROJECT}.${DS}.INFORMATION_SCHEMA.COLUMNS`
   WHERE is_partitioning_column = 'YES'
   ORDER BY table_name
 ) DO
   EXECUTE IMMEDIATE FORMAT(
-    "ALTER TABLE `mlab-collaboration.${DS}.%s` SET OPTIONS (require_partition_filter = TRUE)",
+    "ALTER TABLE `${PROJECT}.${DS}.%s` SET OPTIONS (require_partition_filter = TRUE)",
     partitioned_table.table_name
   );
 END FOR;
@@ -68,6 +68,6 @@ END FOR;
 SELECT
   table_name,
   option_value AS require_partition_filter
-FROM `mlab-collaboration.${DS}.INFORMATION_SCHEMA.TABLE_OPTIONS`
+FROM `${PROJECT}.${DS}.INFORMATION_SCHEMA.TABLE_OPTIONS`
 WHERE option_name = 'require_partition_filter'
 ORDER BY table_name;

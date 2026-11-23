@@ -26,6 +26,7 @@ import pandas as pd
 from google.cloud import bigquery
 from scipy.stats import fisher_exact
 
+from hermes import settings
 from hermes.pipeline.edge_format import (
     edge_has_unknown_location,
     is_unknown_location,
@@ -36,7 +37,7 @@ from hermes.sql import loader
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
-PROJECT_ID = "mlab-collaboration"
+PROJECT_ID = settings.PROJECT
 DEFAULT_DATASET = "hermes_union"
 _DATASET_SCOPED_QUERY_TABLES = ("events_with_as_and_geoloc",)
 
@@ -1467,7 +1468,7 @@ def run_correlation_tomography(
     date
         The day to process.
     project_id
-        GCP project ID (default: ``"mlab-collaboration"``).
+        GCP project ID (default: ``hermes.settings.PROJECT``).
     max_iterations
         Maximum number of greedy set-cover iterations.
     no_progress_limit

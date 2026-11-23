@@ -6,5 +6,5 @@
 -- 03 then falls back to the download id alone, i.e. the old behaviour.
 --
 -- Appended last on purpose, matching step 01's final SELECT column.
-ALTER TABLE `mlab-collaboration.${DS}.merged_download_upload`
+ALTER TABLE `${PROJECT}.${DS}.merged_download_upload`
   ADD COLUMN IF NOT EXISTS upload_id STRING;

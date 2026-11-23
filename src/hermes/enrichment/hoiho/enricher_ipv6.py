@@ -10,6 +10,7 @@ import requests
 from google.cloud import bigquery
 from tqdm import tqdm
 
+from hermes import settings
 from hermes.enrichment.utils.common import BaseEnrichment, logger
 
 HOIHO_URL = "https://api.hoiho.caida.org/lookups"
@@ -42,7 +43,7 @@ def dump_pickle(obj, file_path):
 
 
 class HOIHOEnricherIPv6(BaseEnrichment):
-    def __init__(self, project_id: str = "mlab-collaboration"):
+    def __init__(self, project_id: str = settings.PROJECT):
         """Initialize HOIHO enricher for IPv6 addresses."""
         super().__init__(project_id)
 

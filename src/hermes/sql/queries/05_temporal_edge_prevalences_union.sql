@@ -32,7 +32,7 @@ WITH meas AS (
     ) AS is_reverse_anomaly,
     forward_updated_node_details AS fwd,
     reverse_updated_node_details AS rev
-  FROM `mlab-collaboration.${DS}.events_with_as_and_geoloc`
+  FROM `${PROJECT}.${DS}.events_with_as_and_geoloc`
   WHERE partition_date = '${DAY}' AND DATE(window_start) >= partition_date - 7
 ),
 -- one ordered node list + per-node rtt per (measurement, direction)
@@ -44,12 +44,12 @@ hops AS (
   SELECT id, src_dst_pair, ip_version, is_day, is_forward_anomaly AS is_anomaly, 'forward' AS direction,
     n.ttl, IFNULL(CONCAT(n.associated_asn, '-', COALESCE(n.metro, al.canon_metro, n.place)), '*') AS node, n.rtts
   FROM meas, UNNEST(fwd) AS n
-  LEFT JOIN `mlab-collaboration.${DS}.place_canonical_metro` al ON al.place = n.place
+  LEFT JOIN `${PROJECT}.${DS}.place_canonical_metro` al ON al.place = n.place
   UNION ALL
   SELECT id, src_dst_pair, ip_version, is_day, is_reverse_anomaly AS is_anomaly, 'reverse' AS direction,
     n.ttl, IFNULL(CONCAT(n.associated_asn, '-', COALESCE(n.metro, al.canon_metro, n.place)), '*') AS node, n.rtts
   FROM meas, UNNEST(rev) AS n
-  LEFT JOIN `mlab-collaboration.${DS}.place_canonical_metro` al ON al.place = n.place
+  LEFT JOIN `${PROJECT}.${DS}.place_canonical_metro` al ON al.place = n.place
 ),
 ordered AS (
   SELECT id, src_dst_pair, ip_version, is_day, is_anomaly, direction, node, rtts,

@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 
 from google.cloud import bigquery
 
+from hermes import settings
 from hermes.enrichment.utils.common import BaseEnrichment, logger
 
 
@@ -47,7 +48,7 @@ def parse_zdns_result(result: dict, date: str) -> list[dict]:
 
 
 class ZDNSEnricher(BaseEnrichment):
-    def __init__(self, project_id: str = "mlab-collaboration"):
+    def __init__(self, project_id: str = settings.PROJECT):
         """Initialize zDNS enricher."""
         super().__init__(project_id)
         # Use ZDNS_PATH env var if set (e.g. in Docker), otherwise

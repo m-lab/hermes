@@ -8,6 +8,7 @@ import requests
 from google.cloud import bigquery
 from tqdm import tqdm
 
+from hermes import settings
 from hermes.enrichment.as_metadata.paths import as_metadata_input_paths
 
 # Set up logging
@@ -16,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 
 class ASMetadataEnricher:
-    def __init__(self, project_id: str = "mlab-collaboration", batch_size: int = 1000):
+    def __init__(self, project_id: str = settings.PROJECT, batch_size: int = 1000):
         """Initialize AS metadata enricher.
 
         Args:

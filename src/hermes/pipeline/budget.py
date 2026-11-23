@@ -22,6 +22,8 @@ from datetime import UTC, datetime
 from google.auth import default
 from google.cloud import bigquery
 
+from hermes import settings
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
@@ -232,8 +234,8 @@ def main() -> None:
     )
     parser.add_argument(
         "--project",
-        default="mlab-collaboration",
-        help="GCP project ID (default: mlab-collaboration)",
+        default=settings.PROJECT,
+        help="GCP project ID (default: $HERMES_PROJECT, else mlab-collaboration)",
     )
     parser.add_argument(
         "--date",

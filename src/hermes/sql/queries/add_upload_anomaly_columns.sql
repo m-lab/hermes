@@ -3,7 +3,7 @@
 -- Keep this append order identical to create_events_explained_daily.sql and to
 -- step 07's explicit INSERT list. CREATE TABLE IF NOT EXISTS cannot evolve an
 -- existing table, while ALTER TABLE ADD COLUMN appends each new column.
-ALTER TABLE `mlab-collaboration.${DS}.events_explained_daily`
+ALTER TABLE `${PROJECT}.${DS}.events_explained_daily`
   -- One table update operation: BigQuery rate-limits schema changes per table,
   -- so separate ALTER statements can fail halfway through a fresh rollout.
   ADD COLUMN IF NOT EXISTS baseline_median_upload_throughput FLOAT64,

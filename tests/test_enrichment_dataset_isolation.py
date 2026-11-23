@@ -52,8 +52,8 @@ def test_client_candidates_default_to_production():
 def test_run_enrichment_threads_dataset_into_table_names():
     """The transient_events override must follow the target dataset too."""
     src = inspect.getsource(union.run_enrichment)
-    assert 'f"mlab-collaboration.{dataset}.transient_events_union"' in src
-    assert '"mlab-collaboration.hermes_union.transient_events_union"' not in src
+    assert 'f"{PROJECT}.{dataset}.transient_events_union"' in src
+    assert "hermes_union.transient_events_union" not in src
 
 
 def test_run_enrichment_skips_rdns_and_hoiho_for_clients():

@@ -2,17 +2,17 @@
 -- HERMES (union): attach topology (scamper + revtr) to anomalies
 --
 -- Input:
--- - `mlab-collaboration.${DS}.anomaly_counts_union` (partition_date = 2026-04-08)
+-- - `${PROJECT}.${DS}.anomaly_counts_union` (partition_date = 2026-04-08)
 -- - `measurement-lab.ndt.scamper1`            (MDA / multipath traceroutes)
 -- - `measurement-lab.autojoin_autoload_v2_ndt.scamper2_union` (BYOS standard traceroutes)
 -- - `measurement-lab.revtr_raw.revtr1`
--- - `mlab-collaboration.${DS}.merged_download_upload` (for ndt_rtt/throughput + city percentiles)
+-- - `${PROJECT}.${DS}.merged_download_upload` (for ndt_rtt/throughput + city percentiles)
 --
--- Output: `mlab-collaboration.${DS}.transient_events_union`
+-- Output: `${PROJECT}.${DS}.transient_events_union`
 --
 -- Processes IPv4 and IPv6 via ip_version column.
 --------------------------------------------------------------------------------
--- CREATE OR REPLACE TABLE `mlab-collaboration.${DS}.transient_events_union`
+-- CREATE OR REPLACE TABLE `${PROJECT}.${DS}.transient_events_union`
 -- PARTITION BY partition_date
 -- AS
 DECLARE _detection_granularity STRING DEFAULT '${DETECTION_GRANULARITY}';
@@ -31,13 +31,13 @@ ASSERT _detection_granularity IN ('city', 'metro')
 -- ANY_VALUE(a.*) reads below would mix columns from different splits.
 ASSERT NOT EXISTS (
   SELECT 1
-  FROM `mlab-collaboration.${DS}.anomaly_counts_union`
+  FROM `${PROJECT}.${DS}.anomaly_counts_union`
   WHERE partition_date = '${DAY}'
   GROUP BY src_group_label, src_asn, dst_site, ip_version
   HAVING COUNT(*) > 1
 ) AS 'anomaly_counts_union has more than one row per detection group; re-run step 02 for this date';
 
-INSERT INTO `mlab-collaboration.${DS}.transient_events_union`
+INSERT INTO `${PROJECT}.${DS}.transient_events_union`
   (id, dst, src, ndt_rtt, ndt_throughput, ndt_loss_rate, traceroute_rtt,
    total_windows, is_consistent, src_city, src_lat, src_state, src_lon,
    dst_lat, dst_lon, src_asn, dst_site, dst_city, dst_asn, dst_country,
@@ -111,7 +111,7 @@ MeasurementsWithGroup AS (
     -- this same coordinate, so IPInfo's region is the consistent answer and
     -- avoids re-parsing it out of the metro string.
     g.region_ip_info AS detection_src_state
-  FROM `mlab-collaboration.${DS}.merged_download_upload` ndt
+  FROM `${PROJECT}.${DS}.merged_download_upload` ndt
   LEFT JOIN (
     -- One row per IP: the geolocation closest in time to the day being detected,
     -- mirroring _closest_geo in 04.
@@ -147,11 +147,11 @@ MeasurementsWithGroup AS (
       FROM (
         SELECT ip_address, partition_date, geoloc_snapshot_date, city_ip_info,
                region_ip_info, country_ip_info, lat_ip_info, lon_ip_info, metro
-        FROM `mlab-collaboration.hermes.unified_src_ip_to_geoloc`
+        FROM `${PROJECT}.hermes.unified_src_ip_to_geoloc`
         UNION ALL
         SELECT ip_address, partition_date, geoloc_snapshot_date, city_ip_info,
                region_ip_info, country_ip_info, lat_ip_info, lon_ip_info, metro
-        FROM `mlab-collaboration.hermes.unified_src_ip_to_geoloc_ipv6`
+        FROM `${PROJECT}.hermes.unified_src_ip_to_geoloc_ipv6`
       )
     ) WHERE rn = 1
   ) g
@@ -169,7 +169,7 @@ MeasurementsWithGroup AS (
 ),
 AnomalyCounts AS (
   SELECT *
-  FROM `mlab-collaboration.${DS}.anomaly_counts_union`
+  FROM `${PROJECT}.${DS}.anomaly_counts_union`
   WHERE partition_date = '${DAY}'
     AND detection_granularity = _detection_granularity
 ),
@@ -271,7 +271,7 @@ ScamperDataIntermediary AS (
          -- Same list and window as 04's giga INSERT (any month DAY-8..DAY touches).
          OR ndt.client_ip IN (
               SELECT ip_address
-              FROM `mlab-collaboration.${DS}.giga_school_ips`
+              FROM `${PROJECT}.${DS}.giga_school_ips`
               WHERE month_start BETWEEN DATE_TRUNC(DATE_SUB(CAST('${DAY}' AS DATE), INTERVAL 8 DAY), MONTH)
                                     AND DATE_TRUNC(CAST('${DAY}' AS DATE), MONTH)
                 AND ip_address IS NOT NULL
@@ -396,7 +396,7 @@ Scamper2DataIntermediary AS (
          -- Same list and window as 04's giga INSERT (any month DAY-8..DAY touches).
          OR ndt.client_ip IN (
               SELECT ip_address
-              FROM `mlab-collaboration.${DS}.giga_school_ips`
+              FROM `${PROJECT}.${DS}.giga_school_ips`
               WHERE month_start BETWEEN DATE_TRUNC(DATE_SUB(CAST('${DAY}' AS DATE), INTERVAL 8 DAY), MONTH)
                                     AND DATE_TRUNC(CAST('${DAY}' AS DATE), MONTH)
                 AND ip_address IS NOT NULL

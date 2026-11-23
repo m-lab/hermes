@@ -14,6 +14,7 @@ from __future__ import annotations
 import re
 from string import Template
 
+from hermes import settings
 from hermes.sql import paths
 
 _REQUIRES = re.compile(r"^\s*--\s*@requires-udf:\s*(?P<name>[\w./-]+)\s*$", re.MULTILINE)
@@ -29,14 +30,16 @@ _REQUIRES = re.compile(r"^\s*--\s*@requires-udf:\s*(?P<name>[\w./-]+)\s*$", re.M
 #: interchangeable with the old ``metro_polygons_with_population``, whose
 #: geometry reads back inverted and requires ``NOT ST_CONTAINS``. Pointing this
 #: at the old table would silently match every polygon except the correct one.
+#: ``PROJECT`` is the deployment's Google Cloud project (``hermes.settings``).
 #: ``DS`` is the pipeline (operational) dataset every step reads and writes.
 #: Reference datasets -- ``hermes``, ``measurement-lab`` -- are deliberately NOT
 #: parameterised: they are shared read-only inputs, so a staging run uses the same
 #: geolocation, AS metadata and IXP data as production. This is the same isolation
 #: rule ``correlation_tomography._load_dataset_query`` already applies to Phase D.
 DEFAULT_PARAMS: dict[str, object] = {
+    "PROJECT": settings.PROJECT,
     "DS": "hermes_union",
-    "METRO_POLYGONS": "mlab-collaboration.hermes.metro_polygons_v2",
+    "METRO_POLYGONS": f"{settings.PROJECT}.hermes.metro_polygons_v2",
 }
 
 

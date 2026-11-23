@@ -35,6 +35,7 @@ def test_process_date_substitutes_dataset(monkeypatch, tmp_path):
 
     assert result == "Success: 2026-08-01"
     assert captured["params"] == {
+        "PROJECT": "mlab-collaboration",
         "ONE_WEEK_EARLIER": "2026-07-25",
         "DAY": "2026-08-01",
         "DS": "hermes_union",

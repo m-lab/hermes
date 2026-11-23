@@ -1,9 +1,9 @@
 --------------------------------------------------------------------------------
 -- Example: You can uncomment and use if you want to create/replace a table
--- CREATE OR REPLACE TABLE `mlab-collaboration.hermes.transient_events_union`
+-- CREATE OR REPLACE TABLE `${PROJECT}.hermes.transient_events_union`
 -- PARTITION BY partition_date
 -- AS
-INSERT INTO `mlab-collaboration.hermes.transient_events_union`
+INSERT INTO `${PROJECT}.hermes.transient_events_union`
 --------------------------------------------------------------------------------
 
 WITH

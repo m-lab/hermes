@@ -1,9 +1,9 @@
 -- Comment out the following line to create the table
--- CREATE OR REPLACE TABLE `mlab-collaboration.hermes.transient_events_upd_with_as_and_geoloc_union`
+-- CREATE OR REPLACE TABLE `${PROJECT}.hermes.transient_events_upd_with_as_and_geoloc_union`
 -- PARTITION BY partition_date  -- This defines partitioning by the 'partition_date' column
 -- AS
 
-INSERT INTO `mlab-collaboration.hermes.transient_events_upd_with_as_and_geoloc_union`
+INSERT INTO `${PROJECT}.hermes.transient_events_upd_with_as_and_geoloc_union`
 
 WITH
   -- Closest metadata AS with respect to time
@@ -11,7 +11,7 @@ WITH
     SELECT *
       FROM (
         SELECT *, ROW_NUMBER() OVER (PARTITION BY asn ORDER BY ABS(DATE_DIFF(partition_date, DATE '${DAY}', DAY))) AS rn
-        FROM `mlab-collaboration.hermes.as_metadata`
+        FROM `${PROJECT}.hermes.as_metadata`
       )
       WHERE rn = 1
   ),
@@ -20,7 +20,7 @@ WITH
       FROM (
         SELECT *,
                ROW_NUMBER() OVER (PARTITION BY ip_address ORDER BY ABS(DATE_DIFF(partition_date, DATE '${DAY}', DAY))) AS rn
-        FROM `mlab-collaboration.hermes.unified_ip_to_rdns`
+        FROM `${PROJECT}.hermes.unified_ip_to_rdns`
       )
       WHERE rn = 1
   ),
@@ -29,7 +29,7 @@ WITH
       FROM (
         SELECT *,
                ROW_NUMBER() OVER (PARTITION BY ip_address ORDER BY ABS(DATE_DIFF(partition_date, DATE '${DAY}', DAY))) AS rn
-        FROM `mlab-collaboration.hermes.unified_ip_to_geoloc`
+        FROM `${PROJECT}.hermes.unified_ip_to_geoloc`
       )
       WHERE rn = 1
   ),
@@ -42,7 +42,7 @@ WITH
       CAST(REGEXP_EXTRACT(ip_prefix, r'/(.*)') AS INT64) AS mask,
       IFNULL(ixp, 'None') AS ixp
     FROM
-      `mlab-collaboration.hermes.unified_ip_to_as`
+      `${PROJECT}.hermes.unified_ip_to_as`
   ),
   -- Second CTE: Extract data from hopannotation2 with logic for prefixes
   ixp_ranked AS (
@@ -58,7 +58,7 @@ WITH
           PARTITION BY ipv4
           ORDER BY ABS(DATE_DIFF(partition_date, DATE('${DAY}'), DAY)) ASC
         ) AS rank
-      FROM `mlab-collaboration.ix_data.ixp_members`
+      FROM `${PROJECT}.ix_data.ixp_members`
     ),
   extracted_data AS (
       SELECT DISTINCT
@@ -136,7 +136,7 @@ WITH
       reverse_node.rtt AS rtts,
       reverse_node.hop_type AS hop_type
     FROM
-      `mlab-collaboration.hermes.transient_events_union` t,
+      `${PROJECT}.hermes.transient_events_union` t,
       UNNEST(t.reverse_node_details) AS reverse_node
     LEFT JOIN closest_rdns_entry rdns
       ON rdns.ip_address = reverse_node.hop_ip
@@ -160,7 +160,7 @@ WITH
       node.rdns_name,
       node.rtts
     FROM
-      `mlab-collaboration.hermes.transient_events_union` t,
+      `${PROJECT}.hermes.transient_events_union` t,
       UNNEST(t.node_details) AS node
     LEFT JOIN `hermes.site_to_state` s2s
       ON t.dst_site = s2s.dst_site
@@ -170,7 +170,7 @@ WITH
   source_ip_address AS (
     SELECT DISTINCT node.addr AS ip,
     FROM
-      `mlab-collaboration.hermes.transient_events_union` t,
+      `${PROJECT}.hermes.transient_events_union` t,
       UNNEST(t.node_details) AS node
     WHERE t.partition_date = '${DAY}'
   ),
@@ -243,7 +243,7 @@ WITH
   reverse_source_ip_address AS (
     SELECT DISTINCT node.hop_ip AS ip,
     FROM
-      `mlab-collaboration.hermes.transient_events_union` t,
+      `${PROJECT}.hermes.transient_events_union` t,
       UNNEST(t.reverse_node_details) AS node
     WHERE t.partition_date = '${DAY}'
   ),
@@ -345,7 +345,7 @@ WITH
       CASE WHEN nwp.is_private THEN -1 ELSE COALESCE(ip_geo.score, -1) END AS score,
     FROM
       node_with_prefix_matches nwp
-    LEFT JOIN `mlab-collaboration.hermes.geolocation` geo
+    LEFT JOIN `${PROJECT}.hermes.geolocation` geo
       ON REGEXP_REPLACE(nwp.rdns_name, r'\.$', '') = REGEXP_REPLACE(geo.hostname, r'\.$', '')
     LEFT JOIN closest_geo_entry ip_geo
       ON nwp.addr = ip_geo.ip_address
@@ -375,7 +375,7 @@ WITH
       nwp.hop_type
     FROM
       reverse_node_with_prefix_matches nwp
-    LEFT JOIN `mlab-collaboration.hermes.geolocation` geo
+    LEFT JOIN `${PROJECT}.hermes.geolocation` geo
       ON REGEXP_REPLACE(nwp.rdns_name, r'\.$', '') = REGEXP_REPLACE(geo.hostname, r'\.$', '')
     LEFT JOIN closest_geo_entry ip_geo
       ON nwp.addr = ip_geo.ip_address
@@ -707,7 +707,7 @@ WITH
       sub.distance_km
     )) AS facilities_info
   FROM reverse_distance_rtt_checks rd
-  LEFT JOIN mlab-collaboration.hermes.asn_facility_matched sub
+  LEFT JOIN ${PROJECT}.hermes.asn_facility_matched sub
     ON rd.associated_asn = sub.asn AND rd.place = sub.city
   LEFT JOIN closest_metadata as_metadata
     ON CAST(as_metadata.asn AS INT64) = CAST(rd.associated_asn AS INT64)
@@ -1157,7 +1157,7 @@ distance_rtt_checks_with_metas_info AS (
       sub.distance_km
     )) AS facilities_info,
   FROM distance_rtt_checks rd
-  LEFT JOIN mlab-collaboration.hermes.asn_facility_matched sub
+  LEFT JOIN ${PROJECT}.hermes.asn_facility_matched sub
   ON rd.associated_asn = sub.asn AND rd.place = sub.city
   LEFT JOIN closest_metadata as_metadata
     ON CAST(as_metadata.asn AS INT64) = CAST(rd.associated_asn AS INT64)
@@ -1301,7 +1301,7 @@ distance_rtt_checks_with_metas_info AS (
         WHERE CAST(ud.associated_asn AS INT64) = CAST(t.src_asn AS INT64)
       ) AS is_reaching_dst_asn
     FROM
-      `mlab-collaboration.hermes.transient_events` t
+      `${PROJECT}.hermes.transient_events` t
     LEFT JOIN
       forward_path_distances rnd
       ON
