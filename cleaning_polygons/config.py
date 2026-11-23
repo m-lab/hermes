@@ -40,7 +40,10 @@ SEED_ADDITIONS_CSV = ROOT / "seed_additions.csv"
 COUNTRY_CODE_OVERRIDES_CSV = ROOT / "country_code_overrides.csv"
 
 # ---------------------------------------------------------------- BigQuery
-BQ_PROJECT = os.environ.get("HERMES_BQ_PROJECT", "mlab-collaboration")
+# HERMES_BQ_PROJECT wins; otherwise follow the pipeline-wide HERMES_PROJECT.
+BQ_PROJECT = (
+    os.environ.get("HERMES_BQ_PROJECT") or os.environ.get("HERMES_PROJECT") or "mlab-collaboration"
+)
 BQ_DATASET = os.environ.get("HERMES_BQ_DATASET", "hermes")
 OLD_POLYGON_TABLE = f"{BQ_PROJECT}.{BQ_DATASET}.metro_polygons_with_population"
 NEW_POLYGON_TABLE = f"{BQ_PROJECT}.{BQ_DATASET}.metro_polygons_v2"

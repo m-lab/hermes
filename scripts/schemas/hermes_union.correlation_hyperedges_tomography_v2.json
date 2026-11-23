@@ -1,0 +1,271 @@
+[
+  {
+    "name": "edge_asn_metro",
+    "type": "STRING"
+  },
+  {
+    "name": "day",
+    "type": "STRING"
+  },
+  {
+    "name": "information_source",
+    "type": "STRING"
+  },
+  {
+    "name": "is_interdomain",
+    "type": "STRING"
+  },
+  {
+    "name": "src_dst_pairs_impacted",
+    "type": "STRING",
+    "mode": "REPEATED"
+  },
+  {
+    "name": "anomalous_src_dst_pairs_impacted",
+    "type": "STRING",
+    "mode": "REPEATED"
+  },
+  {
+    "name": "paths",
+    "type": "RECORD",
+    "mode": "REPEATED",
+    "fields": [
+      {
+        "name": "path_type",
+        "type": "STRING"
+      },
+      {
+        "name": "edge_count",
+        "type": "INTEGER"
+      },
+      {
+        "name": "fraction",
+        "type": "FLOAT"
+      },
+      {
+        "name": "total_paths",
+        "type": "INTEGER"
+      },
+      {
+        "name": "fraction_src_dst_pair",
+        "type": "FLOAT"
+      },
+      {
+        "name": "total_src_dst_pairs_in_window",
+        "type": "INTEGER"
+      }
+    ]
+  },
+  {
+    "name": "max_fraction_anomalous",
+    "type": "FLOAT"
+  },
+  {
+    "name": "max_fraction_src_dst_pair_anomalous",
+    "type": "FLOAT"
+  },
+  {
+    "name": "max_fraction_non_anomalous",
+    "type": "FLOAT"
+  },
+  {
+    "name": "ratio_anomaly",
+    "type": "FLOAT"
+  },
+  {
+    "name": "max_fraction_src_dst_pair_non_anomalous",
+    "type": "FLOAT"
+  },
+  {
+    "name": "fraction_anomalous_paths",
+    "type": "FLOAT"
+  },
+  {
+    "name": "partition_date",
+    "type": "DATE"
+  },
+  {
+    "name": "iteration_number",
+    "type": "INTEGER"
+  },
+  {
+    "name": "anomalies_explained_by_edge",
+    "type": "INTEGER"
+  },
+  {
+    "name": "fraction_anomalies_explained_by_edge",
+    "type": "FLOAT"
+  },
+  {
+    "name": "cumulative_anomalies_explained",
+    "type": "INTEGER"
+  },
+  {
+    "name": "cumulative_fraction_anomalies_explained_so_far",
+    "type": "FLOAT"
+  },
+  {
+    "name": "left_part",
+    "type": "STRING"
+  },
+  {
+    "name": "right_part",
+    "type": "STRING"
+  },
+  {
+    "name": "from_asn",
+    "type": "STRING"
+  },
+  {
+    "name": "from_metro",
+    "type": "STRING"
+  },
+  {
+    "name": "from_asn_metro",
+    "type": "STRING"
+  },
+  {
+    "name": "to_asn",
+    "type": "STRING"
+  },
+  {
+    "name": "to_metro",
+    "type": "STRING"
+  },
+  {
+    "name": "to_asn_metro",
+    "type": "STRING"
+  },
+  {
+    "name": "from_total_edges_asn_metro",
+    "type": "INTEGER"
+  },
+  {
+    "name": "from_culprit_edges_asn_metro",
+    "type": "INTEGER"
+  },
+  {
+    "name": "from_fraction_culprit_asn_metro",
+    "type": "FLOAT"
+  },
+  {
+    "name": "from_total_edges_asn",
+    "type": "INTEGER"
+  },
+  {
+    "name": "from_culprit_edges_asn",
+    "type": "INTEGER"
+  },
+  {
+    "name": "from_fraction_culprit_asn",
+    "type": "FLOAT"
+  },
+  {
+    "name": "from_total_edges_metro",
+    "type": "INTEGER"
+  },
+  {
+    "name": "from_culprit_edges_metro",
+    "type": "INTEGER"
+  },
+  {
+    "name": "from_fraction_culprit_metro",
+    "type": "FLOAT"
+  },
+  {
+    "name": "to_total_edges_asn_metro",
+    "type": "INTEGER"
+  },
+  {
+    "name": "to_culprit_edges_asn_metro",
+    "type": "INTEGER"
+  },
+  {
+    "name": "to_fraction_culprit_asn_metro",
+    "type": "FLOAT"
+  },
+  {
+    "name": "to_total_edges_asn",
+    "type": "INTEGER"
+  },
+  {
+    "name": "to_culprit_edges_asn",
+    "type": "INTEGER"
+  },
+  {
+    "name": "to_fraction_culprit_asn",
+    "type": "FLOAT"
+  },
+  {
+    "name": "to_total_edges_metro",
+    "type": "INTEGER"
+  },
+  {
+    "name": "to_culprit_edges_metro",
+    "type": "INTEGER"
+  },
+  {
+    "name": "to_fraction_culprit_metro",
+    "type": "FLOAT"
+  },
+  {
+    "name": "attribution_method",
+    "type": "STRING"
+  },
+  {
+    "name": "confidence_tier",
+    "type": "STRING"
+  },
+  {
+    "name": "p_value",
+    "type": "FLOAT"
+  },
+  {
+    "name": "odds_ratio",
+    "type": "FLOAT"
+  },
+  {
+    "name": "support_anomalous",
+    "type": "INTEGER"
+  },
+  {
+    "name": "support_healthy",
+    "type": "INTEGER"
+  },
+  {
+    "name": "reason",
+    "type": "STRING"
+  },
+  {
+    "name": "from_ixp",
+    "type": "STRING"
+  },
+  {
+    "name": "to_ixp",
+    "type": "STRING"
+  },
+  {
+    "name": "from_total_edges_ixp",
+    "type": "INTEGER"
+  },
+  {
+    "name": "from_culprit_edges_ixp",
+    "type": "INTEGER"
+  },
+  {
+    "name": "from_fraction_culprit_ixp",
+    "type": "FLOAT"
+  },
+  {
+    "name": "to_total_edges_ixp",
+    "type": "INTEGER"
+  },
+  {
+    "name": "to_culprit_edges_ixp",
+    "type": "INTEGER"
+  },
+  {
+    "name": "to_fraction_culprit_ixp",
+    "type": "FLOAT"
+  }
+]

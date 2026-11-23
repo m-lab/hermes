@@ -1,0 +1,70 @@
+[
+  {
+    "name": "ip_address",
+    "type": "STRING"
+  },
+  {
+    "name": "city",
+    "type": "STRING"
+  },
+  {
+    "name": "country",
+    "type": "STRING"
+  },
+  {
+    "name": "lat",
+    "type": "FLOAT"
+  },
+  {
+    "name": "lon",
+    "type": "FLOAT"
+  },
+  {
+    "name": "score",
+    "type": "FLOAT"
+  },
+  {
+    "name": "city_ip_info",
+    "type": "STRING"
+  },
+  {
+    "name": "country_ip_info",
+    "type": "STRING"
+  },
+  {
+    "name": "lat_ip_info",
+    "type": "FLOAT"
+  },
+  {
+    "name": "lon_ip_info",
+    "type": "FLOAT"
+  },
+  {
+    "name": "rank",
+    "type": "INTEGER"
+  },
+  {
+    "name": "region_ip_info",
+    "type": "STRING"
+  },
+  {
+    "name": "metro",
+    "type": "STRING"
+  },
+  {
+    "name": "polygon",
+    "type": "GEOGRAPHY"
+  },
+  {
+    "name": "partition_date",
+    "type": "DATE"
+  },
+  {
+    "name": "geoloc_snapshot",
+    "type": "STRING"
+  },
+  {
+    "name": "geoloc_snapshot_date",
+    "type": "DATE"
+  }
+]

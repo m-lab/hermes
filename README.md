@@ -56,14 +56,7 @@ HERMES reads M-Lab's measurement data from BigQuery and writes its results back 
 
 **What works without any cloud access:** the offline test suite, which covers the statistical UDFs, golden SQL/Python fixtures and query rendering: `PYTHONPATH=src pytest -m "not bq" tests`.
 
-**Current limitation: a fresh project is not yet turnkey.** Besides the M-Lab inputs, the pipeline reads HERMES reference tables that exist only in M-Lab's deployment and are not yet public:
-
-| Table(s) in `<project>` | Built by | Status for an external project |
-|---|---|---|
-| `hermes.unified_ip_to_{as,geoloc,rdns}`, `hermes.unified_src_ip_to_geoloc`, `hermes.geolocation` (+ `_ipv6`) | enrichment stage (IPInfo, HOIHO, RouteViews, RIPE IPmap, ZDNS) | populated by the pipeline, but the repository does not yet ship the DDL that creates them empty |
-| `hermes.as_metadata`, `ix_data.ixp_members` | `refresh_topology_tables`, PeeringDB collector | same |
-| `hermes.metro_polygons_v2` | [`cleaning_polygons/`](cleaning_polygons/) | build and export it yourself |
-| `hermes_union.giga_school_ips` | partner data (GIGA) | not public; step 04 reads it, so it must exist |
+**Setting up a fresh project:** HERMES does not create its own tables. [`docs/initial_configuration.md`](docs/initial_configuration.md) walks through it, and [`scripts/init_project.sh`](scripts/init_project.sh) creates the three datasets and 27 tables from schemas exported from M-Lab's deployment. One input is not yet reproducible from public data: the metro polygon table (`hermes.metro_polygons_v2`) is built from M-Lab tables that are not public.
 
 The pipeline also reads `measurement-lab.revtr_raw.revtr1` and `measurement-lab.autojoin_autoload_v2_ndt.scamper2_union`. We have not confirmed that Discuss-group membership covers them; if your account cannot see them, ask on the Discuss group.
 

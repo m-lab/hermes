@@ -1,0 +1,42 @@
+[
+  {
+    "name": "partition_date",
+    "type": "DATE"
+  },
+  {
+    "name": "src_dst_pair",
+    "type": "STRING"
+  },
+  {
+    "name": "ip_version",
+    "type": "STRING"
+  },
+  {
+    "name": "verdict",
+    "type": "STRING"
+  },
+  {
+    "name": "change_dir",
+    "type": "STRING"
+  },
+  {
+    "name": "div_forward",
+    "type": "FLOAT"
+  },
+  {
+    "name": "div_reverse",
+    "type": "FLOAT"
+  },
+  {
+    "name": "changed_segment",
+    "type": "STRING"
+  },
+  {
+    "name": "congested_segment",
+    "type": "STRING"
+  },
+  {
+    "name": "agrees_with_culprit",
+    "type": "BOOLEAN"
+  }
+]

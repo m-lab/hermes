@@ -1,0 +1,42 @@
+[
+  {
+    "name": "partition_date",
+    "type": "DATE"
+  },
+  {
+    "name": "information_source",
+    "type": "STRING"
+  },
+  {
+    "name": "granularity",
+    "type": "STRING"
+  },
+  {
+    "name": "entity",
+    "type": "STRING"
+  },
+  {
+    "name": "support_anomalous",
+    "type": "INTEGER"
+  },
+  {
+    "name": "support_healthy",
+    "type": "INTEGER"
+  },
+  {
+    "name": "ratio_anomaly",
+    "type": "FLOAT"
+  },
+  {
+    "name": "p_value",
+    "type": "FLOAT"
+  },
+  {
+    "name": "odds_ratio",
+    "type": "FLOAT"
+  },
+  {
+    "name": "is_culprit",
+    "type": "BOOLEAN"
+  }
+]

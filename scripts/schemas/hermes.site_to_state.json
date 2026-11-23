@@ -1,0 +1,14 @@
+[
+  {
+    "name": "dst_site",
+    "type": "STRING"
+  },
+  {
+    "name": "dst_state",
+    "type": "STRING"
+  },
+  {
+    "name": "dst_city",
+    "type": "STRING"
+  }
+]

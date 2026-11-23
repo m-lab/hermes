@@ -1,0 +1,200 @@
+[
+  {
+    "name": "src_asn",
+    "type": "INTEGER"
+  },
+  {
+    "name": "src_city",
+    "type": "STRING"
+  },
+  {
+    "name": "src_state",
+    "type": "STRING"
+  },
+  {
+    "name": "src_country",
+    "type": "STRING"
+  },
+  {
+    "name": "src_as_name",
+    "type": "STRING"
+  },
+  {
+    "name": "src_organization",
+    "type": "STRING"
+  },
+  {
+    "name": "dst_site",
+    "type": "STRING"
+  },
+  {
+    "name": "dst_asn",
+    "type": "INTEGER"
+  },
+  {
+    "name": "dst_city",
+    "type": "STRING"
+  },
+  {
+    "name": "dst_country",
+    "type": "STRING"
+  },
+  {
+    "name": "dst_as_name",
+    "type": "STRING"
+  },
+  {
+    "name": "dst_organization",
+    "type": "STRING"
+  },
+  {
+    "name": "ip_version",
+    "type": "STRING"
+  },
+  {
+    "name": "partition_date",
+    "type": "DATE"
+  },
+  {
+    "name": "baseline_median_rtt",
+    "type": "FLOAT"
+  },
+  {
+    "name": "baseline_median_throughput",
+    "type": "FLOAT"
+  },
+  {
+    "name": "median_daily_rtt",
+    "type": "FLOAT"
+  },
+  {
+    "name": "median_daily_throughput",
+    "type": "FLOAT"
+  },
+  {
+    "name": "mean_daily_rtt",
+    "type": "FLOAT"
+  },
+  {
+    "name": "mean_daily_throughput",
+    "type": "FLOAT"
+  },
+  {
+    "name": "anomaly_ratio_rtt",
+    "type": "FLOAT"
+  },
+  {
+    "name": "anomaly_ratio_throughput",
+    "type": "FLOAT"
+  },
+  {
+    "name": "observed_ips",
+    "type": "STRING",
+    "mode": "REPEATED"
+  },
+  {
+    "name": "source_events_org",
+    "type": "STRING"
+  },
+  {
+    "name": "information_source",
+    "type": "STRING"
+  },
+  {
+    "name": "is_interdomain",
+    "type": "STRING"
+  },
+  {
+    "name": "fraction_anomalies_explained_by_edge",
+    "type": "FLOAT"
+  },
+  {
+    "name": "total_anomalous_sites",
+    "type": "INTEGER"
+  },
+  {
+    "name": "source_events",
+    "type": "STRING"
+  },
+  {
+    "name": "max_daily_forward_distance",
+    "type": "FLOAT"
+  },
+  {
+    "name": "max_baseline_forward_distance",
+    "type": "FLOAT"
+  },
+  {
+    "name": "max_daily_reverse_distance",
+    "type": "FLOAT"
+  },
+  {
+    "name": "max_baseline_reverse_distance",
+    "type": "FLOAT"
+  },
+  {
+    "name": "attribution_method",
+    "type": "STRING"
+  },
+  {
+    "name": "confidence_tier",
+    "type": "STRING"
+  },
+  {
+    "name": "detection_granularity",
+    "type": "STRING"
+  },
+  {
+    "name": "src_metro",
+    "type": "STRING"
+  },
+  {
+    "name": "src_group_label",
+    "type": "STRING"
+  },
+  {
+    "name": "n_dayof",
+    "type": "INTEGER"
+  },
+  {
+    "name": "src_match_granularity",
+    "type": "STRING"
+  },
+  {
+    "name": "client_geo_source",
+    "type": "STRING"
+  },
+  {
+    "name": "n_baseline",
+    "type": "INTEGER"
+  },
+  {
+    "name": "baseline_median_upload_throughput",
+    "type": "FLOAT"
+  },
+  {
+    "name": "median_daily_upload_throughput",
+    "type": "FLOAT"
+  },
+  {
+    "name": "mean_daily_upload_throughput",
+    "type": "FLOAT"
+  },
+  {
+    "name": "anomaly_ratio_upload_throughput",
+    "type": "FLOAT"
+  },
+  {
+    "name": "upload_anomaly_sites",
+    "type": "INTEGER"
+  },
+  {
+    "name": "total_anomalous_sites_all_signals",
+    "type": "INTEGER"
+  },
+  {
+    "name": "anomaly_signals",
+    "type": "STRING",
+    "mode": "REPEATED"
+  }
+]

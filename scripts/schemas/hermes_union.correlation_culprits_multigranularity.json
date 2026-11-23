@@ -1,0 +1,71 @@
+[
+  {
+    "name": "day",
+    "type": "STRING"
+  },
+  {
+    "name": "partition_date",
+    "type": "DATE"
+  },
+  {
+    "name": "information_source",
+    "type": "STRING"
+  },
+  {
+    "name": "granularity",
+    "type": "STRING"
+  },
+  {
+    "name": "entity",
+    "type": "STRING"
+  },
+  {
+    "name": "demoted_from",
+    "type": "STRING"
+  },
+  {
+    "name": "iteration_number",
+    "type": "INTEGER"
+  },
+  {
+    "name": "anomalies_explained",
+    "type": "INTEGER"
+  },
+  {
+    "name": "cumulative_anomalies_explained",
+    "type": "INTEGER"
+  },
+  {
+    "name": "cumulative_fraction_explained",
+    "type": "FLOAT"
+  },
+  {
+    "name": "ratio_anomaly",
+    "type": "FLOAT"
+  },
+  {
+    "name": "p_value",
+    "type": "FLOAT"
+  },
+  {
+    "name": "odds_ratio",
+    "type": "FLOAT"
+  },
+  {
+    "name": "support_anomalous",
+    "type": "INTEGER"
+  },
+  {
+    "name": "support_healthy",
+    "type": "INTEGER"
+  },
+  {
+    "name": "anomalous_src_dst_pairs_impacted",
+    "type": "STRING",
+    "mode": "REPEATED"
+  },
+  {
+    "name": "attribution_method",
+    "type": "STRING"
+  }
+]

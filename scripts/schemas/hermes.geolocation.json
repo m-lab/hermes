@@ -1,0 +1,56 @@
+[
+  {
+    "name": "hostname",
+    "type": "STRING"
+  },
+  {
+    "name": "lat",
+    "type": "FLOAT"
+  },
+  {
+    "name": "lon",
+    "type": "FLOAT"
+  },
+  {
+    "name": "place",
+    "type": "STRING"
+  },
+  {
+    "name": "cc",
+    "type": "STRING"
+  },
+  {
+    "name": "state",
+    "type": "STRING"
+  },
+  {
+    "name": "code",
+    "type": "STRING"
+  },
+  {
+    "name": "locode",
+    "type": "STRING"
+  },
+  {
+    "name": "domain",
+    "type": "STRING"
+  },
+  {
+    "name": "match_strs",
+    "type": "STRING",
+    "mode": "REPEATED"
+  },
+  {
+    "name": "match_meanings",
+    "type": "STRING",
+    "mode": "REPEATED"
+  },
+  {
+    "name": "clli",
+    "type": "STRING"
+  },
+  {
+    "name": "metro",
+    "type": "STRING"
+  }
+]

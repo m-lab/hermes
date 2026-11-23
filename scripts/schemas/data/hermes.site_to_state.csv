@@ -1,0 +1,155 @@
+dst_site,dst_state,dst_city
+akl01,AUK,Auckland
+ams05,NH,Amsterdam
+ams11,NH,Amsterdam
+arn02,AB,Stockholm
+arn03,AB,Stockholm
+arn04,AB,Stockholm
+ath03,I,Athens
+bcn01,CT,Barcelona
+beg01,VO,Belgrade
+ber02,BE,Berlin
+bog02,DC,Bogota
+bog05,DC,Bogota
+bom02,MH,Mumbai
+bom04,MH,Mumbai
+bom06,MH,Mumbai
+bru01,VLG,Brussels
+bru02,VLG,Brussels
+bru04,VLG,Brussels
+bru07,VLG,Brussels
+cgk02,JK,Jakarta
+chs02,SC,Charleston
+cmh02,OH,Columbus
+cpt01,WC,Cape Town
+del02,HR,New Delhi
+del04,HR,New Delhi
+del05,HR,New Delhi
+den02,CO,Denver
+den04,CO,Denver
+den05,CO,Denver
+dfw02,TX,Dallas
+dfw03,TX,Dallas
+dfw08,TX,Dallas
+dfw12,TX,Dallas
+doh02,DA,Doha
+dub01,L,Dublin
+eze01,B,Buenos Aires
+fln01,SC,Florianopolis
+fra03,HE,Frankfurt
+fra04,HE,Frankfurt
+fra08,HE,Frankfurt
+geg01,WA,Spokane
+gru02,SP,Sao Paulo
+gru03,SP,Sao Paulo
+gru06,SP,Sao Paulo
+ham02,HH,Hamburg
+hel02,18,Helsinki
+hkg03,,Hong Kong
+hkg05,KKC,Hong Kong
+hnd02,13,Tokyo
+hnd07,13,Tokyo
+hnl02,HI,Honolulu
+iad02,VA,Washington
+iad03,VA,Washington
+iad04,VA,Washington
+iad09,VA,Washington
+icn02,41,Seoul
+jnb01,GP,Johannesburg
+jnb02,GP,Johannesburg
+kix02,27,Osaka
+las02,NV,Las Vegas
+lax04,CA,Los Angeles
+lax06,CA,Los Angeles
+lax10,CA,Los Angeles
+lga04,NY,New York
+lga05,NY,New York
+lga06,NY,New York
+lga08,NY,New York
+lhr04,ENG,London
+lhr07,ENG,London
+lhr10,ENG,London
+lim01,LIM,Lima
+lim02,LIM,Lima
+lis01,11,Lisbon
+lis02,11,Lisbon
+lis03,11,Lisbon
+lju01,061,Ljubljana
+los02,LA,Lagos
+maa01,TN,Chennai
+maa02,TN,Chennai
+maa03,TN,Chennai
+mad04,MD,Madrid
+mad06,MD,Madrid
+mad08,MD,Madrid
+mel02,VIC,Melbourne
+mex01,CMX,Mexico City
+mex04,CMX,Mexico City
+mia02,FL,Miami
+mia04,FL,Miami
+mia05,FL,Miami
+mil05,25,Milan
+mil06,25,Milan
+mil07,25,Milan
+mil09,25,Milan
+mnl01,00,Manila
+mnl02,00,Manila
+mpm02,MPM,Maputo
+mrs01,PAC,Marseille
+mrs02,PAC,Marseille
+mrs04,PAC,Marseille
+mty01,NLE,Monterrey
+nbo01,30,Nairobi
+nuq03,CA,San Francisco Bay Area
+nuq04,CA,San Francisco Bay Area
+nuq06,CA,San Francisco Bay Area
+nuq08,CA,San Francisco Bay Area
+oma02,NE,Omaha
+ord02,IL,Chicago
+ord03,IL,Chicago
+ord06,IL,Chicago
+par05,IDF,Paris
+par08,IDF,Paris
+par09,IDF,Paris
+pdx01,OR,Portland
+pdx03,OR,Portland
+per01,WA,Perth
+per02,WA,Perth
+prg03,20,Prague
+prg04,20,Prague
+prg05,20,Prague
+scl01,RM,Santiago
+scl06,RM,Santiago
+sea03,WA,Seattle
+sea04,WA,Seattle
+sea08,WA,Seattle
+sin01,,Singapore
+sin03,,Singapore
+slc02,UT,Salt Lake City
+sof01,23,Sofia
+sof02,23,Sofia
+svg01,11,Stavanger
+syd03,NSW,Sydney
+syd08,NSW,Sydney
+tgd01,02,Podgorica
+tlv02,M,Tel Aviv
+tpe01,NWT,Taipei
+tpe03,NWT,Taipei
+trn02,21,Turin
+trn04,21,Turin
+tun01,11,Tunis
+waw02,14,Warsaw
+wlg02,WGN,Wellington
+yqm02,NB,Moncton
+yul03,QC,Montreal
+yul06,QC,Montreal
+yul08,QC,Montreal
+yvr03,BC,Vancouver
+yvr04,BC,Vancouver
+ywg02,MB,Winnipeg
+yyc03,AB,Calgary
+yyz03,ON,Toronto
+yyz04,ON,Toronto
+yyz06,ON,Toronto
+yyz08,ON,Toronto
+zrh02,ZH,Zurich

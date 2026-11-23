@@ -1,0 +1,10 @@
+[
+  {
+    "name": "place",
+    "type": "STRING"
+  },
+  {
+    "name": "canon_metro",
+    "type": "STRING"
+  }
+]

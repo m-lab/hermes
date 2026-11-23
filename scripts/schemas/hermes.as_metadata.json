@@ -1,0 +1,220 @@
+[
+  {
+    "name": "asn",
+    "type": "STRING",
+    "mode": "NULLABLE"
+  },
+  {
+    "name": "asnName",
+    "type": "STRING",
+    "mode": "NULLABLE"
+  },
+  {
+    "name": "rank",
+    "type": "INTEGER",
+    "mode": "NULLABLE"
+  },
+  {
+    "name": "organization",
+    "type": "RECORD",
+    "mode": "NULLABLE",
+    "fields": [
+      {
+        "name": "orgId",
+        "type": "STRING",
+        "mode": "NULLABLE"
+      },
+      {
+        "name": "orgName",
+        "type": "STRING",
+        "mode": "NULLABLE"
+      }
+    ]
+  },
+  {
+    "name": "cliqueMember",
+    "type": "BOOLEAN",
+    "mode": "NULLABLE"
+  },
+  {
+    "name": "seen",
+    "type": "BOOLEAN",
+    "mode": "NULLABLE"
+  },
+  {
+    "name": "longitude",
+    "type": "FLOAT",
+    "mode": "NULLABLE"
+  },
+  {
+    "name": "latitude",
+    "type": "FLOAT",
+    "mode": "NULLABLE"
+  },
+  {
+    "name": "cone",
+    "type": "RECORD",
+    "mode": "NULLABLE",
+    "fields": [
+      {
+        "name": "numberAsns",
+        "type": "INTEGER",
+        "mode": "NULLABLE"
+      },
+      {
+        "name": "numberPrefixes",
+        "type": "INTEGER",
+        "mode": "NULLABLE"
+      },
+      {
+        "name": "numberAddresses",
+        "type": "INTEGER",
+        "mode": "NULLABLE"
+      }
+    ]
+  },
+  {
+    "name": "country",
+    "type": "RECORD",
+    "mode": "NULLABLE",
+    "fields": [
+      {
+        "name": "iso",
+        "type": "STRING",
+        "mode": "NULLABLE"
+      },
+      {
+        "name": "name",
+        "type": "STRING",
+        "mode": "NULLABLE"
+      }
+    ]
+  },
+  {
+    "name": "asnDegree",
+    "type": "RECORD",
+    "mode": "NULLABLE",
+    "fields": [
+      {
+        "name": "provider",
+        "type": "INTEGER",
+        "mode": "NULLABLE"
+      },
+      {
+        "name": "peer",
+        "type": "INTEGER",
+        "mode": "NULLABLE"
+      },
+      {
+        "name": "customer",
+        "type": "INTEGER",
+        "mode": "NULLABLE"
+      },
+      {
+        "name": "total",
+        "type": "INTEGER",
+        "mode": "NULLABLE"
+      },
+      {
+        "name": "transit",
+        "type": "INTEGER",
+        "mode": "NULLABLE"
+      },
+      {
+        "name": "sibling",
+        "type": "INTEGER",
+        "mode": "NULLABLE"
+      }
+    ]
+  },
+  {
+    "name": "announcing",
+    "type": "RECORD",
+    "mode": "NULLABLE",
+    "fields": [
+      {
+        "name": "numberPrefixes",
+        "type": "INTEGER",
+        "mode": "NULLABLE"
+      },
+      {
+        "name": "numberAddresses",
+        "type": "INTEGER",
+        "mode": "NULLABLE"
+      }
+    ]
+  },
+  {
+    "name": "PeeringDB_name",
+    "type": "STRING",
+    "mode": "NULLABLE"
+  },
+  {
+    "name": "PeeringDB_traffic",
+    "type": "STRING",
+    "mode": "NULLABLE"
+  },
+  {
+    "name": "PeeringDB_ratio",
+    "type": "STRING",
+    "mode": "NULLABLE"
+  },
+  {
+    "name": "PeeringDB_infotype",
+    "type": "STRING",
+    "mode": "NULLABLE"
+  },
+  {
+    "name": "facilities",
+    "type": "RECORD",
+    "mode": "NULLABLE",
+    "fields": [
+      {
+        "name": "name",
+        "type": "STRING",
+        "mode": "REPEATED"
+      },
+      {
+        "name": "city_cc",
+        "type": "STRING",
+        "mode": "REPEATED"
+      }
+    ]
+  },
+  {
+    "name": "user_population",
+    "type": "RECORD",
+    "mode": "NULLABLE",
+    "fields": [
+      {
+        "name": "country",
+        "type": "STRING",
+        "mode": "REPEATED"
+      },
+      {
+        "name": "samples",
+        "type": "INTEGER",
+        "mode": "REPEATED"
+      },
+      {
+        "name": "users",
+        "type": "INTEGER",
+        "mode": "REPEATED"
+      },
+      {
+        "name": "% of country",
+        "type": "FLOAT",
+        "mode": "REPEATED"
+      },
+      {
+        "name": "% of internet",
+        "type": "FLOAT",
+        "mode": "REPEATED"
+      }
+    ]
+  },
+  {
+    "name": "partition_date",
+    "type": "DATE"
+  }
+]

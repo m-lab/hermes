@@ -1,0 +1,85 @@
+[
+  {
+    "name": "ip_address",
+    "type": "STRING",
+    "mode": "NULLABLE"
+  },
+  {
+    "name": "city",
+    "type": "STRING",
+    "mode": "NULLABLE"
+  },
+  {
+    "name": "country",
+    "type": "STRING",
+    "mode": "NULLABLE"
+  },
+  {
+    "name": "lat",
+    "type": "FLOAT",
+    "mode": "NULLABLE"
+  },
+  {
+    "name": "lon",
+    "type": "FLOAT",
+    "mode": "NULLABLE"
+  },
+  {
+    "name": "score",
+    "type": "FLOAT",
+    "mode": "NULLABLE"
+  },
+  {
+    "name": "city_ip_info",
+    "type": "STRING",
+    "mode": "NULLABLE"
+  },
+  {
+    "name": "country_ip_info",
+    "type": "STRING",
+    "mode": "NULLABLE"
+  },
+  {
+    "name": "lat_ip_info",
+    "type": "FLOAT",
+    "mode": "NULLABLE"
+  },
+  {
+    "name": "lon_ip_info",
+    "type": "FLOAT",
+    "mode": "NULLABLE"
+  },
+  {
+    "name": "rank",
+    "type": "INTEGER",
+    "mode": "NULLABLE"
+  },
+  {
+    "name": "region_ip_info",
+    "type": "STRING",
+    "mode": "NULLABLE"
+  },
+  {
+    "name": "metro",
+    "type": "STRING",
+    "mode": "NULLABLE"
+  },
+  {
+    "name": "polygon",
+    "type": "GEOGRAPHY",
+    "mode": "NULLABLE"
+  },
+  {
+    "name": "partition_date",
+    "type": "DATE",
+    "mode": "NULLABLE"
+  },
+  {
+    "name": "geoloc_snapshot",
+    "type": "STRING"
+  },
+  {
+    "name": "geoloc_snapshot_date",
+    "type": "DATE"
+  }
+]

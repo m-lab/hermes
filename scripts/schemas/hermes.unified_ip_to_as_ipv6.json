@@ -1,0 +1,22 @@
+[
+  {
+    "name": "ip_prefix",
+    "type": "STRING"
+  },
+  {
+    "name": "asn",
+    "type": "INTEGER"
+  },
+  {
+    "name": "source",
+    "type": "STRING"
+  },
+  {
+    "name": "ixp",
+    "type": "STRING"
+  },
+  {
+    "name": "partition_date",
+    "type": "DATE"
+  }
+]

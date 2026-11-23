@@ -1,0 +1,298 @@
+[
+  {
+    "name": "id",
+    "type": "STRING"
+  },
+  {
+    "name": "date",
+    "type": "DATE"
+  },
+  {
+    "name": "client",
+    "type": "RECORD",
+    "fields": [
+      {
+        "name": "Geo",
+        "type": "RECORD",
+        "fields": [
+          {
+            "name": "ContinentCode",
+            "type": "STRING"
+          },
+          {
+            "name": "CountryCode",
+            "type": "STRING"
+          },
+          {
+            "name": "CountryCode3",
+            "type": "STRING"
+          },
+          {
+            "name": "CountryName",
+            "type": "STRING"
+          },
+          {
+            "name": "Region",
+            "type": "STRING"
+          },
+          {
+            "name": "Subdivision1ISOCode",
+            "type": "STRING"
+          },
+          {
+            "name": "Subdivision1Name",
+            "type": "STRING"
+          },
+          {
+            "name": "Subdivision2ISOCode",
+            "type": "STRING"
+          },
+          {
+            "name": "Subdivision2Name",
+            "type": "STRING"
+          },
+          {
+            "name": "MetroCode",
+            "type": "INTEGER"
+          },
+          {
+            "name": "City",
+            "type": "STRING"
+          },
+          {
+            "name": "AreaCode",
+            "type": "INTEGER"
+          },
+          {
+            "name": "PostalCode",
+            "type": "STRING"
+          },
+          {
+            "name": "Latitude",
+            "type": "FLOAT"
+          },
+          {
+            "name": "Longitude",
+            "type": "FLOAT"
+          },
+          {
+            "name": "AccuracyRadiusKm",
+            "type": "INTEGER"
+          },
+          {
+            "name": "Missing",
+            "type": "BOOLEAN"
+          }
+        ]
+      },
+      {
+        "name": "Network",
+        "type": "RECORD",
+        "fields": [
+          {
+            "name": "CIDR",
+            "type": "STRING"
+          },
+          {
+            "name": "ASNumber",
+            "type": "INTEGER"
+          },
+          {
+            "name": "ASName",
+            "type": "STRING"
+          },
+          {
+            "name": "Missing",
+            "type": "BOOLEAN"
+          },
+          {
+            "name": "Systems",
+            "type": "RECORD",
+            "mode": "REPEATED",
+            "fields": [
+              {
+                "name": "ASNs",
+                "type": "INTEGER",
+                "mode": "REPEATED"
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "name": "server",
+    "type": "RECORD",
+    "fields": [
+      {
+        "name": "Site",
+        "type": "STRING"
+      },
+      {
+        "name": "Machine",
+        "type": "STRING"
+      },
+      {
+        "name": "Geo",
+        "type": "RECORD",
+        "fields": [
+          {
+            "name": "ContinentCode",
+            "type": "STRING"
+          },
+          {
+            "name": "CountryCode",
+            "type": "STRING"
+          },
+          {
+            "name": "CountryCode3",
+            "type": "STRING"
+          },
+          {
+            "name": "CountryName",
+            "type": "STRING"
+          },
+          {
+            "name": "Region",
+            "type": "STRING"
+          },
+          {
+            "name": "Subdivision1ISOCode",
+            "type": "STRING"
+          },
+          {
+            "name": "Subdivision1Name",
+            "type": "STRING"
+          },
+          {
+            "name": "Subdivision2ISOCode",
+            "type": "STRING"
+          },
+          {
+            "name": "Subdivision2Name",
+            "type": "STRING"
+          },
+          {
+            "name": "MetroCode",
+            "type": "INTEGER"
+          },
+          {
+            "name": "City",
+            "type": "STRING"
+          },
+          {
+            "name": "AreaCode",
+            "type": "INTEGER"
+          },
+          {
+            "name": "PostalCode",
+            "type": "STRING"
+          },
+          {
+            "name": "Latitude",
+            "type": "FLOAT"
+          },
+          {
+            "name": "Longitude",
+            "type": "FLOAT"
+          },
+          {
+            "name": "AccuracyRadiusKm",
+            "type": "INTEGER"
+          },
+          {
+            "name": "Missing",
+            "type": "BOOLEAN"
+          }
+        ]
+      },
+      {
+        "name": "Network",
+        "type": "RECORD",
+        "fields": [
+          {
+            "name": "CIDR",
+            "type": "STRING"
+          },
+          {
+            "name": "ASNumber",
+            "type": "INTEGER"
+          },
+          {
+            "name": "ASName",
+            "type": "STRING"
+          },
+          {
+            "name": "Missing",
+            "type": "BOOLEAN"
+          },
+          {
+            "name": "Systems",
+            "type": "RECORD",
+            "mode": "REPEATED",
+            "fields": [
+              {
+                "name": "ASNs",
+                "type": "INTEGER",
+                "mode": "REPEATED"
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "name": "client_ip",
+    "type": "STRING"
+  },
+  {
+    "name": "access_token",
+    "type": "STRING"
+  },
+  {
+    "name": "metro_rank",
+    "type": "STRING"
+  },
+  {
+    "name": "client_name",
+    "type": "STRING"
+  },
+  {
+    "name": "download_min_rtt",
+    "type": "FLOAT"
+  },
+  {
+    "name": "download_throughput_mbps",
+    "type": "FLOAT"
+  },
+  {
+    "name": "download_loss_rate",
+    "type": "FLOAT"
+  },
+  {
+    "name": "upload_throughput_mbps",
+    "type": "FLOAT"
+  },
+  {
+    "name": "upload_min_rtt",
+    "type": "FLOAT"
+  },
+  {
+    "name": "upload_loss_rate",
+    "type": "FLOAT"
+  },
+  {
+    "name": "ip_version",
+    "type": "STRING"
+  },
+  {
+    "name": "partition_date",
+    "type": "DATE"
+  },
+  {
+    "name": "upload_id",
+    "type": "STRING"
+  }
+]

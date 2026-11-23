@@ -1,0 +1,344 @@
+[
+  {
+    "name": "src_asn",
+    "type": "INTEGER"
+  },
+  {
+    "name": "src_country",
+    "type": "STRING"
+  },
+  {
+    "name": "src_asn_name",
+    "type": "STRING"
+  },
+  {
+    "name": "src_city",
+    "type": "STRING"
+  },
+  {
+    "name": "src_lat",
+    "type": "FLOAT"
+  },
+  {
+    "name": "src_lon",
+    "type": "FLOAT"
+  },
+  {
+    "name": "src_state",
+    "type": "STRING"
+  },
+  {
+    "name": "dst_lat",
+    "type": "FLOAT"
+  },
+  {
+    "name": "dst_lon",
+    "type": "FLOAT"
+  },
+  {
+    "name": "dst_site",
+    "type": "STRING"
+  },
+  {
+    "name": "dst_city",
+    "type": "STRING"
+  },
+  {
+    "name": "dst_asn",
+    "type": "INTEGER"
+  },
+  {
+    "name": "dst_country",
+    "type": "STRING"
+  },
+  {
+    "name": "ip_version",
+    "type": "STRING"
+  },
+  {
+    "name": "baseline_median_rtt",
+    "type": "FLOAT"
+  },
+  {
+    "name": "baseline_median_throughput",
+    "type": "FLOAT"
+  },
+  {
+    "name": "baseline_median_upload_throughput",
+    "type": "FLOAT"
+  },
+  {
+    "name": "baseline_median_loss",
+    "type": "FLOAT"
+  },
+  {
+    "name": "baseline_p95_loss",
+    "type": "FLOAT"
+  },
+  {
+    "name": "baseline_lossy_fraction",
+    "type": "FLOAT"
+  },
+  {
+    "name": "baseline_lossy_count",
+    "type": "INTEGER"
+  },
+  {
+    "name": "is_consistent",
+    "type": "BOOLEAN"
+  },
+  {
+    "name": "unique_ip_count_per_site",
+    "type": "INTEGER"
+  },
+  {
+    "name": "measurement_count_per_site",
+    "type": "INTEGER"
+  },
+  {
+    "name": "number_of_measurements_baseline",
+    "type": "INTEGER"
+  },
+  {
+    "name": "number_of_unique_src_ips_baseline",
+    "type": "INTEGER"
+  },
+  {
+    "name": "total_group_rows",
+    "type": "INTEGER"
+  },
+  {
+    "name": "anomaly_ratio_throughput",
+    "type": "FLOAT"
+  },
+  {
+    "name": "anomaly_ratio_upload_throughput",
+    "type": "FLOAT"
+  },
+  {
+    "name": "anomaly_ratio_rtt",
+    "type": "FLOAT"
+  },
+  {
+    "name": "anomaly_loss_ratio",
+    "type": "INTEGER"
+  },
+  {
+    "name": "difference_latency",
+    "type": "FLOAT"
+  },
+  {
+    "name": "difference_throughput",
+    "type": "FLOAT"
+  },
+  {
+    "name": "difference_upload_throughput",
+    "type": "FLOAT"
+  },
+  {
+    "name": "wasserstein_throughput_result",
+    "type": "RECORD",
+    "fields": [
+      {
+        "name": "distance",
+        "type": "FLOAT"
+      },
+      {
+        "name": "p_value",
+        "type": "FLOAT"
+      }
+    ]
+  },
+  {
+    "name": "wasserstein_upload_throughput_result",
+    "type": "RECORD",
+    "fields": [
+      {
+        "name": "distance",
+        "type": "FLOAT"
+      },
+      {
+        "name": "p_value",
+        "type": "FLOAT"
+      }
+    ]
+  },
+  {
+    "name": "mann_whitney_latency",
+    "type": "RECORD",
+    "fields": [
+      {
+        "name": "U",
+        "type": "FLOAT"
+      },
+      {
+        "name": "Z",
+        "type": "FLOAT"
+      },
+      {
+        "name": "p_value",
+        "type": "FLOAT"
+      },
+      {
+        "name": "meanU",
+        "type": "FLOAT"
+      },
+      {
+        "name": "stdU",
+        "type": "FLOAT"
+      }
+    ]
+  },
+  {
+    "name": "mann_whitney_throughput",
+    "type": "RECORD",
+    "fields": [
+      {
+        "name": "U",
+        "type": "FLOAT"
+      },
+      {
+        "name": "Z",
+        "type": "FLOAT"
+      },
+      {
+        "name": "p_value",
+        "type": "FLOAT"
+      },
+      {
+        "name": "meanU",
+        "type": "FLOAT"
+      },
+      {
+        "name": "stdU",
+        "type": "FLOAT"
+      }
+    ]
+  },
+  {
+    "name": "mann_whitney_upload_throughput",
+    "type": "RECORD",
+    "fields": [
+      {
+        "name": "U",
+        "type": "FLOAT"
+      },
+      {
+        "name": "Z",
+        "type": "FLOAT"
+      },
+      {
+        "name": "p_value",
+        "type": "FLOAT"
+      },
+      {
+        "name": "meanU",
+        "type": "FLOAT"
+      },
+      {
+        "name": "stdU",
+        "type": "FLOAT"
+      }
+    ]
+  },
+  {
+    "name": "z_loss_occurrence",
+    "type": "FLOAT"
+  },
+  {
+    "name": "mann_whitney_loss_severity",
+    "type": "RECORD",
+    "fields": [
+      {
+        "name": "U",
+        "type": "FLOAT"
+      },
+      {
+        "name": "Z",
+        "type": "FLOAT"
+      },
+      {
+        "name": "p_value",
+        "type": "FLOAT"
+      },
+      {
+        "name": "meanU",
+        "type": "FLOAT"
+      },
+      {
+        "name": "stdU",
+        "type": "FLOAT"
+      }
+    ]
+  },
+  {
+    "name": "t_test_latency",
+    "type": "RECORD",
+    "fields": [
+      {
+        "name": "t_stat",
+        "type": "FLOAT"
+      },
+      {
+        "name": "degrees_of_freedom",
+        "type": "FLOAT"
+      },
+      {
+        "name": "p_value",
+        "type": "FLOAT"
+      },
+      {
+        "name": "mean1",
+        "type": "FLOAT"
+      },
+      {
+        "name": "mean2",
+        "type": "FLOAT"
+      },
+      {
+        "name": "se1",
+        "type": "FLOAT"
+      },
+      {
+        "name": "se2",
+        "type": "FLOAT"
+      }
+    ]
+  },
+  {
+    "name": "client_name",
+    "type": "STRING"
+  },
+  {
+    "name": "anomaly_rtt_count",
+    "type": "INTEGER"
+  },
+  {
+    "name": "anomaly_throughput_count",
+    "type": "INTEGER"
+  },
+  {
+    "name": "anomaly_upload_throughput_count",
+    "type": "INTEGER"
+  },
+  {
+    "name": "anomaly_loss_rate_count",
+    "type": "INTEGER"
+  },
+  {
+    "name": "partition_date",
+    "type": "DATE"
+  },
+  {
+    "name": "detection_granularity",
+    "type": "STRING"
+  },
+  {
+    "name": "src_group_label",
+    "type": "STRING"
+  },
+  {
+    "name": "client_geo_source",
+    "type": "STRING"
+  }
+]

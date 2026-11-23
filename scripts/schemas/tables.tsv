@@ -1,0 +1,29 @@
+# dataset	table	partition_field	clustering	require_partition_filter	populated_by
+# Generated 2026-11-23 from the live mlab-collaboration tables (bigquery get_table).
+hermes	as_metadata	-	-	false	refresh_topology_tables --as-metadata (CAIDA AS-rank + PeeringDB; monthly)
+hermes	geolocation	-	-	false	pipeline enrichment (HOIHO router geolocation)
+hermes	metro_polygons_v2	-	country_code,state_code	false	cleaning_polygons build --upload (one-time)
+hermes	site_to_state	-	-	false	init_project.sh loads scripts/schemas/data/hermes.site_to_state.csv
+hermes	unified_ip_to_as	-	-	false	refresh_topology_tables (RouteViews pfx2as; daily)
+hermes	unified_ip_to_as_ipv6	partition_date	-	false	refresh_topology_tables --ip-version ipv6 (RouteViews; daily)
+hermes	unified_ip_to_geoloc	partition_date	ip_address	false	pipeline enrichment (IPInfo, RIPE IPmap)
+hermes	unified_ip_to_geoloc_ipv6	partition_date	ip_address	false	pipeline enrichment (IPInfo, RIPE IPmap)
+hermes	unified_ip_to_rdns	-	-	false	pipeline enrichment (ZDNS reverse DNS)
+hermes	unified_ip_to_rdns_ipv6	partition_date	-	false	pipeline enrichment (ZDNS reverse DNS)
+hermes	unified_src_ip_to_geoloc	partition_date	ip_address	false	pipeline enrichment (IPInfo, client IPs)
+hermes	unified_src_ip_to_geoloc_ipv6	partition_date	ip_address	false	pipeline enrichment (IPInfo, client IPs)
+ix_data	ixp_members	-	-	false	refresh_topology_tables (PeeringDB; daily)
+ix_data	ixp_members_ipv6	partition_date	-	false	refresh_topology_tables --ip-version ipv6 (PeeringDB; daily)
+hermes_union	anomaly_counts_union	partition_date	-	true	pipeline (union steps 01-07)
+hermes_union	correlation_culprits_multigranularity	partition_date	-	true	pipeline (union steps 01-07)
+hermes_union	correlation_entity_stats_multigranularity	partition_date	-	true	pipeline (union steps 01-07)
+hermes_union	correlation_hyperedges_tomography_v2	partition_date	-	true	pipeline (union steps 01-07)
+hermes_union	events_explained_daily	partition_date	-	true	pipeline (union steps 01-07)
+hermes_union	events_with_as_and_geoloc	partition_date	-	true	pipeline (union steps 01-07)
+hermes_union	giga_meter_measurements	partition_date	-	true	pipeline (union steps 01-07)
+hermes_union	giga_school_ips	-	-	false	partner data (GIGA), not public; may stay empty
+hermes_union	merged_download_upload	partition_date	-	true	pipeline (union steps 01-07)
+hermes_union	place_canonical_metro	-	-	false	optional lookup; empty is safe
+hermes_union	temporal_correlations	partition_date	-	true	pipeline (union steps 01-07)
+hermes_union	temporal_path_verdicts	partition_date	-	true	pipeline (union steps 01-07)
+hermes_union	transient_events_union	partition_date	-	true	pipeline (union steps 01-07)

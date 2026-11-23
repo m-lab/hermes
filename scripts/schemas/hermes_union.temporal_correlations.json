@@ -1,0 +1,40 @@
+[
+  {
+    "name": "partition_date",
+    "type": "DATE"
+  },
+  {
+    "name": "edge",
+    "type": "STRING"
+  },
+  {
+    "name": "before_agg_src_dst_pair",
+    "type": "STRING",
+    "mode": "REPEATED"
+  },
+  {
+    "name": "during_agg_src_dst_pair",
+    "type": "STRING",
+    "mode": "REPEATED"
+  },
+  {
+    "name": "total_count_before_incident",
+    "type": "INTEGER"
+  },
+  {
+    "name": "total_count_during_incident",
+    "type": "INTEGER"
+  },
+  {
+    "name": "fraction_before_incident",
+    "type": "FLOAT"
+  },
+  {
+    "name": "fraction_during_incident",
+    "type": "FLOAT"
+  },
+  {
+    "name": "ratio_before_after",
+    "type": "FLOAT"
+  }
+]

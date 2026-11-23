@@ -1,0 +1,186 @@
+[
+  {
+    "name": "ip_address",
+    "type": "STRING"
+  },
+  {
+    "name": "iso3_code",
+    "type": "STRING"
+  },
+  {
+    "name": "month_start",
+    "type": "DATE"
+  },
+  {
+    "name": "rdns_hostname",
+    "type": "STRING"
+  },
+  {
+    "name": "ip_version",
+    "type": "INTEGER"
+  },
+  {
+    "name": "asn",
+    "type": "INTEGER"
+  },
+  {
+    "name": "as_prefix",
+    "type": "STRING"
+  },
+  {
+    "name": "ip_city",
+    "type": "STRING"
+  },
+  {
+    "name": "ip_city_country_code",
+    "type": "STRING"
+  },
+  {
+    "name": "ripe_atlas_network_has_probe",
+    "type": "BOOLEAN"
+  },
+  {
+    "name": "ripe_atlas_network_probe_ids",
+    "type": "STRING"
+  },
+  {
+    "name": "ripe_atlas_city_has_probe",
+    "type": "BOOLEAN"
+  },
+  {
+    "name": "ripe_atlas_city_probe_ids",
+    "type": "STRING"
+  },
+  {
+    "name": "ripe_atlas_network_city_has_probe",
+    "type": "BOOLEAN"
+  },
+  {
+    "name": "ripe_atlas_network_city_probe_ids",
+    "type": "STRING"
+  },
+  {
+    "name": "censys_ipv4",
+    "type": "STRING"
+  },
+  {
+    "name": "censys_ipv6",
+    "type": "STRING"
+  },
+  {
+    "name": "censys_ip_version",
+    "type": "STRING"
+  },
+  {
+    "name": "censys_num_services_visible",
+    "type": "INTEGER"
+  },
+  {
+    "name": "censys_open_ports",
+    "type": "STRING"
+  },
+  {
+    "name": "censys_service_names",
+    "type": "STRING"
+  },
+  {
+    "name": "censys_snapshot_date",
+    "type": "TIMESTAMP"
+  },
+  {
+    "name": "censys_remote_access_count",
+    "type": "INTEGER"
+  },
+  {
+    "name": "censys_exposed_database_count",
+    "type": "INTEGER"
+  },
+  {
+    "name": "censys_telnet_exposed",
+    "type": "INTEGER"
+  },
+  {
+    "name": "censys_tls_service_count",
+    "type": "INTEGER"
+  },
+  {
+    "name": "censys_tls_versions",
+    "type": "STRING"
+  },
+  {
+    "name": "censys_self_signed_cert_count",
+    "type": "INTEGER"
+  },
+  {
+    "name": "censys_os_vendor",
+    "type": "STRING"
+  },
+  {
+    "name": "censys_os_product",
+    "type": "STRING"
+  },
+  {
+    "name": "censys_os_version",
+    "type": "STRING"
+  },
+  {
+    "name": "censys_has_http_server",
+    "type": "BOOLEAN"
+  },
+  {
+    "name": "censys_software_cpes",
+    "type": "STRING"
+  },
+  {
+    "name": "censys_has_fortigate",
+    "type": "BOOLEAN"
+  },
+  {
+    "name": "censys_has_cwmp_cpe_management",
+    "type": "BOOLEAN"
+  },
+  {
+    "name": "censys_has_ot_protocols",
+    "type": "BOOLEAN"
+  },
+  {
+    "name": "censys_has_ipmi",
+    "type": "BOOLEAN"
+  },
+  {
+    "name": "censys_has_upnp",
+    "type": "BOOLEAN"
+  },
+  {
+    "name": "censys_ssh_software_version",
+    "type": "STRING"
+  },
+  {
+    "name": "censys_ssh_hassh",
+    "type": "STRING"
+  },
+  {
+    "name": "censys_labels",
+    "type": "STRING"
+  },
+  {
+    "name": "censys_rdns",
+    "type": "STRING"
+  },
+  {
+    "name": "censys_asn",
+    "type": "INTEGER"
+  },
+  {
+    "name": "censys_as_name",
+    "type": "STRING"
+  },
+  {
+    "name": "censys_country",
+    "type": "STRING"
+  },
+  {
+    "name": "censys_city",
+    "type": "STRING"
+  }
+]

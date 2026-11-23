@@ -1,0 +1,686 @@
+[
+  {
+    "name": "id",
+    "type": "STRING"
+  },
+  {
+    "name": "dst",
+    "type": "STRING"
+  },
+  {
+    "name": "src",
+    "type": "STRING"
+  },
+  {
+    "name": "ndt_rtt",
+    "type": "FLOAT"
+  },
+  {
+    "name": "ndt_throughput",
+    "type": "FLOAT"
+  },
+  {
+    "name": "ndt_loss_rate",
+    "type": "FLOAT"
+  },
+  {
+    "name": "traceroute_rtt",
+    "type": "FLOAT"
+  },
+  {
+    "name": "total_windows",
+    "type": "INTEGER"
+  },
+  {
+    "name": "is_consistent",
+    "type": "BOOLEAN"
+  },
+  {
+    "name": "src_city",
+    "type": "STRING"
+  },
+  {
+    "name": "src_lat",
+    "type": "FLOAT"
+  },
+  {
+    "name": "src_state",
+    "type": "STRING"
+  },
+  {
+    "name": "src_lon",
+    "type": "FLOAT"
+  },
+  {
+    "name": "dst_lat",
+    "type": "FLOAT"
+  },
+  {
+    "name": "dst_lon",
+    "type": "FLOAT"
+  },
+  {
+    "name": "src_asn",
+    "type": "INTEGER"
+  },
+  {
+    "name": "dst_site",
+    "type": "STRING"
+  },
+  {
+    "name": "dst_city",
+    "type": "STRING"
+  },
+  {
+    "name": "dst_asn",
+    "type": "INTEGER"
+  },
+  {
+    "name": "dst_country",
+    "type": "STRING"
+  },
+  {
+    "name": "src_country",
+    "type": "STRING"
+  },
+  {
+    "name": "src_asn_name",
+    "type": "STRING"
+  },
+  {
+    "name": "client_name",
+    "type": "STRING"
+  },
+  {
+    "name": "start",
+    "type": "INTEGER"
+  },
+  {
+    "name": "window_start",
+    "type": "TIMESTAMP"
+  },
+  {
+    "name": "reach_dest",
+    "type": "BOOLEAN"
+  },
+  {
+    "name": "number_of_measurements_baseline",
+    "type": "FLOAT"
+  },
+  {
+    "name": "number_of_unique_src_ips_baseline",
+    "type": "FLOAT"
+  },
+  {
+    "name": "unique_ip_count_per_site",
+    "type": "FLOAT"
+  },
+  {
+    "name": "measurement_count_per_site",
+    "type": "FLOAT"
+  },
+  {
+    "name": "baseline_median_rtt",
+    "type": "FLOAT"
+  },
+  {
+    "name": "baseline_median_throughput",
+    "type": "FLOAT"
+  },
+  {
+    "name": "baseline_median_upload_throughput",
+    "type": "FLOAT"
+  },
+  {
+    "name": "baseline_median_loss",
+    "type": "FLOAT"
+  },
+  {
+    "name": "ip_version",
+    "type": "STRING"
+  },
+  {
+    "name": "revtr_system_label",
+    "type": "STRING"
+  },
+  {
+    "name": "revtr_stop_reason",
+    "type": "STRING"
+  },
+  {
+    "name": "revtr_fail_reason",
+    "type": "STRING"
+  },
+  {
+    "name": "is_try_from_destination_AS",
+    "type": "BOOLEAN"
+  },
+  {
+    "name": "revtr_id",
+    "type": "INTEGER"
+  },
+  {
+    "name": "city_median_rtt",
+    "type": "FLOAT"
+  },
+  {
+    "name": "city_ninetyth_percentile_rtt",
+    "type": "FLOAT"
+  },
+  {
+    "name": "city_oneth_percentile_rtt",
+    "type": "FLOAT"
+  },
+  {
+    "name": "city_tenth_percentile_rtt",
+    "type": "FLOAT"
+  },
+  {
+    "name": "city_median_throughput",
+    "type": "FLOAT"
+  },
+  {
+    "name": "city_ninetyth_percentile_throughput",
+    "type": "FLOAT"
+  },
+  {
+    "name": "forward_updated_node_details",
+    "type": "RECORD",
+    "mode": "REPEATED",
+    "fields": [
+      {
+        "name": "ttl",
+        "type": "INTEGER"
+      },
+      {
+        "name": "addr",
+        "type": "STRING"
+      },
+      {
+        "name": "rdns_name",
+        "type": "STRING"
+      },
+      {
+        "name": "rtts",
+        "type": "FLOAT"
+      },
+      {
+        "name": "associated_asn",
+        "type": "INTEGER"
+      },
+      {
+        "name": "associated_org",
+        "type": "STRING"
+      },
+      {
+        "name": "associated_peeringdb_name",
+        "type": "STRING"
+      },
+      {
+        "name": "associated_ixp",
+        "type": "STRING"
+      },
+      {
+        "name": "latitude",
+        "type": "FLOAT"
+      },
+      {
+        "name": "longitude",
+        "type": "FLOAT"
+      },
+      {
+        "name": "place",
+        "type": "STRING"
+      },
+      {
+        "name": "clli",
+        "type": "STRING"
+      },
+      {
+        "name": "cc",
+        "type": "STRING"
+      },
+      {
+        "name": "metro",
+        "type": "STRING"
+      },
+      {
+        "name": "score",
+        "type": "FLOAT"
+      },
+      {
+        "name": "geo_source",
+        "type": "STRING"
+      },
+      {
+        "name": "geo_partition_date",
+        "type": "DATE"
+      },
+      {
+        "name": "ixp_partition_date",
+        "type": "DATE"
+      },
+      {
+        "name": "facilities_info",
+        "type": "RECORD",
+        "mode": "REPEATED",
+        "fields": [
+          {
+            "name": "facility_name",
+            "type": "STRING"
+          },
+          {
+            "name": "facility_city",
+            "type": "STRING"
+          },
+          {
+            "name": "distance_km",
+            "type": "FLOAT"
+          }
+        ]
+      },
+      {
+        "name": "cumulative_distance_km",
+        "type": "FLOAT"
+      },
+      {
+        "name": "distance_to_destination_km",
+        "type": "FLOAT"
+      },
+      {
+        "name": "speed_of_internet_fiber",
+        "type": "FLOAT"
+      },
+      {
+        "name": "distance_rtt_check",
+        "type": "STRING"
+      },
+      {
+        "name": "above_baseline_flag",
+        "type": "STRING"
+      },
+      {
+        "name": "increasing_latency_flag",
+        "type": "STRING"
+      },
+      {
+        "name": "baseline_consistency_flag",
+        "type": "STRING"
+      }
+    ]
+  },
+  {
+    "name": "forward_distance",
+    "type": "FLOAT"
+  },
+  {
+    "name": "reverse_distance",
+    "type": "FLOAT"
+  },
+  {
+    "name": "both_way_distance",
+    "type": "FLOAT"
+  },
+  {
+    "name": "reverse_updated_node_details",
+    "type": "RECORD",
+    "mode": "REPEATED",
+    "fields": [
+      {
+        "name": "ttl",
+        "type": "INTEGER"
+      },
+      {
+        "name": "addr",
+        "type": "STRING"
+      },
+      {
+        "name": "rdns_name",
+        "type": "STRING"
+      },
+      {
+        "name": "rtts",
+        "type": "FLOAT"
+      },
+      {
+        "name": "associated_asn",
+        "type": "INTEGER"
+      },
+      {
+        "name": "associated_ixp",
+        "type": "STRING"
+      },
+      {
+        "name": "associated_org",
+        "type": "STRING"
+      },
+      {
+        "name": "associated_peeringdb_name",
+        "type": "STRING"
+      },
+      {
+        "name": "latitude",
+        "type": "FLOAT"
+      },
+      {
+        "name": "longitude",
+        "type": "FLOAT"
+      },
+      {
+        "name": "place",
+        "type": "STRING"
+      },
+      {
+        "name": "clli",
+        "type": "STRING"
+      },
+      {
+        "name": "cc",
+        "type": "STRING"
+      },
+      {
+        "name": "score",
+        "type": "FLOAT"
+      },
+      {
+        "name": "metro",
+        "type": "STRING"
+      },
+      {
+        "name": "geo_source",
+        "type": "STRING"
+      },
+      {
+        "name": "geo_partition_date",
+        "type": "DATE"
+      },
+      {
+        "name": "ixp_partition_date",
+        "type": "DATE"
+      },
+      {
+        "name": "hop_type",
+        "type": "INTEGER"
+      },
+      {
+        "name": "facilities_info",
+        "type": "RECORD",
+        "mode": "REPEATED",
+        "fields": [
+          {
+            "name": "facility_name",
+            "type": "STRING"
+          },
+          {
+            "name": "facility_city",
+            "type": "STRING"
+          },
+          {
+            "name": "distance_km",
+            "type": "FLOAT"
+          }
+        ]
+      },
+      {
+        "name": "cumulative_distance_km",
+        "type": "FLOAT"
+      },
+      {
+        "name": "distance_to_destination_km",
+        "type": "FLOAT"
+      },
+      {
+        "name": "speed_of_internet_fiber",
+        "type": "FLOAT"
+      },
+      {
+        "name": "distance_rtt_check",
+        "type": "STRING"
+      },
+      {
+        "name": "above_baseline_flag",
+        "type": "STRING"
+      },
+      {
+        "name": "increasing_latency_flag",
+        "type": "STRING"
+      },
+      {
+        "name": "is_interdomain_symmetry",
+        "type": "BOOLEAN"
+      },
+      {
+        "name": "is_fishy_type_4",
+        "type": "BOOLEAN"
+      }
+    ]
+  },
+  {
+    "name": "is_virtual",
+    "type": "BOOLEAN"
+  },
+  {
+    "name": "is_reaching_dst_asn",
+    "type": "BOOLEAN"
+  },
+  {
+    "name": "partition_date",
+    "type": "DATE"
+  },
+  {
+    "name": "reverse_unresponsive_within_AS",
+    "type": "BOOLEAN"
+  },
+  {
+    "name": "forward_unresponse_within_AS",
+    "type": "BOOLEAN"
+  },
+  {
+    "name": "forward_loop",
+    "type": "BOOLEAN"
+  },
+  {
+    "name": "reverse_loop",
+    "type": "BOOLEAN"
+  },
+  {
+    "name": "anomaly_ratio_rtt",
+    "type": "FLOAT"
+  },
+  {
+    "name": "anomaly_rtt_count",
+    "type": "INTEGER"
+  },
+  {
+    "name": "anomaly_ratio_throughput",
+    "type": "FLOAT"
+  },
+  {
+    "name": "anomaly_throughput_count",
+    "type": "INTEGER"
+  },
+  {
+    "name": "anomaly_ratio_upload_throughput",
+    "type": "FLOAT"
+  },
+  {
+    "name": "anomaly_upload_throughput_count",
+    "type": "INTEGER"
+  },
+  {
+    "name": "anomaly_loss_ratio",
+    "type": "FLOAT"
+  },
+  {
+    "name": "difference_latency",
+    "type": "FLOAT"
+  },
+  {
+    "name": "difference_throughput",
+    "type": "FLOAT"
+  },
+  {
+    "name": "difference_upload_throughput",
+    "type": "FLOAT"
+  },
+  {
+    "name": "median_upload_throughput",
+    "type": "FLOAT"
+  },
+  {
+    "name": "wasserstein_throughput_result",
+    "type": "RECORD",
+    "fields": [
+      {
+        "name": "distance",
+        "type": "FLOAT"
+      },
+      {
+        "name": "p_value",
+        "type": "FLOAT"
+      }
+    ]
+  },
+  {
+    "name": "wasserstein_upload_throughput_result",
+    "type": "RECORD",
+    "fields": [
+      {
+        "name": "distance",
+        "type": "FLOAT"
+      },
+      {
+        "name": "p_value",
+        "type": "FLOAT"
+      }
+    ]
+  },
+  {
+    "name": "mann_whitney_latency",
+    "type": "RECORD",
+    "fields": [
+      {
+        "name": "U",
+        "type": "FLOAT"
+      },
+      {
+        "name": "Z",
+        "type": "FLOAT"
+      },
+      {
+        "name": "p_value",
+        "type": "FLOAT"
+      },
+      {
+        "name": "meanU",
+        "type": "FLOAT"
+      },
+      {
+        "name": "stdU",
+        "type": "FLOAT"
+      }
+    ]
+  },
+  {
+    "name": "mann_whitney_throughput",
+    "type": "RECORD",
+    "fields": [
+      {
+        "name": "U",
+        "type": "FLOAT"
+      },
+      {
+        "name": "Z",
+        "type": "FLOAT"
+      },
+      {
+        "name": "p_value",
+        "type": "FLOAT"
+      },
+      {
+        "name": "meanU",
+        "type": "FLOAT"
+      },
+      {
+        "name": "stdU",
+        "type": "FLOAT"
+      }
+    ]
+  },
+  {
+    "name": "mann_whitney_upload_throughput",
+    "type": "RECORD",
+    "fields": [
+      {
+        "name": "U",
+        "type": "FLOAT"
+      },
+      {
+        "name": "Z",
+        "type": "FLOAT"
+      },
+      {
+        "name": "p_value",
+        "type": "FLOAT"
+      },
+      {
+        "name": "meanU",
+        "type": "FLOAT"
+      },
+      {
+        "name": "stdU",
+        "type": "FLOAT"
+      }
+    ]
+  },
+  {
+    "name": "t_test_latency",
+    "type": "RECORD",
+    "fields": [
+      {
+        "name": "t_stat",
+        "type": "FLOAT"
+      },
+      {
+        "name": "degrees_of_freedom",
+        "type": "FLOAT"
+      },
+      {
+        "name": "p_value",
+        "type": "FLOAT"
+      },
+      {
+        "name": "mean1",
+        "type": "FLOAT"
+      },
+      {
+        "name": "mean2",
+        "type": "FLOAT"
+      },
+      {
+        "name": "se1",
+        "type": "FLOAT"
+      },
+      {
+        "name": "se2",
+        "type": "FLOAT"
+      }
+    ]
+  },
+  {
+    "name": "detection_granularity",
+    "type": "STRING"
+  },
+  {
+    "name": "src_group_label",
+    "type": "STRING"
+  },
+  {
+    "name": "src_metro",
+    "type": "STRING"
+  },
+  {
+    "name": "client_geo_source",
+    "type": "STRING"
+  }
+]
