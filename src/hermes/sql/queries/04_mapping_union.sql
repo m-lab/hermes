@@ -13,6 +13,7 @@
 -- remain visible to the final INSERT statement.
 --------------------------------------------------------------------------------
 -- @requires-udf: snapshot_is_complete
+-- @requires-udf: hoiho_admissibility
 
 -- ============================================================================
 -- Reusable lookup temp tables
@@ -507,6 +508,132 @@ FROM ranked
 WHERE rn = 1;
 
 -- ============================================================================
+-- 5a) Address -> ASN / IXP, once for every forward and reverse hop address.
+--    Longest-prefix match; overlap ties go to the larger CAIDA customer cone, then
+--    the smaller ASN. This used to be computed twice inside _mapping_result (one
+--    copy per direction, identical per IP); it is a temp table so the HOIHO
+--    admissibility check below can use each hop's AS before validation runs.
+CREATE TEMP TABLE _addr_asn AS
+WITH addrs AS (
+  SELECT DISTINCT node.addr AS ip
+  FROM `${PROJECT}.${DS}.transient_events_union` t, UNNEST(t.node_details) AS node
+  WHERE t.partition_date = '${DAY}'
+  UNION DISTINCT
+  SELECT DISTINCT node.hop_ip
+  FROM `${PROJECT}.${DS}.transient_events_union` t, UNNEST(t.reverse_node_details) AS node
+  WHERE t.partition_date = '${DAY}'
+),
+v4 AS (
+  SELECT ip, asn, ixp, mask, ixp_partition_date
+  FROM (
+    SELECT
+      m.ip, m.asn, m.ixp, m.mask, m.ixp_partition_date,
+      ROW_NUMBER() OVER (
+        PARTITION BY m.ip
+        ORDER BY
+          m.mask DESC,                    -- most-specific prefix wins
+          -- prefix overlap (two same-length prefixes, e.g. MOAS): prefer the
+          -- network with the largest CAIDA customer cone, then the smallest ASN,
+          -- so the pick is stable/deterministic instead of an arbitrary tie.
+          -- numberPrefixes, NOT numberAsns: numberAsns is 1 for nearly every
+          -- leaf network, so it tied constantly and threw the decision to the
+          -- smallest-ASN fallback. That is how 2402:8100::/32 (Vodafone Idea,
+          -- cone 747 prefixes) lost to Google's AS36040 (cone 80) on 36040 <
+          -- 38266. This is still a heuristic -- "bigger network wins" -- but it
+          -- discriminates, where numberAsns did not.
+          cam.cone.numberPrefixes DESC,
+          SAFE_CAST(m.asn AS INT64) ASC
+      ) AS rn
+    FROM (
+      SELECT ip, asn, ixp, mask, ixp_partition_date
+      FROM (
+        SELECT *, NET.SAFE_IP_FROM_STRING(ip) & NET.IP_NET_MASK(4, mask) AS network_bin
+        FROM addrs, UNNEST(GENERATE_ARRAY(8, 32)) mask
+        WHERE BYTE_LENGTH(NET.SAFE_IP_FROM_STRING(ip)) = 4
+      )
+      JOIN _extracted_prefixes extracted_prefixes USING (network_bin, mask)
+      WHERE extracted_prefixes.ip_version = 'v4'
+    ) m
+    LEFT JOIN _closest_as_metadata cam ON CAST(m.asn AS STRING) = cam.asn
+  )
+  WHERE rn = 1
+),
+v6 AS (
+  SELECT ip, asn, ixp, mask, ixp_partition_date
+  FROM (
+    SELECT
+      m.ip, m.asn, m.ixp, m.mask, m.ixp_partition_date,
+      ROW_NUMBER() OVER (
+        PARTITION BY m.ip
+        ORDER BY
+          m.mask DESC,
+          cam.cone.numberPrefixes DESC,    -- overlap tie: largest customer cone
+          SAFE_CAST(m.asn AS INT64) ASC    -- then smallest ASN (deterministic)
+      ) AS rn
+    FROM (
+      SELECT ip, asn, ixp, mask, ixp_partition_date
+      FROM (
+        SELECT *, NET.SAFE_IP_FROM_STRING(ip) & NET.IP_NET_MASK(16, mask) AS network_bin
+        FROM addrs, UNNEST(GENERATE_ARRAY(8, 128)) mask
+        WHERE BYTE_LENGTH(NET.SAFE_IP_FROM_STRING(ip)) = 16
+      )
+      JOIN _extracted_prefixes extracted_prefixes USING (network_bin, mask)
+      WHERE extracted_prefixes.ip_version = 'v6'
+    ) m
+    LEFT JOIN _closest_as_metadata cam ON CAST(m.asn AS STRING) = cam.asn
+  )
+  WHERE rn = 1
+)
+SELECT * FROM v4
+UNION ALL
+SELECT * FROM v6;
+
+-- 5c) Which HOIHO row may each hop use? One row per (address, hostname) whose
+--    hostname HOIHO matched, kept only when admissible (udfs/hoiho_admissibility):
+--    * with coordinates: the only location, within 100 km of the IPinfo/RIPE one,
+--      or in a city where the hop's AS has a PeeringDB facility -- never for a
+--      hostname naming an address pool. `basis` says which, and becomes geo_source.
+--    * without coordinates (CLLI/country-only, most HOIHO rows): kept for its
+--      labels when its country does not contradict the IPinfo/RIPE one. basis is
+--      NULL: the coordinates, and so geo_source, come from IPinfo/RIPE.
+--    Keyed on the address too because the facility check needs the hop's AS. One
+--    row per (addr, rdns_name), since _rdns_geo has one row per rdns_name.
+CREATE TEMP TABLE _hoiho_by_addr AS
+WITH pairs AS (
+  SELECT DISTINCT node.addr AS addr, node.rdns_name
+  FROM `${PROJECT}.${DS}.transient_events_union` t, UNNEST(t.node_details) AS node
+  WHERE t.partition_date = '${DAY}' AND node.rdns_name IS NOT NULL
+  UNION DISTINCT
+  SELECT DISTINCT reverse_node.hop_ip, rdns.hostname
+  FROM `${PROJECT}.${DS}.transient_events_union` t,
+       UNNEST(t.reverse_node_details) AS reverse_node
+  JOIN _closest_rdns rdns ON rdns.ip_address = reverse_node.hop_ip
+  WHERE t.partition_date = '${DAY}' AND rdns.hostname IS NOT NULL
+),
+scored AS (
+  SELECT
+    p.addr, p.rdns_name,
+    g.lat, g.lon, g.place, g.clli, g.metro, g.cc, g.hostname,
+    hoiho_pool_hostname(g.hostname, p.addr) AS pool,
+    IF(ip.lat_ip_info IS NOT NULL AND ip.lon_ip_info IS NOT NULL, ip.lat_ip_info, ip.lat) AS alt_lat,
+    IF(ip.lat_ip_info IS NOT NULL AND ip.lon_ip_info IS NOT NULL, ip.lon_ip_info, ip.lon) AS alt_lon,
+    COALESCE(ip.country_ip_info, ip.country) AS alt_cc,
+    hoiho_facility_match(g.place, cam.facilities.city_cc) AS facility
+  FROM pairs p
+  JOIN _rdns_geo g ON g.rdns_name = p.rdns_name AND g.hostname IS NOT NULL
+  LEFT JOIN _closest_geo ip ON ip.ip_address = p.addr
+  LEFT JOIN _addr_asn a ON a.ip = p.addr
+  LEFT JOIN _closest_as_metadata cam ON cam.asn = CAST(a.asn AS STRING)
+)
+SELECT * EXCEPT (pool, alt_lat, alt_lon, alt_cc, facility)
+FROM (
+  SELECT *, hoiho_basis(lat, lon, alt_lat, alt_lon, pool, facility) AS basis
+  FROM scored
+)
+WHERE basis IS NOT NULL
+   OR ((lat IS NULL OR lon IS NULL) AND NOT pool
+       AND (cc IS NULL OR alt_cc IS NULL OR UPPER(cc) = UPPER(alt_cc)));
+
 -- 5b) Router geolocation validation (forward evidence, per address)
 -- ============================================================================
 -- A location is REFUTED when a hop's RTT cannot cover the distance to it and back:
@@ -548,7 +675,7 @@ candidates AS (
   SELECT a.addr, c.rank, c.source, c.lat, c.lon
   FROM (SELECT addr, MIN(rdns_name) AS rdns_name FROM obs
         WHERE addr IN (SELECT addr FROM site_q) GROUP BY addr) a
-  LEFT JOIN _rdns_geo geo ON geo.rdns_name = a.rdns_name
+  LEFT JOIN _hoiho_by_addr geo ON geo.addr = a.addr AND geo.rdns_name = a.rdns_name
   LEFT JOIN _closest_geo ip ON ip.ip_address = a.addr
   CROSS JOIN UNNEST([
     STRUCT(1 AS rank, 'hoiho' AS source, geo.lat AS lat, geo.lon AS lon),
@@ -662,80 +789,9 @@ flattened_node_details AS (
   WHERE t.partition_date = '${DAY}'
 ),
 
-source_ip_address AS (
-  SELECT DISTINCT node.addr AS ip, t.ip_version
-  FROM `${PROJECT}.${DS}.transient_events_union` t,
-       UNNEST(t.node_details) AS node
-  WHERE t.partition_date = '${DAY}'
-),
-
-masked_ip_addresses_v4 AS (
-  SELECT ip, asn, ixp, mask, ixp_partition_date
-  FROM (
-    SELECT
-      m.ip, m.asn, m.ixp, m.mask, m.ixp_partition_date,
-      ROW_NUMBER() OVER (
-        PARTITION BY m.ip
-        ORDER BY
-          m.mask DESC,                    -- most-specific prefix wins
-          -- prefix overlap (two same-length prefixes, e.g. MOAS): prefer the
-          -- network with the largest CAIDA customer cone, then the smallest ASN,
-          -- so the pick is stable/deterministic instead of an arbitrary tie.
-          -- numberPrefixes, NOT numberAsns: numberAsns is 1 for nearly every
-          -- leaf network, so it tied constantly and threw the decision to the
-          -- smallest-ASN fallback. That is how 2402:8100::/32 (Vodafone Idea,
-          -- cone 747 prefixes) lost to Google's AS36040 (cone 80) on 36040 <
-          -- 38266. This is still a heuristic -- "bigger network wins" -- but it
-          -- discriminates, where numberAsns did not.
-          cam.cone.numberPrefixes DESC,
-          SAFE_CAST(m.asn AS INT64) ASC
-      ) AS rn
-    FROM (
-      SELECT ip, asn, ixp, mask, ixp_partition_date
-      FROM (
-        SELECT *, NET.SAFE_IP_FROM_STRING(ip) & NET.IP_NET_MASK(4, mask) AS network_bin
-        FROM source_ip_address, UNNEST(GENERATE_ARRAY(8, 32)) mask
-        WHERE BYTE_LENGTH(NET.SAFE_IP_FROM_STRING(ip)) = 4
-      )
-      JOIN extracted_prefixes USING (network_bin, mask)
-      WHERE extracted_prefixes.ip_version = 'v4'
-    ) m
-    LEFT JOIN closest_metadata cam ON CAST(m.asn AS STRING) = cam.asn
-  )
-  WHERE rn = 1
-),
-
-masked_ip_addresses_v6 AS (
-  SELECT ip, asn, ixp, mask, ixp_partition_date
-  FROM (
-    SELECT
-      m.ip, m.asn, m.ixp, m.mask, m.ixp_partition_date,
-      ROW_NUMBER() OVER (
-        PARTITION BY m.ip
-        ORDER BY
-          m.mask DESC,
-          cam.cone.numberPrefixes DESC,    -- overlap tie: largest customer cone
-          SAFE_CAST(m.asn AS INT64) ASC    -- then smallest ASN (deterministic)
-      ) AS rn
-    FROM (
-      SELECT ip, asn, ixp, mask, ixp_partition_date
-      FROM (
-        SELECT *, NET.SAFE_IP_FROM_STRING(ip) & NET.IP_NET_MASK(16, mask) AS network_bin
-        FROM source_ip_address, UNNEST(GENERATE_ARRAY(8, 128)) mask
-        WHERE BYTE_LENGTH(NET.SAFE_IP_FROM_STRING(ip)) = 16
-      )
-      JOIN extracted_prefixes USING (network_bin, mask)
-      WHERE extracted_prefixes.ip_version = 'v6'
-    ) m
-    LEFT JOIN closest_metadata cam ON CAST(m.asn AS STRING) = cam.asn
-  )
-  WHERE rn = 1
-),
-
+-- address -> ASN/IXP: resolved once for both directions in _addr_asn.
 masked_ip_addresses AS (
-  SELECT * FROM masked_ip_addresses_v4
-  UNION ALL
-  SELECT * FROM masked_ip_addresses_v6
+  SELECT * FROM _addr_asn
 ),
 
 node_with_prefix_matches AS (
@@ -864,21 +920,20 @@ node_with_geo_info AS (
       WHEN nwp.addr IS NULL OR nwp.addr = '*' THEN NULL
       WHEN nwp.associated_asn IS NULL THEN 'unannounced'
       WHEN hv.addr IS NOT NULL THEN hv.geo_source
-      WHEN geo.hostname IS NOT NULL THEN 'hoiho'
+      WHEN geo.basis IS NOT NULL THEN geo.basis  -- hoiho_only / _agree / _facility
       WHEN ip_geo.lat_ip_info IS NOT NULL THEN 'ipinfo'
       WHEN ip_geo.lat IS NOT NULL THEN 'ripe_ipmap'
       ELSE NULL
     END AS geo_source,
     CASE
       WHEN nwp.is_private OR nwp.ttl = 1 OR nwp.associated_asn IS NULL OR hv.addr IS NOT NULL THEN NULL
-      WHEN geo.hostname IS NOT NULL THEN NULL  -- HOIHO table has no partition_date
+      WHEN geo.basis IS NOT NULL THEN NULL  -- HOIHO table has no partition_date
       ELSE ip_geo.partition_date
     END AS geo_partition_date
   FROM node_with_prefix_matches nwp
-  -- deduped HOIHO geo lookup (see _rdns_geo); equijoin on the plain rdns_name
-  -- column replaces the per-hop REGEXP hostname join — identical result.
-  LEFT JOIN _rdns_geo geo
-    ON nwp.rdns_name = geo.rdns_name
+  -- admissible HOIHO row for this (address, hostname); see _hoiho_by_addr
+  LEFT JOIN _hoiho_by_addr geo
+    ON nwp.addr = geo.addr AND nwp.rdns_name = geo.rdns_name
   LEFT JOIN closest_geo_entry ip_geo
     ON nwp.addr = ip_geo.ip_address
   LEFT JOIN _dst_metro dm
@@ -918,71 +973,8 @@ reverse_flattened_node_details AS (
   WHERE t.partition_date = '${DAY}'
 ),
 
-reverse_source_ip_address AS (
-  SELECT DISTINCT node.hop_ip AS ip, t.ip_version
-  FROM `${PROJECT}.${DS}.transient_events_union` t,
-       UNNEST(t.reverse_node_details) AS node
-  WHERE t.partition_date = '${DAY}'
-),
-
-reverse_masked_ip_addresses_v4 AS (
-  SELECT ip, asn, ixp, mask, ixp_partition_date
-  FROM (
-    SELECT
-      m.ip, m.asn, m.ixp, m.mask, m.ixp_partition_date,
-      ROW_NUMBER() OVER (
-        PARTITION BY m.ip
-        ORDER BY
-          m.mask DESC,
-          cam.cone.numberPrefixes DESC,    -- overlap tie: largest customer cone
-          SAFE_CAST(m.asn AS INT64) ASC    -- then smallest ASN (deterministic)
-      ) AS rn
-    FROM (
-      SELECT ip, asn, ixp, mask, ixp_partition_date
-      FROM (
-        SELECT *, NET.SAFE_IP_FROM_STRING(ip) & NET.IP_NET_MASK(4, mask) AS network_bin
-        FROM reverse_source_ip_address, UNNEST(GENERATE_ARRAY(8, 32)) mask
-        WHERE BYTE_LENGTH(NET.SAFE_IP_FROM_STRING(ip)) = 4
-      )
-      JOIN extracted_prefixes USING (network_bin, mask)
-      WHERE extracted_prefixes.ip_version = 'v4'
-    ) m
-    LEFT JOIN closest_metadata cam ON CAST(m.asn AS STRING) = cam.asn
-  )
-  WHERE rn = 1
-),
-
-reverse_masked_ip_addresses_v6 AS (
-  SELECT ip, asn, ixp, mask, ixp_partition_date
-  FROM (
-    SELECT
-      m.ip, m.asn, m.ixp, m.mask, m.ixp_partition_date,
-      ROW_NUMBER() OVER (
-        PARTITION BY m.ip
-        ORDER BY
-          m.mask DESC,
-          cam.cone.numberPrefixes DESC,    -- overlap tie: largest customer cone
-          SAFE_CAST(m.asn AS INT64) ASC    -- then smallest ASN (deterministic)
-      ) AS rn
-    FROM (
-      SELECT ip, asn, ixp, mask, ixp_partition_date
-      FROM (
-        SELECT *, NET.SAFE_IP_FROM_STRING(ip) & NET.IP_NET_MASK(16, mask) AS network_bin
-        FROM reverse_source_ip_address, UNNEST(GENERATE_ARRAY(8, 128)) mask
-        WHERE BYTE_LENGTH(NET.SAFE_IP_FROM_STRING(ip)) = 16
-      )
-      JOIN extracted_prefixes USING (network_bin, mask)
-      WHERE extracted_prefixes.ip_version = 'v6'
-    ) m
-    LEFT JOIN closest_metadata cam ON CAST(m.asn AS STRING) = cam.asn
-  )
-  WHERE rn = 1
-),
-
 reverse_masked_ip_addresses AS (
-  SELECT * FROM reverse_masked_ip_addresses_v4
-  UNION ALL
-  SELECT * FROM reverse_masked_ip_addresses_v6
+  SELECT * FROM _addr_asn
 ),
 
 reverse_node_with_prefix_matches AS (
@@ -1081,22 +1073,21 @@ reverse_node_with_geo_info AS (
       WHEN nwp.addr IS NULL OR nwp.addr = '*' THEN NULL
       WHEN nwp.associated_asn IS NULL THEN 'unannounced'
       WHEN hv.addr IS NOT NULL THEN hv.geo_source
-      WHEN geo.hostname IS NOT NULL THEN 'hoiho'
+      WHEN geo.basis IS NOT NULL THEN geo.basis  -- hoiho_only / _agree / _facility
       WHEN ip_geo.lat_ip_info IS NOT NULL THEN 'ipinfo'
       WHEN ip_geo.lat IS NOT NULL THEN 'ripe_ipmap'
       ELSE NULL
     END AS geo_source,
     CASE
       WHEN nwp.is_private OR nwp.associated_asn IS NULL OR hv.addr IS NOT NULL THEN NULL
-      WHEN geo.hostname IS NOT NULL THEN NULL  -- HOIHO table has no partition_date
+      WHEN geo.basis IS NOT NULL THEN NULL  -- HOIHO table has no partition_date
       ELSE ip_geo.partition_date
     END AS geo_partition_date,
     nwp.hop_type
   FROM reverse_node_with_prefix_matches nwp
-  -- deduped HOIHO geo lookup (see _rdns_geo); equijoin on the plain rdns_name
-  -- column replaces the per-hop REGEXP hostname join — identical result.
-  LEFT JOIN _rdns_geo geo
-    ON nwp.rdns_name = geo.rdns_name
+  -- admissible HOIHO row for this (address, hostname); see _hoiho_by_addr
+  LEFT JOIN _hoiho_by_addr geo
+    ON nwp.addr = geo.addr AND nwp.rdns_name = geo.rdns_name
   LEFT JOIN closest_geo_entry ip_geo
     ON nwp.addr = ip_geo.ip_address
   LEFT JOIN _hop_geo_validation hv

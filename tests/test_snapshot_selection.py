@@ -102,12 +102,16 @@ def test_prefix_snapshot_is_chosen_per_source_and_recorded():
 
 
 def test_main_mapping_statement_is_untouched():
-    """It sits near BigQuery's planning limit; this change must not add CTEs to it."""
+    """It sits near BigQuery's planning limit; a change must not add CTEs to it.
+
+    52 -> 46 on 2026-11-24: the per-direction address -> ASN resolution (6 CTEs)
+    moved out into the _addr_asn temp table. Re-pin only downward.
+    """
     sql = _raw()
     a = sql.index("CREATE TEMP TABLE _mapping_result AS")
     b = sql.index("CREATE TEMP TABLE _src_metro", a)
     body = "\n".join(ln for ln in sql[a:b].splitlines() if not ln.lstrip().startswith("--"))
-    assert len(re.findall(r"^([a-z_0-9]+) AS \(", body, re.M)) == 52
+    assert len(re.findall(r"^([a-z_0-9]+) AS \(", body, re.M)) == 46
 
 
 # --- BigQuery, literal data only --------------------------------------------
