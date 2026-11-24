@@ -146,17 +146,26 @@ def query_hoiho(
             logger.warning("HOIHO batch %d failed: %s", start // batch_size + 1, exc)
             result.failed_batches += 1
             continue
-        if not isinstance(payload, dict) or "matches" not in payload:
+        # A batch with no match at all carries only a summary: the API omits
+        # "matches" rather than sending an empty list. So success is a summary
+        # that accounts for the whole batch, or a matches list.
+        body: dict[str, Any] = payload if isinstance(payload, dict) else {}
+        summary = body.get("summary") if isinstance(body.get("summary"), dict) else None
+        matches = body.get("matches")
+        requested = summary.get("hostnames_requested") if summary else None
+        ok = requested == len(batch) if requested is not None else isinstance(matches, list)
+        if not ok:
             logger.warning(
-                "HOIHO batch %d failed: HTTP %s", start // batch_size + 1, response.status_code
+                "HOIHO batch %d failed: HTTP %s, body %.200r",
+                start // batch_size + 1,
+                response.status_code,
+                payload,
             )
             result.failed_batches += 1
             continue
-        result.ruleset_date = (payload.get("summary") or {}).get(
-            "ruleset_date", result.ruleset_date
-        )
+        result.ruleset_date = (summary or {}).get("ruleset_date", result.ruleset_date)
         result.looked_up.update(batch)
-        for match in payload["matches"]:
+        for match in matches if isinstance(matches, list) else []:
             row = match_to_row(match)
             if row["hostname"]:
                 result.rows.append(row)

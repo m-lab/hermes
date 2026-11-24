@@ -150,3 +150,37 @@ def test_empty_input_makes_no_request():
     post, calls = _post_returning()
     result = lookup.query_hoiho([], post=post, sleep_seconds=0)
     assert calls == [] and result.looked_up == set() and result.rows == []
+
+
+def test_zero_match_batch_omits_matches_key_and_is_not_a_failure():
+    # Observed 2026-11-24 (staging run): when nothing in a batch matches, the API
+    # returns only a summary -- no "matches" key. 67 of 266 batches were miscounted
+    # as failures and their 670,009 hostnames would have been re-queried nightly.
+    post, _ = _post_returning(
+        _Resp(
+            200,
+            {
+                "summary": {
+                    "ruleset_date": "2024-08",
+                    "hostnames_requested": 2,
+                    "hostnames_matched": 0,
+                }
+            },
+        )
+    )
+    result = lookup.query_hoiho(["a.x", "b.x"], post=post, sleep_seconds=0)
+    assert result.failed_batches == 0
+    assert result.looked_up == {"a.x", "b.x"}
+    assert result.rows == [] and result.ruleset_date == "2024-08"
+
+
+def test_payload_without_summary_or_matches_is_a_failure():
+    post, _ = _post_returning(_Resp(200, {"error": "rate limited"}))
+    result = lookup.query_hoiho(["a.x"], post=post, sleep_seconds=0)
+    assert result.failed_batches == 1 and result.looked_up == set()
+
+
+def test_summary_count_mismatch_is_a_failure():
+    post, _ = _post_returning(_Resp(200, {"summary": {"hostnames_requested": 1}, "matches": []}))
+    result = lookup.query_hoiho(["a.x", "b.x"], post=post, sleep_seconds=0)
+    assert result.failed_batches == 1 and result.looked_up == set()
