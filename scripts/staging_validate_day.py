@@ -9,7 +9,12 @@ Stages:
   det    steps 02 and 03 twice back to back (saved as ``_<suffix>_r1`` / ``_r2``): a
          reproducibility check, since the two runs see the same inputs
   rest   steps 04, 05, 06 (+ temporal verdicts) and 07 once (saved as ``_<suffix>``)
+  hoiho  HOIHO refresh into hermes_staging.geolocation / hoiho_lookups only
   all    det then rest
+
+HOIHO A/B on identical 02/03 output (``--det-runs 1`` skips the repeat):
+  --stage det --det-runs 1 --suffix X; --stage rest --suffix hoiho_off;
+  --stage hoiho --suffix X; --stage rest --suffix hoiho_on
 
 Deliberately NOT ``hermes-pipeline --target staging``:
   * no step 01 -- staging's merged_download_upload is seeded from production with
@@ -53,24 +58,37 @@ STREAMED = (
 log = logging.getLogger("staging_validate")
 
 
-def main() -> None:
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+def build_params(day: dt.date) -> dict[str, object]:
+    """SQL parameters for ``day``, every target-routed table pointing at staging."""
+    return {
+        "ONE_WEEK_EARLIER": (day - dt.timedelta(days=union.BASELINE_DAYS)).isoformat(),
+        "DAY": day.isoformat(),
+        "DETECTION_GRANULARITY": "metro",
+        "DS": DS,
+        "METRO_POLYGONS": union.metro_polygons_for(DS),
+        "GEOLOCATION": union.geolocation_for(DS),
+    }
+
+
+def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawTextHelpFormatter)
     ap.add_argument("--date", required=True, help="analysis date (YYYY-MM-DD)")
     ap.add_argument("--suffix", required=True, help="suffix for the saved copies")
-    ap.add_argument("--stage", choices=("all", "det", "rest"), default="all")
-    args = ap.parse_args()
+    ap.add_argument("--stage", choices=("all", "det", "rest", "hoiho"), default="all")
+    ap.add_argument(
+        "--det-runs", type=int, choices=(1, 2), default=2, help="02+03 repetitions (det stage)"
+    )
+    return ap
+
+
+def main() -> None:
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    args = build_parser().parse_args()
     assert DS != union.DEFAULT_DATASET
 
     day = dt.date.fromisoformat(args.date)
     d = day.isoformat()
-    params = {
-        "ONE_WEEK_EARLIER": (day - dt.timedelta(days=union.BASELINE_DAYS)).isoformat(),
-        "DAY": d,
-        "DETECTION_GRANULARITY": "metro",
-        "DS": DS,
-        "METRO_POLYGONS": union.metro_polygons_for(DS),
-    }
+    params = build_params(day)
     client = bigquery.Client(project=PROJECT)
     started = dt.datetime.now(dt.UTC)
 
@@ -106,7 +124,7 @@ def main() -> None:
             time.sleep(300)
 
     if args.stage in ("all", "det"):
-        for r in ("r1", "r2"):
+        for r in ("r1", "r2")[: args.det_runs]:
             t0 = dt.datetime.now(dt.UTC)
             delete("anomaly_counts_union")
             run_sql("02_detect_anomalies_union.sql")
@@ -115,6 +133,11 @@ def main() -> None:
             run_sql("03_build_transient_events_union.sql")
             save("transient_events_union", f"{args.suffix}_{r}")
             log.info(f"=== 02+03 {r}: {billed_since(t0):.1f} GiB billed")
+
+    if args.stage == "hoiho":
+        t0 = dt.datetime.now(dt.UTC)
+        union._refresh_hoiho(d, PROJECT, DS)
+        log.info(f"=== HOIHO refresh: {billed_since(t0):.1f} GiB billed")
 
     if args.stage in ("all", "rest"):
         t0 = dt.datetime.now(dt.UTC)
