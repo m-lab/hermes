@@ -1,4 +1,4 @@
-CREATE OR REPLACE TABLE `${PROJECT}.hermes.geolocation` AS
+CREATE OR REPLACE TABLE `${GEOLOCATION}` AS
 
 WITH base AS (
   SELECT
@@ -6,7 +6,7 @@ WITH base AS (
     lat AS lat_key,
     lon AS lon_key,
     place AS place_key
-  FROM `${PROJECT}.hermes.geolocation`
+  FROM `${GEOLOCATION}`
 ),
 
 unique_lat_lon AS (

@@ -499,7 +499,7 @@ ranked AS (
         geo.lat ASC, geo.lon ASC, geo.hostname ASC
     ) AS rn
   FROM distinct_rdns r
-  LEFT JOIN `${PROJECT}.hermes.geolocation` geo
+  LEFT JOIN `${GEOLOCATION}` geo
     ON REGEXP_REPLACE(r.rdns_name, r'\.$', '') = REGEXP_REPLACE(geo.hostname, r'\.$', '')
 )
 SELECT rdns_name, lat, lon, place, clli, metro, cc, hostname

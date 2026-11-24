@@ -37,6 +37,7 @@ from hermes.pipeline.union import (
     PROJECT,
     STAGING_DATASET,
     delete_tables,
+    geolocation_for,
     metro_polygons_for,
 )
 
@@ -152,6 +153,23 @@ def refresh_lookups(client: bigquery.Client, dry_run: bool = False) -> None:
         logger.info("refreshed staging %s (%.2f GiB billed)", table, job.total_bytes_billed / 2**30)
 
 
+def refresh_reference_tables(client: bigquery.Client, dry_run: bool = False) -> None:
+    """Replace staging's copy of the reference tables enrichment WRITES.
+
+    Staging reads most of ``hermes.*`` from production as-is, but HOIHO writes
+    ``geolocation``, so a staging run needs its own copy to write into.
+    """
+    for dst, src in ((geolocation_for(STAGING_DATASET), geolocation_for(DEFAULT_DATASET)),):
+        sql = f"CREATE OR REPLACE TABLE `{dst}` AS SELECT * FROM `{src}`"
+        if dry_run:
+            job = client.query(sql, job_config=bigquery.QueryJobConfig(dry_run=True))
+            logger.info("[dry-run] refresh %s: %.2f GiB", dst, job.total_bytes_processed / 2**30)
+            continue
+        job = client.query(sql)
+        job.result()
+        logger.info("refreshed %s (%.2f GiB billed)", dst, job.total_bytes_billed / 2**30)
+
+
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     ap = argparse.ArgumentParser(description=__doc__)
@@ -179,6 +197,7 @@ def main() -> None:
     missing, present = plan(client)
     print(f"staging dataset: {PROJECT}.{STAGING_DATASET}")
     print(f"  metro polygons: {metro_polygons_for(STAGING_DATASET)}")
+    print(f"  geolocation:    {geolocation_for(STAGING_DATASET)}")
     print(f"  present: {len(present)}   missing: {len(missing)}")
     for t in missing:
         print(f"    MISSING  {t.split('.')[-1]}")
@@ -197,6 +216,7 @@ def main() -> None:
         )
         copy_input_partitions(client, start, end, dry_run=args.dry_run)
         refresh_lookups(client, dry_run=args.dry_run)
+        refresh_reference_tables(client, dry_run=args.dry_run)
 
 
 if __name__ == "__main__":

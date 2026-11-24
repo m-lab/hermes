@@ -21,7 +21,7 @@ and runs a first date range.
   (for the Python pipeline; a service-account key works too).
 - The pipeline environment: the Docker image (`docker build -t hermes-pipeline .`)
   or Python 3.14 with `pip install -e .`
-- `IPINFO_TOKEN` (required) and `HOIHO_TOKEN` (optional) for enrichment.
+- `IPINFO_TOKEN` for enrichment. (CAIDA's HOIHO API needs no token.)
 
 ```bash
 export HERMES_PROJECT=my-project      # used by every step below
@@ -35,7 +35,7 @@ scripts/init_project.sh "$HERMES_PROJECT"             # create them
 ```
 
 The script creates three datasets in the `US` multi-region (it has to match
-`measurement-lab`, because BigQuery cannot join across locations) and 27 empty
+`measurement-lab`, because BigQuery cannot join across locations) and 28 empty
 tables. It skips anything that already exists, so you can re-run it safely.
 Creating empty tables costs nothing.
 
@@ -49,7 +49,7 @@ order and types match production.
 |---|---|---|
 | `hermes_union` | `merged_download_upload`, `anomaly_counts_union`, `transient_events_union`, `events_with_as_and_geoloc`, `temporal_correlations`, `correlation_*`, `temporal_path_verdicts`, `events_explained_daily`, `giga_meter_measurements` | the pipeline itself (steps 01–07) |
 | `hermes` | `unified_ip_to_geoloc`, `unified_src_ip_to_geoloc`, `unified_ip_to_rdns` (and `_ipv6` variants) | the pipeline's enrichment stage (IPInfo, RIPE IPmap, ZDNS) |
-| `hermes` | `geolocation` | HOIHO router geolocation by rDNS hostname. **The current pipeline does not refresh it**: the HOIHO lookup is disabled, so in a new project it stays empty. Step 04 `LEFT JOIN`s it, so an empty table loses HOIHO router locations but drops no rows. |
+| `hermes` | `geolocation`, `hoiho_lookups` | the pipeline's enrichment stage: new rDNS hostnames are looked up in CAIDA HOIHO (IPv4 pass only). `hoiho_lookups` records every hostname asked, matched or not, so each is queried once. The first run in a new project looks up ~30 days of hostnames (about 2.5M in M-Lab's deployment, ~250 API requests). |
 | `hermes` | `unified_ip_to_as`, `as_metadata` | step 3 below |
 | `ix_data` | `ixp_members`, `ixp_members_ipv6` | step 3 below |
 | `hermes` | `metro_polygons_v2` | step 3 below |
@@ -116,7 +116,7 @@ the first 7 as warm-up (the pipeline warns about thin baselines):
 ```bash
 docker run --rm \
   -e HERMES_PROJECT \
-  -e IPINFO_TOKEN -e HOIHO_TOKEN \
+  -e IPINFO_TOKEN \
   -e GOOGLE_APPLICATION_CREDENTIALS=/app/credentials.json \
   -v /path/to/key.json:/app/credentials.json:ro \
   -v /data/hermes-cache:/app/cache \
@@ -143,7 +143,6 @@ GROUP BY partition_date ORDER BY partition_date;
   confirmed that M-Lab Discuss membership covers them; ask on the Discuss group
   if your account cannot see them.
 - `hermes.metro_polygons_v2` cannot yet be rebuilt from public inputs (see step 3).
-- `hermes.geolocation` (HOIHO) is not populated by the pipeline (see the table in step 1).
 - Without `giga_school_ips` the GIGA subset holds only `giga-meter` client tests.
   The rest of the pipeline is unaffected.
 - If production schemas change, re-export `scripts/schemas/` so new projects

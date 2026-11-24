@@ -80,7 +80,6 @@ cp /path/to/service-account-key.json /etc/hermes/
 cat > /etc/hermes/hermes.env <<EOF
 HERMES_PROJECT=your-gcp-project
 IPINFO_TOKEN=your-token-here
-HOIHO_TOKEN=your-token-here
 EOF
 
 chmod 600 /etc/hermes/hermes.env
@@ -164,14 +163,13 @@ All options from `hermes_pipeline_union.py` are passed through:
 |----------|----------|-------------|
 | `HERMES_PROJECT` | No | Google Cloud project that runs the BigQuery jobs and holds the HERMES datasets. Default `mlab-collaboration`. |
 | `IPINFO_TOKEN` | Yes | IPInfo API authentication token |
-| `HOIHO_TOKEN` | No | HOIHO geolocation API token |
 | `GOOGLE_APPLICATION_CREDENTIALS` | No | Path to service account JSON inside container. Not needed on GCE with attached SA. |
 
 ## Volume Mount
 
 | Container path | Purpose |
 |---|---|
-| `/app/cache` | **Required.** Persistent cache for IPInfo MMDB snapshots, RIPE IPMap CSVs, RouteViews BGP data, rDNS results, and HOIHO cache. Grows to several GB over time. |
+| `/app/cache` | **Required.** Persistent cache for IPInfo MMDB snapshots, RIPE IPMap CSVs, RouteViews BGP data, and rDNS results. (HOIHO lookups are cached in BigQuery, `hermes.hoiho_lookups`.) Grows to several GB over time. |
 
 ## Troubleshooting
 

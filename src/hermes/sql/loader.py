@@ -40,6 +40,8 @@ DEFAULT_PARAMS: dict[str, object] = {
     "PROJECT": settings.PROJECT,
     "DS": "hermes_union",
     "METRO_POLYGONS": f"{settings.PROJECT}.hermes.metro_polygons_v2",
+    # HOIHO router geolocation; union.geolocation_for() routes staging to its own copy.
+    "GEOLOCATION": f"{settings.PROJECT}.hermes.geolocation",
 }
 
 

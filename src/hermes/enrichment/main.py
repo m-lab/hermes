@@ -14,8 +14,7 @@ from google.cloud import bigquery
 from tqdm import tqdm
 
 from hermes import settings
-from hermes.enrichment.hoiho.enricher import HOIHOEnricher
-from hermes.enrichment.hoiho.enricher_ipv6 import HOIHOEnricherIPv6
+from hermes.enrichment.hoiho.refresh import refresh_hoiho_geolocation
 
 # IPv4 enrichers
 from hermes.enrichment.ipinfo.enricher import IPInfoEnricher
@@ -88,7 +87,6 @@ class HermesEnrichment:
             logger.info("Initializing IPv6 enrichers")
             self.ipinfo = IPInfoEnricherIPv6(project_id, snapshot_date=snapshot_date)
             self.zdns = ZDNSEnricherIPv6(project_id)
-            self.hoiho = HOIHOEnricherIPv6(project_id)
             self.ripe_ipmap = RIPEIPMapEnricher(project_id)  # Always use the same RIPEIPMapEnricher
             self.routeviews = RouteViewsEnricherIPv6(project_id)
             self.ixp_collector = IXPCollectorIPv6(project_id)
@@ -96,7 +94,6 @@ class HermesEnrichment:
             logger.info("Initializing IPv4 enrichers")
             self.ipinfo = IPInfoEnricher(project_id, snapshot_date=snapshot_date)
             self.zdns = ZDNSEnricher(project_id)
-            self.hoiho = HOIHOEnricher(project_id)
             self.ripe_ipmap = RIPEIPMapEnricher(project_id)
             self.routeviews = RouteViewsEnricher(project_id)
 
@@ -352,133 +349,6 @@ class HermesEnrichment:
             logger.info(f"Uploaded {uploaded:,} of {total:,} candidate IPs; resolving metros")
             self._update_metro_for_geolocation_table(date, source)
 
-    def process_hoiho_geolocation(self, date) -> None:
-        """Process HOIHO geolocation data based on rDNS hostnames."""
-        logger.info(f"Processing {'IPv6' if self.ipv6 else 'IPv4'} HOIHO geolocation data")
-
-        # take one month before today as our limit for the rDNS data
-        month_ago = (datetime.strptime(date, "%Y-%m-%d") - timedelta(days=30)).strftime("%Y-%m-%d")
-        # Get rDNS data from BigQuery
-        query = f"""
-        SELECT DISTINCT ip_address, hostname
-        FROM `{self.tables["rdns"]}` 
-        WHERE partition_date > '{month_ago}' AND hostname IS NOT NULL
-        """
-        df_query = self.client.query(query).to_dataframe()
-
-        # Convert to rDNS cache (mapping of ip_address to hostname)
-        rdns_cache = {}
-        for _, row in df_query.iterrows():
-            ip = row["ip_address"]
-            hostname = row["hostname"][:-1]  # Remove trailing dot
-            rdns_cache[ip] = hostname
-
-        logger.info(f"Loaded rDNS cache with {len(rdns_cache)} IP addresses")
-
-        # Get HOIHO data
-        # self.hoiho.enrich_hoiho_info(rdns_cache)
-        normalized_cache = {}
-        for hostname, match_data in self.hoiho.hoiho_cache.items():
-            normalized_hostname = hostname.strip().lower().rstrip(".")
-            if normalized_hostname:
-                normalized_cache[normalized_hostname] = match_data
-        # Process HOIHO data
-
-        # Get existing hostnames from BigQuery table
-        existing_hostnames = self._get_existing_hoiho_hostnames()
-        logger.info(f"Found {len(existing_hostnames)} existing hostnames in table")
-
-        # Normalize existing hostnames for comparison
-        normalized_existing = {h.strip().lower().rstrip(".") for h in existing_hostnames if h}
-
-        # Find hostnames in cache that are not in the table
-        missing_hostnames = set(normalized_cache.keys()) - normalized_existing
-        logger.info(f"Found {len(missing_hostnames)} hostnames in cache that are not in the table")
-
-        if not missing_hostnames:
-            logger.info("No new HOIHO data to insert - all cache entries are already in the table")
-            return
-
-        # Process HOIHO data for missing entries (first pass - without metro)
-        data_to_insert = []
-        for hostname in missing_hostnames:
-            match_data = normalized_cache[hostname]
-
-            # Map fields according to new schema
-            processed_data = {
-                "hostname": hostname,
-                "lat": match_data.get("lat"),
-                "lon": match_data.get("lng"),  # Map 'lng' from HOIHO to 'lon' in schema
-                "place": match_data.get("place"),
-                "cc": match_data.get("cc"),
-                "state": match_data.get("st"),  # Map 'st' from HOIHO to 'state' in schema
-                "metro": None,  # Will be computed below
-                "code": None,  # Will be extracted from hostname if needed
-                "locode": match_data.get("locode"),
-                "domain": None,  # Will be extracted from hostname if needed
-                "match_strs": match_data.get("match_strs", []),  # REPEATED field
-                "match_meanings": match_data.get("match_meanings", []),  # REPEATED field
-                "clli": match_data.get("clli"),
-            }
-
-            # Handle None values for nullable fields
-            # For REPEATED fields, ensure they're lists (empty list if None)
-            if processed_data["match_strs"] is None:
-                processed_data["match_strs"] = []
-            if processed_data["match_meanings"] is None:
-                processed_data["match_meanings"] = []
-
-            # Add country code to place if both exist
-            if processed_data["place"] and processed_data["cc"]:
-                processed_data["place"] = f"{processed_data['place']}-{processed_data['cc']}"
-
-            data_to_insert.append(processed_data)
-
-        logger.info(f"Prepared {len(data_to_insert)} records to insert")
-
-        # Insert data in batches
-        if data_to_insert:
-            self._upload_hoiho_geolocation_data(data_to_insert)
-            self._update_metro_for_hoiho_geolocation_table()
-        else:
-            logger.info("No new HOIHO data to insert")
-
-    def _update_metro_for_hoiho_geolocation_table(self) -> None:
-        """Update metro field for all entries in geolocation table using spatial join."""
-        logger.info(f"Computing metro for {'IPv6' if self.ipv6 else 'IPv4'} geolocation table")
-
-        # Resolve the metro SQL from packaged data (hermes.sql.paths).
-        sql_file = paths.query_path("enrich_geolocation_add_metro.sql")
-        if not sql_file.exists():
-            logger.error(f"SQL file not found: {sql_file}")
-            return
-
-        # Read the SQL query
-        query = sql_file.read_text()
-
-        # The metro polygon table is named once, in hermes.sql.loader.DEFAULT_PARAMS.
-        # These files are read directly rather than through loader.load_query, so
-        # substitute the placeholders here and keep the two paths in agreement.
-        # Substitute BEFORE retargeting: the retarget matches the rendered name.
-        query = Template(query).safe_substitute(loader.DEFAULT_PARAMS)
-
-        # Replace table name for IPv6 if needed
-        table_name = f"hermes.geolocation{'_ipv6' if self.ipv6 else ''}"
-        query = query.replace(
-            f"`{settings.PROJECT}.hermes.geolocation`", f"`{self.project_id}.{table_name}`"
-        )
-
-        try:
-            logger.info("Executing metro computation query...")
-            job = self.client.query(query)
-            job.result()  # Wait for the query to complete
-            logger.info(
-                f"Successfully computed metro for {'IPv6' if self.ipv6 else 'IPv4'} geolocation table"
-            )
-        except Exception as e:
-            logger.error(f"Error computing metro: {e}")
-            raise
-
     def _update_metro_for_geolocation_table(self, date: str, source: str = "topology") -> None:
         """Resolve ``metro`` for the rows just inserted, scoped to one partition.
 
@@ -535,45 +405,6 @@ class HermesEnrichment:
         except Exception as e:
             logger.error(f"Error computing metro: {e}")
             raise
-
-    def _upload_hoiho_geolocation_data(self, data: list[dict[str, Any]]) -> None:
-        """Upload HOIHO geolocation data to BigQuery."""
-        table_ref = self.client.dataset("hermes").table("geolocation")
-
-        _schema = [
-            bigquery.SchemaField("hostname", "STRING"),
-            bigquery.SchemaField("lat", "FLOAT"),
-            bigquery.SchemaField("lon", "FLOAT"),
-            bigquery.SchemaField("place", "STRING"),
-            bigquery.SchemaField("cc", "STRING"),
-            bigquery.SchemaField("state", "STRING"),
-            bigquery.SchemaField("metro", "STRING"),
-            bigquery.SchemaField("code", "STRING"),
-            bigquery.SchemaField("locode", "STRING"),
-            bigquery.SchemaField("domain", "STRING"),
-            bigquery.SchemaField("match_strs", "STRING", mode="REPEATED"),
-            bigquery.SchemaField("match_meanings", "STRING", mode="REPEATED"),
-            bigquery.SchemaField("clli", "STRING"),
-        ]
-
-        # Insert in batches of 10000
-        batch_size = 10000
-        for i in range(0, len(data), batch_size):
-            batch = data[i : i + batch_size]
-            errors = self.client.insert_rows_json(table_ref, batch)
-            if not errors:
-                logger.info(f"Batch {i // batch_size + 1} inserted successfully")
-            else:
-                logger.error(f"Batch {i // batch_size + 1} encountered errors: {errors}")
-
-    def _get_existing_hoiho_hostnames(self) -> set:
-        """Get existing hostnames from the HOIHO geolocation table."""
-        query = f"""
-        SELECT hostname
-        FROM `{self.tables["geolocation"]}`
-        """
-        results = self.client.query(query).to_dataframe()
-        return set(results["hostname"])
 
     def _get_geolocation_data(self, ip: str) -> dict[str, Any]:
         """Get geolocation data from IPInfo and RIPE IPMap sources (merge whatever is available)."""
@@ -786,8 +617,17 @@ def main():
             logger.info(f"Step 3: Processing {'IPv6' if args.ipv6 else 'IPv4'} rDNS lookups")
             enrichment.zdns.process_rdns(date)
 
-            logger.info(f"Step 4: Processing {'IPv6' if args.ipv6 else 'IPv4'} HOIHO geolocation")
-            enrichment.process_hoiho_geolocation(date)
+            if args.ipv6:
+                logger.info("Step 4: Skipping HOIHO (IPv4 only; keyed by hostname)")
+            else:
+                logger.info("Step 4: Processing HOIHO geolocation")
+                refresh_hoiho_geolocation(
+                    enrichment.client,
+                    date,
+                    rdns_table=enrichment.tables["rdns"],
+                    geolocation_table=enrichment.tables["geolocation"],
+                    lookups_table=f"{enrichment.project_id}.hermes.hoiho_lookups",
+                )
         else:
             logger.info(f"Steps 3-4: Skipping rDNS/HOIHO for {date} (>90 days in the past)")
 

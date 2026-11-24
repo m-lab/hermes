@@ -1,0 +1,18 @@
+[
+  {
+    "name": "hostname",
+    "type": "STRING"
+  },
+  {
+    "name": "matched",
+    "type": "BOOLEAN"
+  },
+  {
+    "name": "ruleset_date",
+    "type": "STRING"
+  },
+  {
+    "name": "looked_up_at",
+    "type": "TIMESTAMP"
+  }
+]

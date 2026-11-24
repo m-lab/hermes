@@ -1,7 +1,8 @@
 # dataset	table	partition_field	clustering	require_partition_filter	populated_by
 # Generated 2026-11-23 from the live mlab-collaboration tables (bigquery get_table).
 hermes	as_metadata	-	-	false	refresh_topology_tables --as-metadata (CAIDA AS-rank + PeeringDB; monthly)
-hermes	geolocation	-	-	false	not refreshed: HOIHO lookup disabled in enrichment; stays empty (step 04 LEFT JOINs it)
+hermes	geolocation	-	-	false	pipeline enrichment (HOIHO router geolocation, IPv4 pass)
+hermes	hoiho_lookups	-	-	false	pipeline enrichment (HOIHO lookup cache: every hostname asked, hit or miss)
 hermes	metro_polygons_v2	-	country_code,state_code	false	cleaning_polygons build --upload (one-time)
 hermes	site_to_state	-	-	false	init_project.sh loads scripts/schemas/data/hermes.site_to_state.csv
 hermes	unified_ip_to_as	-	-	false	refresh_topology_tables (RouteViews pfx2as; daily)

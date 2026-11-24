@@ -13,6 +13,7 @@ from google.auth import default
 from google.cloud import bigquery
 
 from hermes import settings
+from hermes.enrichment.hoiho.refresh import refresh_hoiho_geolocation
 from hermes.enrichment.main import HermesEnrichment
 from hermes.pipeline.tomography import run_tomography
 from hermes.sql import loader
@@ -113,9 +114,23 @@ def dataset_for_target(target: str) -> str:
         ) from None
 
 
+def _reference_dataset(dataset: str) -> str:
+    """Where a target's own copies of reference tables live (``hermes`` for prod)."""
+    return "hermes_staging" if dataset == STAGING_DATASET else "hermes"
+
+
 def metro_polygons_for(dataset: str) -> str:
     """Polygon table matching the dataset, so staging never reads prod geometry."""
-    return f"{PROJECT}.{'hermes_staging' if dataset == STAGING_DATASET else 'hermes'}.metro_polygons_v2"
+    return f"{PROJECT}.{_reference_dataset(dataset)}.metro_polygons_v2"
+
+
+def geolocation_for(dataset: str) -> str:
+    """HOIHO geolocation table matching the dataset.
+
+    Enrichment writes it and step 04 reads it, so a staging run must use its own
+    copy (seeded by ``init_staging --copy-inputs``) or it would mutate production.
+    """
+    return f"{PROJECT}.{_reference_dataset(dataset)}.geolocation"
 
 
 def _t(table: str, dataset: str = DEFAULT_DATASET) -> str:
@@ -840,6 +855,32 @@ def execute_query(query: str, project_id: str, description: str = "") -> bigquer
     return query_job
 
 
+#: HOIHO reads this many days of reverse DNS. The rDNS table is not partitioned, so
+#: the window does not change the scan; it only bounds which hostnames count as
+#: current. The lookup cache keeps each hostname to one API call regardless.
+HOIHO_LOOKBACK_DAYS = 30
+#: Older dates skip rDNS and HOIHO: lookups today say nothing about names then.
+RDNS_MAX_AGE_DAYS = 90
+
+
+def _rdns_is_current(date_str: str) -> bool:
+    cutoff = (datetime.today() - timedelta(days=RDNS_MAX_AGE_DAYS)).strftime("%Y-%m-%d")
+    return date_str >= cutoff
+
+
+def _refresh_hoiho(date_str: str, project_id: str, dataset: str) -> None:
+    """HOIHO router geolocation into the target's geolocation table (IPv4 only)."""
+    reference = _reference_dataset(dataset)
+    refresh_hoiho_geolocation(
+        bigquery.Client(project=project_id),
+        date_str,
+        rdns_table=f"{PROJECT}.hermes.unified_ip_to_rdns",
+        geolocation_table=geolocation_for(dataset),
+        lookups_table=f"{PROJECT}.{reference}.hoiho_lookups",
+        lookback_days=HOIHO_LOOKBACK_DAYS,
+    )
+
+
 def run_enrichment(
     date_str: str,
     project_id: str,
@@ -889,6 +930,10 @@ def run_enrichment(
             f"{dataset} is not production, and enrichment writes the shared hermes.* "
             "reference tables. Staging reads them as they are."
         )
+        # Except HOIHO, which writes only the target's own geolocation copy, so a
+        # HOIHO change can be compared against production before it ships.
+        if source == "topology" and _rdns_is_current(date_str):
+            _refresh_hoiho(date_str, project_id, dataset)
         return
 
     union_transient_table = f"{PROJECT}.{dataset}.transient_events_union"
@@ -932,17 +977,15 @@ def run_enrichment(
 
         # Skip for dates >90 days in the past: lookups would not return the
         # hostnames that were valid then.
-        cutoff_str = (datetime.today() - timedelta(days=90)).strftime("%Y-%m-%d")
-        if date_str >= cutoff_str:
-            if ipv6:
-                logger.info(
-                    f"[enrichment] Skipping rDNS/HOIHO for {date_str} (IPv6 data is too large for lookups to be useful)"
-                )
-            else:
-                enricher.zdns.process_rdns(date_str, lookback_days=lookback_days)
-            enricher.process_hoiho_geolocation(date_str)
-        else:
+        if not _rdns_is_current(date_str):
             logger.info(f"[enrichment] Skipping rDNS/HOIHO for {date_str} (>90 days in the past)")
+        elif ipv6:
+            # The IPv6 rDNS table is not refreshed, and HOIHO is keyed by hostname,
+            # so the IPv4 pass covers it.
+            logger.info(f"[enrichment] Skipping rDNS/HOIHO for {date_str} (IPv6)")
+        else:
+            enricher.zdns.process_rdns(date_str, lookback_days=lookback_days)
+            _refresh_hoiho(date_str, project_id, dataset)
 
         logger.info(f"[enrichment] Finished {label} enrichment for {date_str}")
 
@@ -963,6 +1006,7 @@ def _run_sql_steps(
         "DETECTION_GRANULARITY": detection_granularity,
         "DS": dataset,
         "METRO_POLYGONS": metro_polygons_for(dataset),
+        "GEOLOCATION": geolocation_for(dataset),
     }
     step_output_tables = sql_file_to_output_table(dataset)
 

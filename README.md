@@ -56,7 +56,7 @@ HERMES reads M-Lab's measurement data from BigQuery and writes its results back 
 
 **What works without any cloud access:** the offline test suite, which covers the statistical UDFs, golden SQL/Python fixtures and query rendering: `PYTHONPATH=src pytest -m "not bq" tests`.
 
-**Setting up a fresh project:** HERMES does not create its own tables. [`docs/initial_configuration.md`](docs/initial_configuration.md) walks through it, and [`scripts/init_project.sh`](scripts/init_project.sh) creates the three datasets and 27 tables from schemas exported from M-Lab's deployment. One input is not yet reproducible from public data: the metro polygon table (`hermes.metro_polygons_v2`) is built from M-Lab tables that are not public.
+**Setting up a fresh project:** HERMES does not create its own tables. [`docs/initial_configuration.md`](docs/initial_configuration.md) walks through it, and [`scripts/init_project.sh`](scripts/init_project.sh) creates the three datasets and 28 tables from schemas exported from M-Lab's deployment. One input is not yet reproducible from public data: the metro polygon table (`hermes.metro_polygons_v2`) is built from M-Lab tables that are not public.
 
 The pipeline also reads `measurement-lab.revtr_raw.revtr1` and `measurement-lab.autojoin_autoload_v2_ndt.scamper2_union`. We have not confirmed that Discuss-group membership covers them; if your account cannot see them, ask on the Discuss group.
 
@@ -74,7 +74,6 @@ cp /path/to/service-account-key.json /etc/hermes/
 cat > /etc/hermes/hermes.env <<'EOF'
 HERMES_PROJECT=your-gcp-project   # see "Data access" above
 IPINFO_TOKEN=your-token-here
-HOIHO_TOKEN=your-token-here
 EOF
 
 # 3. Run (defaults to the last 2 days — ideal for a daily cron)

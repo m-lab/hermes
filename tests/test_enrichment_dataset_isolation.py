@@ -63,11 +63,11 @@ def test_run_enrichment_skips_rdns_and_hoiho_for_clients():
 
     after = src[src.index(marker) :]
     guard = after[: after.index("continue")]
-    assert "process_rdns" not in guard and "process_hoiho" not in guard, (
+    assert "process_rdns" not in guard and "_refresh_hoiho" not in guard, (
         "client branch must reach `continue` without running rDNS/HOIHO"
     )
     # And the calls must still exist for topology.
-    assert "process_rdns" in src and "process_hoiho_geolocation" in src
+    assert "process_rdns" in src and "_refresh_hoiho" in src
 
 
 # 3. HermesEnrichment writes the shared `hermes.*` reference tables whatever the
