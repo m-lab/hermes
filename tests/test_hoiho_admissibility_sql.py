@@ -50,6 +50,20 @@ def test_every_hoiho_join_goes_through_the_admissibility_table():
     assert "JOIN _rdns_geo geo" not in sql
 
 
+def test_rtt_evidence_is_computed_once_and_shared():
+    # Refinement 1 (2026-11-25): admissibility needs the same per-(address, site)
+    # RTT evidence as validation, so it is a temp table read by both.
+    sql = _step04()
+    assert "CREATE TEMP TABLE _hop_site_rtt" in sql
+    assert sql.count("UNNEST(t.node_details) AS n\n") == 1
+    hoiho_stmt = sql[sql.index("CREATE TEMP TABLE _hoiho_by_addr") :]
+    hoiho_stmt = hoiho_stmt[: hoiho_stmt.index(";\n")]
+    assert "_hop_site_rtt" in hoiho_stmt
+    validation = sql[sql.index("CREATE TEMP TABLE _hop_geo_validation") :]
+    validation = validation[: validation.index(";\n")]
+    assert "_hop_site_rtt" in validation and "rtt_refutes_location(" in validation
+
+
 def test_geo_source_names_the_coordinate_provenance():
     sql = _step04()
     assert "THEN 'hoiho'" not in sql, "bare 'hoiho' label: use the admissibility basis"
@@ -126,23 +140,47 @@ def test_facility_match_tolerates_null_facilities(ask):
 
 
 BASIS = [
-    # hoiho lat/lon, ipinfo lat/lon, pool, facility -> basis
-    ("45.46, 9.19", "NULL, NULL", "FALSE", "FALSE", "hoiho_only"),
-    ("47.61, -122.33", "47.45, -122.30", "FALSE", "FALSE", "hoiho_agree"),
-    ("45.46, 9.19", "11.59, 43.15", "FALSE", "TRUE", "hoiho_facility"),
-    ("45.46, 9.19", "11.59, 43.15", "FALSE", "FALSE", None),
-    ("45.46, 9.19", "NULL, NULL", "TRUE", "TRUE", None),
-    ("NULL, NULL", "11.59, 43.15", "FALSE", "TRUE", None),
+    # hoiho lat/lon, ipinfo lat/lon, pool, facility, rtt_refuted -> basis
+    ("45.46, 9.19", "NULL, NULL", "FALSE", "FALSE", "FALSE", "hoiho_only"),
+    ("47.61, -122.33", "47.45, -122.30", "FALSE", "FALSE", "FALSE", "hoiho_agree"),
+    ("45.46, 9.19", "11.59, 43.15", "FALSE", "TRUE", "FALSE", "hoiho_facility"),
+    ("45.46, 9.19", "11.59, 43.15", "FALSE", "FALSE", "FALSE", None),
+    ("45.46, 9.19", "NULL, NULL", "TRUE", "TRUE", "FALSE", None),
+    ("NULL, NULL", "11.59, 43.15", "FALSE", "TRUE", "FALSE", None),
+    # Refinement 1: facility corroboration does not survive an RTT refutation
+    # (he.net fmt1 -> San Mateo, 34.5 ms from Stavanger)...
+    ("37.56, -122.32", "55.68, 12.57", "FALSE", "TRUE", "TRUE", None),
+    # ...while agreement and sole-source keep their old behaviour.
+    ("47.61, -122.33", "47.45, -122.30", "FALSE", "FALSE", "TRUE", "hoiho_agree"),
+    ("45.46, 9.19", "NULL, NULL", "FALSE", "FALSE", "TRUE", "hoiho_only"),
 ]
 
 
 @pytest.mark.bq
-@pytest.mark.parametrize("hoiho,ipinfo,pool,facility,expected", BASIS)
-def test_basis(ask, hoiho, ipinfo, pool, facility, expected):
+@pytest.mark.parametrize("hoiho,ipinfo,pool,facility,refuted,expected", BASIS)
+def test_basis(ask, hoiho, ipinfo, pool, facility, refuted, expected):
     got = ask(
         "hoiho_basis(CAST({} AS FLOAT64), CAST({} AS FLOAT64), CAST({} AS FLOAT64), "
-        "CAST({} AS FLOAT64), {}, {})".format(
-            *hoiho.split(", "), *ipinfo.split(", "), pool, facility
+        "CAST({} AS FLOAT64), {}, {}, {})".format(
+            *hoiho.split(", "), *ipinfo.split(", "), pool, facility, refuted
         )
     )
     assert got == expected
+
+
+REFUTE = [
+    # q10 ms, location lat/lon, site lat/lon -> refuted
+    (34.5, "37.56, -122.32", "58.88, 5.64", True),  # he.net fmt1 at San Mateo, from Stavanger
+    (34.5, "55.68, 12.57", "58.88, 5.64", False),  # IPinfo's Copenhagen, same evidence
+    (1.0, "44.98, -93.27", "25.79, -80.29", True),  # GTT min1 at Minneapolis, from Miami
+    (1.0, "25.77, -80.19", "25.79, -80.29", False),  # IPinfo's Miami
+    (0.4, "46.66, -123.80", "47.45, -122.30", True),  # msn stb -> South Bend WA, 143 km
+]
+
+
+@pytest.mark.bq
+@pytest.mark.parametrize("q10,loc,site,expected", REFUTE)
+def test_rtt_refutes_location(ask, q10, loc, site, expected):
+    lat, lon = loc.split(", ")
+    slat, slon = site.split(", ")
+    assert ask(f"rtt_refutes_location({q10}, {lat}, {lon}, {slat}, {slon})") is expected

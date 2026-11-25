@@ -27,13 +27,20 @@ def test_validation_pass_runs_before_the_main_statement():
         "CREATE TEMP TABLE _mapping_result"
     )
     v = _block(sql, "CREATE TEMP TABLE _hop_geo_validation", "CREATE TEMP TABLE _mapping_result")
-    # per-hop bound: 200 km/ms (RTT * 100 km one way) with a fixed 100 km slack
-    assert "q.rtt_q10 * 100" in v and "/ 1000 - 100" in v
+    # per-hop bound: 200 km/ms (RTT * 100 km one way) with a fixed 100 km slack.
+    # Since 2026-11-25 the formula lives in a UDF shared with the HOIHO
+    # admissibility check, and the evidence in _hop_site_rtt; pin both homes.
+    assert "rtt_refutes_location(q.rtt_q10, c.lat, c.lon, q.site_lat, q.site_lon)" in v
+    udf = loader.paths.udf_path("hoiho_admissibility").read_text()
+    bound = udf[udf.index("CREATE TEMP FUNCTION rtt_refutes_location") :]
+    assert "rtt_q10 * 100" in bound and "/ 1000 - 100" in bound
     # robust evidence: exact 10th percentile over >= 3 traceroutes per (address, site)
-    assert "HAVING COUNT(*) >= 3" in v
-    assert "ORDER BY rtts)[OFFSET(CAST(FLOOR(0.1 * (COUNT(*) - 1)) AS INT64))]" in v
+    e = _block(sql, "CREATE TEMP TABLE _hop_site_rtt", "CREATE TEMP TABLE _hoiho_by_addr")
+    assert "_hop_site_rtt" in v
+    assert "HAVING COUNT(*) >= 3" in e
+    assert "ORDER BY rtts)[OFFSET(CAST(FLOOR(0.1 * (COUNT(*) - 1)) AS INT64))]" in e
     assert "WHEN ns.s.rtt_q10 <= 1.5 THEN 'server_proximity'" in v
-    assert "APPROX_" not in v  # deterministic
+    assert "APPROX_" not in v and "APPROX_" not in e  # deterministic
 
 
 def test_both_paths_apply_the_decision_and_never_geolocate_unannounced_space():

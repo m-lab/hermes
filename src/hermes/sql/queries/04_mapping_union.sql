@@ -588,11 +588,35 @@ SELECT * FROM v4
 UNION ALL
 SELECT * FROM v6;
 
+-- 5b0) Per-(address, M-Lab site) RTT evidence, forward hops only: the exact,
+--    deterministic 10th-percentile RTT over >= 3 traceroutes from that site, plus
+--    one hostname per address. Read by the HOIHO admissibility check (5c) and by
+--    _hop_geo_validation (5b), so both judge a location on the same evidence.
+CREATE TEMP TABLE _hop_site_rtt AS
+WITH obs AS (
+  SELECT t.dst_site, t.dst_lat, t.dst_lon, n.addr, n.rdns_name, n.rtts,
+    MIN(n.rdns_name) OVER (PARTITION BY n.addr) AS addr_rdns
+  FROM `${PROJECT}.${DS}.transient_events_union` t, UNNEST(t.node_details) AS n
+  WHERE t.partition_date = '${DAY}'
+    AND n.ttl > 1 AND n.addr != '*' AND n.rtts > 0
+    AND t.dst_lat IS NOT NULL AND t.dst_lon IS NOT NULL
+)
+SELECT
+  addr, dst_site,
+  MIN(dst_lat) AS site_lat,
+  MIN(dst_lon) AS site_lon,
+  ARRAY_AGG(rtts ORDER BY rtts)[OFFSET(CAST(FLOOR(0.1 * (COUNT(*) - 1)) AS INT64))] AS rtt_q10,
+  ANY_VALUE(addr_rdns) AS addr_rdns
+FROM obs
+GROUP BY addr, dst_site
+HAVING COUNT(*) >= 3;
+
 -- 5c) Which HOIHO row may each hop use? One row per (address, hostname) whose
 --    hostname HOIHO matched, kept only when admissible (udfs/hoiho_admissibility):
 --    * with coordinates: the only location, within 100 km of the IPinfo/RIPE one,
---      or in a city where the hop's AS has a PeeringDB facility -- never for a
---      hostname naming an address pool. `basis` says which, and becomes geo_source.
+--      or in a city where the hop's AS has a PeeringDB facility AND no site's RTT
+--      refutes it -- never for a hostname naming an address pool. `basis` says
+--      which, and becomes geo_source.
 --    * without coordinates (CLLI/country-only, most HOIHO rows): kept for its
 --      labels when its country does not contradict the IPinfo/RIPE one. basis is
 --      NULL: the coordinates, and so geo_source, come from IPinfo/RIPE.
@@ -610,6 +634,14 @@ WITH pairs AS (
   JOIN _closest_rdns rdns ON rdns.ip_address = reverse_node.hop_ip
   WHERE t.partition_date = '${DAY}' AND rdns.hostname IS NOT NULL
 ),
+refuted AS (
+  SELECT p.addr, p.rdns_name,
+    LOGICAL_OR(rtt_refutes_location(q.rtt_q10, g.lat, g.lon, q.site_lat, q.site_lon)) AS rtt_refuted
+  FROM pairs p
+  JOIN _rdns_geo g ON g.rdns_name = p.rdns_name AND g.lat IS NOT NULL AND g.lon IS NOT NULL
+  JOIN _hop_site_rtt q ON q.addr = p.addr
+  GROUP BY p.addr, p.rdns_name
+),
 scored AS (
   SELECT
     p.addr, p.rdns_name,
@@ -618,16 +650,18 @@ scored AS (
     IF(ip.lat_ip_info IS NOT NULL AND ip.lon_ip_info IS NOT NULL, ip.lat_ip_info, ip.lat) AS alt_lat,
     IF(ip.lat_ip_info IS NOT NULL AND ip.lon_ip_info IS NOT NULL, ip.lon_ip_info, ip.lon) AS alt_lon,
     COALESCE(ip.country_ip_info, ip.country) AS alt_cc,
-    hoiho_facility_match(g.place, cam.facilities.city_cc) AS facility
+    hoiho_facility_match(g.place, cam.facilities.city_cc) AS facility,
+    r.rtt_refuted
   FROM pairs p
   JOIN _rdns_geo g ON g.rdns_name = p.rdns_name AND g.hostname IS NOT NULL
   LEFT JOIN _closest_geo ip ON ip.ip_address = p.addr
   LEFT JOIN _addr_asn a ON a.ip = p.addr
   LEFT JOIN _closest_as_metadata cam ON cam.asn = CAST(a.asn AS STRING)
+  LEFT JOIN refuted r ON r.addr = p.addr AND r.rdns_name = p.rdns_name
 )
-SELECT * EXCEPT (pool, alt_lat, alt_lon, alt_cc, facility)
+SELECT * EXCEPT (pool, alt_lat, alt_lon, alt_cc, facility, rtt_refuted)
 FROM (
-  SELECT *, hoiho_basis(lat, lon, alt_lat, alt_lon, pool, facility) AS basis
+  SELECT *, hoiho_basis(lat, lon, alt_lat, alt_lon, pool, facility, rtt_refuted) AS basis
   FROM scored
 )
 WHERE basis IS NOT NULL
@@ -653,28 +687,13 @@ WHERE basis IS NOT NULL
 -- Only refuted addresses get a row. Reverse hops reuse the decision (same address,
 -- same device); revTr hop RTTs are not used as evidence.
 CREATE TEMP TABLE _hop_geo_validation AS
-WITH obs AS (
-  SELECT t.dst_site, t.dst_lat, t.dst_lon, n.addr, n.rdns_name, n.rtts
-  FROM `${PROJECT}.${DS}.transient_events_union` t, UNNEST(t.node_details) AS n
-  WHERE t.partition_date = '${DAY}'
-    AND n.ttl > 1 AND n.addr != '*' AND n.rtts > 0
-    AND t.dst_lat IS NOT NULL AND t.dst_lon IS NOT NULL
-),
-site_q AS (
-  SELECT
-    addr, dst_site,
-    MIN(dst_lat) AS site_lat,
-    MIN(dst_lon) AS site_lon,
-    -- exact, deterministic 10th percentile (discrete)
-    ARRAY_AGG(rtts ORDER BY rtts)[OFFSET(CAST(FLOOR(0.1 * (COUNT(*) - 1)) AS INT64))] AS rtt_q10
-  FROM obs
-  GROUP BY addr, dst_site
-  HAVING COUNT(*) >= 3
+WITH site_q AS (
+  -- evidence computed once in _hop_site_rtt (5b0), shared with 5c
+  SELECT addr, dst_site, site_lat, site_lon, rtt_q10 FROM _hop_site_rtt
 ),
 candidates AS (
   SELECT a.addr, c.rank, c.source, c.lat, c.lon
-  FROM (SELECT addr, MIN(rdns_name) AS rdns_name FROM obs
-        WHERE addr IN (SELECT addr FROM site_q) GROUP BY addr) a
+  FROM (SELECT addr, ANY_VALUE(addr_rdns) AS rdns_name FROM _hop_site_rtt GROUP BY addr) a
   LEFT JOIN _hoiho_by_addr geo ON geo.addr = a.addr AND geo.rdns_name = a.rdns_name
   LEFT JOIN _closest_geo ip ON ip.ip_address = a.addr
   CROSS JOIN UNNEST([
@@ -686,10 +705,7 @@ candidates AS (
 ),
 cand_check AS (
   SELECT c.addr, c.rank, c.source, c.lat, c.lon,
-    LOGICAL_OR(
-      q.rtt_q10 * 100
-        < ST_DISTANCE(ST_GEOGPOINT(c.lon, c.lat), ST_GEOGPOINT(q.site_lon, q.site_lat)) / 1000 - 100
-    ) AS refuted
+    LOGICAL_OR(rtt_refutes_location(q.rtt_q10, c.lat, c.lon, q.site_lat, q.site_lon)) AS refuted
   FROM candidates c
   JOIN site_q q USING (addr)
   GROUP BY c.addr, c.rank, c.source, c.lat, c.lon

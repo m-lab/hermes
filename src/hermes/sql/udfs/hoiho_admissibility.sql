@@ -61,18 +61,36 @@ CREATE TEMP FUNCTION hoiho_facility_match(place STRING, facilities ARRAY<STRING>
   ), FALSE)
 );
 
+-- Step 04's refutation rule, shared by _hop_geo_validation and the facility branch
+-- below: a location is impossible if, from an M-Lab site, the address's 10th-
+-- percentile RTT cannot cover the distance and back at 200 km/ms, allowing 100 km
+-- for metro-centroid and site-metadata error. FALSE when anything is missing.
+CREATE TEMP FUNCTION rtt_refutes_location(
+  rtt_q10 FLOAT64, lat FLOAT64, lon FLOAT64, site_lat FLOAT64, site_lon FLOAT64
+) AS (
+  IFNULL(
+    rtt_q10 * 100
+      < ST_DISTANCE(ST_GEOGPOINT(lon, lat), ST_GEOGPOINT(site_lon, site_lat)) / 1000 - 100,
+    FALSE)
+);
+
 -- Why a coordinate-bearing HOIHO row may be used, or NULL if it may not.
 -- Agreement is 100 km: the slack step 04 already allows for metro centroids.
+-- A facility match is the weakest basis -- large backbones list facilities almost
+-- everywhere -- so it must also survive the RTT check (rtt_refuted: refuted from
+-- any site). _hop_geo_validation exempts addresses seen at mutually-inconsistent
+-- sites, and through that gap a facility-admitted he.net "fmt1" router 34.5 ms
+-- from Stavanger was placed in San Mateo (2026-11-21 arm C).
 CREATE TEMP FUNCTION hoiho_basis(
   hoiho_lat FLOAT64, hoiho_lon FLOAT64, ip_lat FLOAT64, ip_lon FLOAT64,
-  pool BOOL, facility BOOL
+  pool BOOL, facility BOOL, rtt_refuted BOOL
 ) AS (
   CASE
     WHEN hoiho_lat IS NULL OR hoiho_lon IS NULL OR IFNULL(pool, FALSE) THEN NULL
     WHEN ip_lat IS NULL OR ip_lon IS NULL THEN 'hoiho_only'
     WHEN ST_DISTANCE(ST_GEOGPOINT(hoiho_lon, hoiho_lat), ST_GEOGPOINT(ip_lon, ip_lat)) <= 100000
       THEN 'hoiho_agree'
-    WHEN IFNULL(facility, FALSE) THEN 'hoiho_facility'
+    WHEN IFNULL(facility, FALSE) AND NOT IFNULL(rtt_refuted, FALSE) THEN 'hoiho_facility'
     ELSE NULL
   END
 );
